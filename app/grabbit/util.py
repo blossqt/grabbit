@@ -6,8 +6,11 @@ import re
 import subprocess
 import sys
 import time
-from ctypes import wintypes
 from urllib.parse import urlparse
+
+# Everything below the formatting helpers is shared with the Android build,
+# where ctypes.wintypes does not exist - the Windows pieces stay lazy.
+IS_WINDOWS = os.name == 'nt'
 
 # --------------------------------------------------------------------------- formatting
 
@@ -195,14 +198,17 @@ def ipv6_available() -> bool:
 
 def open_path(path: str) -> bool:
     if path and os.path.exists(path):
-        os.startfile(path)  # noqa: S606 - opening a user's own file
+        if IS_WINDOWS:
+            os.startfile(path)  # noqa: S606 - opening a user's own file
+        else:
+            subprocess.Popen(['xdg-open', path])
         return True
     return False
 
 
 def reveal_in_explorer(path: str) -> bool:
-    if not path:
-        return False
+    if not path or not IS_WINDOWS:
+        return open_path(os.path.dirname(path) if path else '')
     if os.path.exists(path):
         subprocess.Popen(['explorer', '/select,', os.path.normpath(path)])
         return True
@@ -218,26 +224,28 @@ def reveal_in_explorer(path: str) -> bool:
     return False
 
 
-class _SHFILEOPSTRUCTW(ctypes.Structure):
-    _fields_ = [
-        ('hwnd', wintypes.HWND),
-        ('wFunc', wintypes.UINT),
-        ('pFrom', wintypes.LPCWSTR),
-        ('pTo', wintypes.LPCWSTR),
-        ('fFlags', ctypes.c_uint16),
-        ('fAnyOperationsAborted', wintypes.BOOL),
-        ('hNameMappings', ctypes.c_void_p),
-        ('lpszProgressTitle', wintypes.LPCWSTR),
-    ]
-
-
 def send_to_recycle_bin(paths: list[str]) -> bool:
     """Move files/folders to the Recycle Bin (no confirmation UI). True on success."""
     existing = [os.path.abspath(p) for p in paths if p and os.path.exists(p)]
     if not existing:
         return True
-    if sys.platform != 'win32':
+    if not IS_WINDOWS:
         return False
+
+    from ctypes import wintypes
+
+    class _SHFILEOPSTRUCTW(ctypes.Structure):
+        _fields_ = [
+            ('hwnd', wintypes.HWND),
+            ('wFunc', wintypes.UINT),
+            ('pFrom', wintypes.LPCWSTR),
+            ('pTo', wintypes.LPCWSTR),
+            ('fFlags', ctypes.c_uint16),
+            ('fAnyOperationsAborted', wintypes.BOOL),
+            ('hNameMappings', ctypes.c_void_p),
+            ('lpszProgressTitle', wintypes.LPCWSTR),
+        ]
+
     FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_SILENT, FOF_NOERRORUI = 3, 0x40, 0x10, 0x4, 0x400
     op = _SHFILEOPSTRUCTW()
     op.wFunc = FO_DELETE

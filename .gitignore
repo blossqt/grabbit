@@ -14,3 +14,6 @@ __pycache__/
 # Editors
 .vscode/
 .idea/
+
+# Android build output
+vendor/android/
