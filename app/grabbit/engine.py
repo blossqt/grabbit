@@ -17,7 +17,7 @@ from . import media as media_mod
 from .aria2rpc import Aria2Client, Aria2Error, Aria2Process
 from .paths import find_tool, logs_dir, torrents_dir
 from .tasks import (KIND_HTTP, KIND_IMAGE, KIND_MAGNET, KIND_MEDIA, KIND_TORRENT,
-                    FINISHED_STATES, State, Task, TaskStore)
+                    FINISHED_STATES, State, Task, TaskStore, task_paths)
 from .torrentmeta import parse_magnet, parse_torrent, select_file_spec
 from .util import ipv6_available, safe_filename, send_to_recycle_bin, site_name, unique_path
 
@@ -847,27 +847,7 @@ class Engine(QObject):
             pass
 
     def _task_paths(self, task: Task) -> list:
-        paths = []
-        if task.file_path:
-            paths.append(task.file_path)
-        if task.gid:
-            try:
-                for entry in self.client.call('aria2.getFiles', task.gid) or []:
-                    if entry.get('path'):
-                        paths.append(entry['path'])
-            except Aria2Error:
-                pass
-        if task.out and task.save_dir:
-            paths.append(os.path.join(task.save_dir, task.out))
-        if task.is_torrent and task.name and task.save_dir:
-            paths.append(os.path.join(task.save_dir, task.name))
-        result = []
-        for path in paths:
-            if path and path not in result:
-                result.append(path)
-                if os.path.exists(path + '.aria2'):
-                    result.append(path + '.aria2')
-        return result
+        return task_paths(task, self.client)
 
     @staticmethod
     def _delete_paths(paths):

@@ -58,7 +58,7 @@ STATE_COLOURS = {
 class TaskRow(BoxLayout):
     """One download: name, progress, and what it is doing."""
 
-    def __init__(self, on_remove=None, **kwargs):
+    def __init__(self, on_remove=None, on_toggle=None, **kwargs):
         super().__init__(orientation='vertical', size_hint_y=None, height=dp(86),
                          padding=dp(10), spacing=dp(4), **kwargs)
         self.task_id = ''
@@ -73,9 +73,14 @@ class TaskRow(BoxLayout):
         heading.add_widget(self.title)
         heading.add_widget(remove)
         self.bar = ProgressBar(max=1.0, value=0, size_hint_y=None, height=dp(8))
-        self.status = Label(text='', color=MUTED, font_size=dp(12), halign='left',
-                            valign='middle', size_hint_y=None, height=dp(20))
+        # The status line doubles as the start/pause control. A button handles
+        # touches correctly inside a scrolling list, where making the whole row
+        # sensitive would fight the scroll.
+        self.status = Button(text='', color=MUTED, font_size=dp(12), halign='left',
+                             valign='middle', size_hint_y=None, height=dp(22),
+                             background_normal='', background_color=(0, 0, 0, 0))
         self.status.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
+        self.status.bind(on_release=lambda *_: on_toggle and on_toggle(self.task_id))
         self.add_widget(heading)
         self.add_widget(self.bar)
         self.add_widget(self.status)
@@ -89,6 +94,10 @@ class TaskRow(BoxLayout):
             bits.append(f'{human_size(task.done)} / {human_size(task.total)}')
         if task.down_speed:
             bits.append(human_speed(task.down_speed))
+        if task.state == State.PAUSED:
+            bits.append('tap to start')
+        elif task.state in (State.DOWNLOADING, State.SEEDING):
+            bits.append('tap to pause')
         self.status.text = '   ·   '.join(b for b in bits if b)
         self.status.color = STATE_COLOURS.get(task.state, MUTED)
 
@@ -298,6 +307,17 @@ class GrabbitApp(App):
         self.input.text = ''
         self._queue_link(url)
 
+    def toggle_task(self, task_id: str):
+        """Start what is waiting, pause what is running."""
+        task = self.engine.store.get(task_id)
+        if task is None:
+            return
+        if task.state == State.PAUSED:
+            self.engine.resume([task_id])
+        elif task.state in (State.DOWNLOADING, State.SEEDING, State.QUEUED):
+            self.engine.pause([task_id])
+        self._schedule_refresh()
+
     def confirm_remove(self, task_id: str):
         """Stop a download, and ask before throwing away what it has."""
         task = self.engine.store.get(task_id)
@@ -336,7 +356,7 @@ class GrabbitApp(App):
             seen.add(task.id)
             row = self._rows.get(task.id)
             if row is None:
-                row = TaskRow(on_remove=self.confirm_remove)
+                row = TaskRow(on_remove=self.confirm_remove, on_toggle=self.toggle_task)
                 self._rows[task.id] = row
                 self.list.add_widget(row)
             row.show(task)

@@ -226,3 +226,42 @@ class TaskStore:
 
     def __iter__(self):
         return iter(list(self._tasks.values()))
+
+
+def task_paths(task: Task, client=None) -> list:
+    """Everything a task may have put on disk, aria2's control files included.
+
+    Worth being thorough about, because this is what "delete the file too"
+    acts on. A torrent is only named by ``task.name`` until it finishes, a
+    multi-file one is a folder rather than a file, and aria2 leaves a
+    ``.aria2`` beside whatever it was writing. When the download still exists,
+    aria2 itself is the most reliable answer, so ask it first.
+
+    Call this *before* removing the download: afterwards there is nothing left
+    to ask.
+    """
+    found = []
+    if task.file_path:
+        found.append(task.file_path)
+    if client is not None and task.gid:
+        try:
+            for entry in client.call('aria2.getFiles', task.gid) or []:
+                if entry.get('path'):
+                    found.append(entry['path'])
+        except Exception:                      # the download may be gone already
+            log.debug('aria2 could not list files for %s', task.gid)
+    if task.out and task.save_dir:
+        found.append(os.path.join(task.save_dir, task.out))
+    if task.is_torrent and task.name and task.save_dir:
+        found.append(os.path.join(task.save_dir, task.name))
+    if task.info_hash and task.save_dir:
+        # aria2 saves the metadata it fetched next to the download.
+        found.append(os.path.join(task.save_dir, f'{task.info_hash.lower()}.torrent'))
+
+    result = []
+    for path in found:
+        if path and path not in result:
+            result.append(path)
+            if os.path.exists(path + '.aria2'):
+                result.append(path + '.aria2')
+    return result

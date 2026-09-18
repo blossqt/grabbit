@@ -13,6 +13,7 @@ shared package and let the desktop keep a thin Qt adapter on top of it.
 
 import logging
 import os
+import shutil
 import threading
 import time
 
@@ -20,9 +21,9 @@ from grabbit import analyze as analyze_mod
 from grabbit import media as media_mod
 from grabbit.aria2rpc import Aria2Error, Aria2Process
 from grabbit.tasks import (KIND_HTTP, KIND_IMAGE, KIND_MAGNET, KIND_MEDIA, KIND_TORRENT,
-                           FINISHED_STATES, State, Task, TaskStore)
+                           FINISHED_STATES, State, Task, TaskStore, task_paths)
 from grabbit.torrentmeta import parse_torrent, select_file_spec
-from grabbit.util import ipv6_available, safe_filename
+from grabbit.util import human_size, ipv6_available, safe_filename
 
 from . import paths
 
@@ -278,7 +279,7 @@ class MobileEngine:
         self._add_torrent(task)
         return task
 
-    def start_torrent_from_metadata(self, task: Task, selected=None):
+    def start_torrent_from_metadata(self, task: Task, selected=None, paused: bool = False):
         try:
             meta = parse_torrent(open(task.torrent_file, 'rb').read())
         except Exception as exc:
@@ -289,8 +290,8 @@ class MobileEngine:
         task.total = meta.total_size
         if selected is not None:
             task.select_files = select_file_spec(selected, len(meta.files))
-        task.state = State.QUEUED
-        self._add_torrent(task)
+        task.state = State.PAUSED if paused else State.QUEUED
+        self._add_torrent(task, paused=paused)
 
     # ------------------------------------------------------- aria2 plumbing
     def _gid(self, task: Task) -> str:
@@ -526,8 +527,13 @@ class MobileEngine:
         task.torrent_file = str(path)
         self._forget(task.gid)
         task.gid = ''
-        self.start_torrent_from_metadata(task)     # phone: take everything
-        self.on_message('info', f'Starting {task.name}')
+        # Every file in it, but not yet. A torrent is usually the largest thing
+        # anyone hands this app, and a phone is the worst place to find several
+        # gigabytes arriving unasked - over mobile data, at that. The desktop
+        # waits for a choice of files here; without a picker, waiting for a tap
+        # is the same promise.
+        self.start_torrent_from_metadata(task, paused=True)
+        self.on_message('info', f'{task.name} ({human_size(task.total)}) - tap it to start')
 
     def _forget(self, gid: str):
         if gid:
@@ -578,6 +584,27 @@ class MobileEngine:
                     self._add_uri(task)
         self.on_change()
 
+    @staticmethod
+    def _delete(path: str, inside: str) -> None:
+        """Delete one thing a download left, if it is really inside the folder
+        that download was writing to.
+
+        A phone has no recycle bin to undo this with, and a multi-file torrent
+        is a folder, so the containment check earns its place.
+        """
+        root = os.path.abspath(inside or '')
+        target = os.path.abspath(path or '')
+        if not root or not target.startswith(root + os.sep):
+            log.warning('refusing to delete %s: outside %s', target, root)
+            return
+        try:
+            if os.path.isdir(target):
+                shutil.rmtree(target, ignore_errors=True)
+            elif os.path.exists(target):
+                os.remove(target)
+        except OSError as exc:
+            log.warning('could not delete %s: %s', target, exc)
+
     def remove(self, task_ids, delete_files: bool = False):
         for task_id in list(task_ids):
             task = self.store.get(task_id)
@@ -588,19 +615,16 @@ class MobileEngine:
                 job.cancel()
             if task_id in self._media_queue:
                 self._media_queue.remove(task_id)
+            # Ask what is on disk while the download still exists to be asked.
+            doomed = task_paths(task, self.client) if delete_files else []
             if task.gid:
                 try:
                     self.client.call('aria2.forceRemove', task.gid)
                     self.client.call('aria2.removeDownloadResult', task.gid)
                 except Aria2Error:
                     pass
-            if delete_files:
-                for candidate in (task.file_path, os.path.join(task.save_dir, task.out or '')):
-                    if candidate and os.path.isfile(candidate):
-                        try:
-                            os.remove(candidate)
-                        except OSError:
-                            pass
+            for path in doomed:
+                self._delete(path, task.save_dir)
             self.store.remove(task_id)
         self.store.save(force=True)
         self._pump_media()
