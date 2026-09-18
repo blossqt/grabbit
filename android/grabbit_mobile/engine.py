@@ -60,7 +60,15 @@ class MobileEngine:
         if not exe:
             self.on_message('error', 'aria2 is missing from this build')
             return False
-        os.chmod(exe, 0o755)
+        if not os.access(exe, os.X_OK):
+            # Only a copy we made ourselves can be fixed up like this. When
+            # aria2 is running from the native library directory it is already
+            # executable, and belongs to the system rather than to us.
+            try:
+                os.chmod(exe, 0o755)
+            except OSError as exc:
+                self.on_message('error', f'aria2 cannot be run: {exc}')
+                return False
 
         try:
             self.process = Aria2Process(exe, self._aria2_options(), paths.logs_dir() / 'aria2.log')
@@ -96,6 +104,9 @@ class MobileEngine:
             'auto-file-renaming': 'true',
             'content-disposition-default-utf8': 'true',
             'check-certificate': 'true',
+            # Android has no /etc/resolv.conf for c-ares to read, and the only
+            # resolver that knows about the current network is the system one.
+            'async-dns': 'false',
             'bt-save-metadata': 'true',
             'bt-load-saved-metadata': 'false',
             'bt-detach-seed-only': 'true',

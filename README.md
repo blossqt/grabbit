@@ -92,9 +92,15 @@ has no Android target. Building it needs WSL (Ubuntu), a JDK, and roughly 15 GB:
 Then from Windows, with the phone plugged in and USB debugging on:
 
     powershell -File build\android\install_apk.ps1
+    powershell -File build\android\device_test.ps1 -Grant
+
+`device_test.ps1` is the phone's answer to `selftest.py`: it starts the engine
+inside the app through `run-as` and downloads real things — a video, a TikTok,
+a photo post, a GIF — reporting each one. It needs neither the screen nor the
+lock code, so it can run while the phone sits on the desk.
 
 The phone engine is plain Python, so it also runs on a desktop against the
-desktop binaries — a much faster way to find a mistake than building an APK:
+desktop binaries — faster still, and enough to catch most mistakes:
 
     %LOCALAPPDATA%\GrabbitBuild\venv\Scripts\python.exe build\android\test_engine.py
 

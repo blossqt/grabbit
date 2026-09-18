@@ -155,7 +155,9 @@ def unique_path(folder: str, filename: str) -> str:
 
 # --------------------------------------------------------------------------- Windows shell
 
-CREATE_NO_WINDOW = 0x08000000
+# Zero everywhere else on purpose: subprocess rejects a non-zero creationflags
+# outright off Windows, so the call sites can pass this without asking first.
+CREATE_NO_WINDOW = 0x08000000 if IS_WINDOWS else 0
 
 
 def hide_child_consoles():

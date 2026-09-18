@@ -13,6 +13,7 @@ import logging
 import os
 import shutil
 import stat
+import sys
 from pathlib import Path
 
 from . import paths
@@ -35,7 +36,14 @@ def native_library_dir() -> str | None:
         activity = autoclass('org.kivy.android.PythonActivity').mActivity
         return activity.getApplicationInfo().nativeLibraryDir
     except Exception:
-        return None
+        pass
+    # No activity to ask: a headless run, or a background service. Python
+    # itself is in that same directory - p4a ships the interpreter as
+    # libpythonbin.so and links .bin/python to it - so follow the link.
+    interpreter = os.path.realpath(sys.executable or '')
+    if os.path.basename(interpreter).startswith('libpython'):
+        return os.path.dirname(interpreter)
+    return None
 
 
 def locate(name: str) -> str | None:

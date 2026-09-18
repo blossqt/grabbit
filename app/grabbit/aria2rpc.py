@@ -179,10 +179,9 @@ class Aria2Process:
         if self.log_path:
             args += [f'--log={self.log_path}', '--log-level=warn']
 
-        creationflags = CREATE_NO_WINDOW if os.name == 'nt' else 0
         self.process = subprocess.Popen(
             args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            creationflags=creationflags, text=True, errors='replace')
+            creationflags=CREATE_NO_WINDOW, text=True, errors='replace')
 
         client = Aria2Client(self.port, secret)
         deadline = time.time() + 15

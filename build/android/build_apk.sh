@@ -25,7 +25,8 @@ OUTDIR="$ROOT/dist/android"
 DIST=grabbit
 PKG=com.grabbit.downloader
 NAME=Grabbit
-VERSION="${GRABBIT_VERSION:-1.0.0}"
+# One version for both platforms: the shared package is where it is written.
+VERSION="${GRABBIT_VERSION:-$(sed -n "s/^APP_VERSION = '\(.*\)'/\1/p" "$ROOT/app/grabbit/__init__.py")}"
 ARCH=arm64-v8a
 API="${TARGET_API:-35}"
 MINSDK="${MIN_SDK:-24}"

@@ -7,6 +7,12 @@
     adb runs on Windows even though the APK is built inside WSL, because that
     is where the phone is plugged in. -Seconds is how long to watch the log
     after launching; Ctrl+C stops it early.
+
+    The previous install is removed first, and that is not tidiness: the app
+    unpacks its Python into its own folder once and keeps it while the version
+    string stays the same, so an install over the top runs the old code and
+    every change you just made appears to have done nothing. -KeepData skips
+    the uninstall when you actually want the existing downloads and settings.
 #>
 param(
     [string]$Apk = '',
