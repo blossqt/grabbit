@@ -23,6 +23,7 @@ log = logging.getLogger(__name__)
 BUNDLED = {
     'aria2c': 'libaria2c.so',
     'ffmpeg': 'libffmpeg.so',
+    'ffprobe': 'libffprobe.so',
     'quickjs': 'libquickjs.so',
 }
 
@@ -58,8 +59,23 @@ def locate(name: str) -> str | None:
     return shutil.which(name)
 
 
+def prepare_environment() -> None:
+    """Give the standard library a temp directory that exists.
+
+    Android has no /tmp, and p4a sets no TMPDIR, so tempfile falls back to the
+    working directory. yt-dlp writes the scripts it hands to QuickJS there, so
+    point it somewhere we own and can clear out.
+    """
+    import tempfile
+    scratch = paths.data_dir() / 'tmp'
+    scratch.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault('TMPDIR', str(scratch))
+    tempfile.tempdir = str(scratch)
+
+
 def unpack_tools() -> dict:
     """Resolve every bundled tool once, at start-up."""
+    prepare_environment()
     found = {}
     for name in BUNDLED:
         path = locate(name)
@@ -84,3 +100,35 @@ def ca_bundle() -> str | None:
     except Exception:
         local = paths.tools_dir() / 'cacert.pem'
         return str(local) if local.exists() else None
+
+
+def has_all_files_access() -> bool | None:
+    """Whether Android will let us write outside our own folder.
+
+    None means the question does not arise: not a phone, or Android 10 and
+    older, where the ordinary storage permission covers it.
+    """
+    try:
+        from jnius import autoclass
+        if autoclass('android.os.Build$VERSION').SDK_INT < 30:
+            return None
+        return bool(autoclass('android.os.Environment').isExternalStorageManager())
+    except Exception:
+        return None
+
+
+def open_all_files_settings() -> bool:
+    """Open the one screen that can grant it. Nothing else can."""
+    try:
+        from jnius import autoclass
+        activity = autoclass('org.kivy.android.PythonActivity').mActivity
+        Intent = autoclass('android.content.Intent')
+        AndroidSettings = autoclass('android.provider.Settings')
+        Uri = autoclass('android.net.Uri')
+        activity.startActivity(Intent(
+            AndroidSettings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+            Uri.parse('package:' + activity.getPackageName())))
+        return True
+    except Exception:
+        log.exception('could not open the storage settings screen')
+        return False

@@ -19,12 +19,26 @@ def app_dir() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+# Another platform (the Android build) puts its state somewhere these rules
+# would never find. Setting this once, before anything is loaded, keeps the
+# task list, settings and torrents where that platform wants them.
+DATA_DIR_OVERRIDE: Path | None = None
+
+
+def set_data_dir(path) -> None:
+    global DATA_DIR_OVERRIDE
+    DATA_DIR_OVERRIDE = Path(path)
+
+
 def data_dir() -> Path:
     """Per-user state: settings, task list, torrent metadata, logs.
 
     A ``portable.txt`` file next to Grabbit.exe keeps everything in ``data``
     beside the exe instead of %LOCALAPPDATA%.
     """
+    if DATA_DIR_OVERRIDE is not None:
+        DATA_DIR_OVERRIDE.mkdir(parents=True, exist_ok=True)
+        return DATA_DIR_OVERRIDE
     if (app_dir() / 'portable.txt').exists():
         path = app_dir() / 'data'
     else:

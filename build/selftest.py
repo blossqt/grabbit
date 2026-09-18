@@ -16,6 +16,14 @@ import urllib.request
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'app'))
 
+# Titles come from whatever people called their videos, and a Windows console
+# is not UTF-8 by default. Printing one must never be what fails a check.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, ValueError, OSError):
+        pass
+
 from grabbit import media as media_mod          # noqa: E402
 from grabbit.aria2rpc import Aria2Process       # noqa: E402
 from grabbit.paths import find_tool             # noqa: E402

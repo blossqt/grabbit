@@ -77,6 +77,34 @@ Checks that exercise the engine against real downloads:
 
     %LOCALAPPDATA%\GrabbitBuild\venv\Scripts\python.exe build\selftest.py --all
 
+## The Android build
+
+The APK carries the same engine — aria2, yt-dlp, FFmpeg — cross-compiled for
+arm64, with a Kivy interface instead of Qt and QuickJS in place of Deno, which
+has no Android target. Building it needs WSL (Ubuntu), a JDK, and roughly 15 GB:
+
+    bash build/android/fetch_sdk.sh        # NDK, SDK command-line tools, adb
+    bash build/android/build_aria2.sh      # aria2 + OpenSSL, zlib, expat, c-ares
+    bash build/android/build_tools.sh      # QuickJS, LAME, FFmpeg and ffprobe
+    bash build/android/setup_p4a.sh        # python-for-android
+    bash build/android/build_apk.sh        # -> dist/android/Grabbit-*.apk
+
+Then from Windows, with the phone plugged in and USB debugging on:
+
+    powershell -File build\android\install_apk.ps1
+
+The phone engine is plain Python, so it also runs on a desktop against the
+desktop binaries — a much faster way to find a mistake than building an APK:
+
+    %LOCALAPPDATA%\GrabbitBuild\venv\Scripts\python.exe build\android\test_engine.py
+
+Two facts about phones shape the code. Android 10 and later refuse to execute
+anything from an app's data directory, so the binaries travel as `lib*.so` and
+run from the native library directory, which stays executable. And Android 11
+and later keep apps out of the shared Downloads folder without an explicit
+grant, so Grabbit asks once and otherwise saves into its own folder — still
+reachable over USB, just not listed in the Downloads app.
+
 ## Layout
 
     app/grabbit/        the application
@@ -93,8 +121,12 @@ Checks that exercise the engine against real downloads:
       player.py         finds and launches your video player
       associations.py   magnet / .torrent registration (per-user, no admin)
       ui/               Qt interface
+    android/            the phone build
+      main.py           Kivy interface
+      grabbit_mobile/   the same engine without Qt, plus Android's storage rules
     aria2/              aria2's source, fetched by bootstrap.ps1 (not in git)
     build/              build scripts, patches, self-test
+      android/          cross-compilers for arm64 and the APK build
     vendor/aria2c.exe   the compiled engine
     dist/Grabbit/       the finished app
 

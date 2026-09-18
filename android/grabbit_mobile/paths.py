@@ -89,3 +89,20 @@ def find_tool(name: str) -> str | None:
         return str(candidate)
     import shutil
     return shutil.which(name)
+
+
+def adopt_shared_paths() -> None:
+    """Make the shared modules keep their state in the phone's folders.
+
+    The task list, settings and cached torrents are handled by code that was
+    written for a desktop and would otherwise put them somewhere Windows-shaped
+    that means nothing here.
+    """
+    from grabbit import paths as shared
+    shared.set_data_dir(data_dir())
+
+
+try:
+    adopt_shared_paths()
+except ImportError:      # the shared package is not on the path yet
+    pass

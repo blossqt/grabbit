@@ -47,6 +47,53 @@ If you would rather not ship the GPL programs at all, delete `tools/` from a
 release: Grabbit runs without them, losing torrents (aria2), video and audio
 merging (FFmpeg) and photo-first sites (gallery-dl).
 
+## The Android build
+
+The APK ships the same kind of thing: separate programs, cross-compiled for
+arm64 by the scripts in `build/android/`. They travel as `lib*.so` only because
+Android refuses to execute a file from anywhere else; each one is an ordinary
+executable and is still run as its own process.
+
+| Program | In the APK | Licence | Source |
+|---|---|---|---|
+| aria2 1.37.0 | `libaria2c.so` | GPL-2.0-or-later (with OpenSSL exception) | as above, with the same patch |
+| FFmpeg 8.0, ffprobe | `libffmpeg.so`, `libffprobe.so` | LGPL-2.1-or-later (see below) | https://github.com/FFmpeg/FFmpeg at tag `n8.0` |
+| QuickJS-ng | `libquickjs.so` | MIT | https://github.com/quickjs-ng/quickjs |
+
+Statically linked into those:
+
+| Library | Licence | Goes into |
+|---|---|---|
+| OpenSSL 3.5.4 | Apache-2.0 | aria2, FFmpeg |
+| LAME 3.100 | LGPL-2.0-or-later | FFmpeg, for MP3 |
+| zlib, expat, c-ares | Zlib, MIT, MIT | aria2 |
+
+Unlike the Windows build, none of these come from someone else's release page:
+`build/android/build_aria2.sh` and `build/android/build_tools.sh` fetch those
+exact versions and compile them, so the source of every part is one script away.
+
+The Android FFmpeg is **not** a GPL build — it is configured without
+`--enable-gpl`, which leaves it LGPL-2.1-or-later. Because OpenSSL 3 is linked
+in, the combination is offered under the LGPL's version 3 terms, which
+Apache-2.0 permits. Everything in that binary is free software under a licence
+that allows relinking, and the script above is what relinks it.
+
+The Python side of the APK contains:
+
+| Library | Licence | Source |
+|---|---|---|
+| CPython 3.14 | PSF-2.0 | built by python-for-android |
+| Kivy, pyjnius, python-for-android | MIT | https://kivy.org |
+| SDL2, SDL2_image, SDL2_mixer, SDL2_ttf | Zlib | https://libsdl.org |
+| yt-dlp, yt-dlp-ejs | Unlicense | https://github.com/yt-dlp |
+| certifi | MPL-2.0 | https://github.com/certifi/python-certifi |
+| websockets | BSD-3-Clause | https://github.com/python-websockets/websockets |
+| requests, urllib3, idna, charset-normalizer, filetype, six | Apache-2.0 / MIT | dependencies of Kivy |
+
+gallery-dl has no place on a phone: it is a separate program, and the isolation
+that keeps it at arm's length needs a command line the APK does not have. The
+phone build simply goes without it.
+
 ## Qt (LGPL-3.0)
 
 Qt is dynamically linked and its libraries sit next to the executable in

@@ -86,8 +86,13 @@ def base_params(settings, log_sink=None) -> dict:
         'extractor_args': {},
     }
     deno = find_tool('deno')
+    quickjs = find_tool('quickjs')
     if deno:
         params['js_runtimes'] = {'deno': {'path': deno}}
+    elif quickjs:
+        # The phone build carries QuickJS instead - Deno has no Android target.
+        # Slower at YouTube's challenges, but it is a real JS engine.
+        params['js_runtimes'] = {'quickjs': {'path': quickjs}}
     ffmpeg = find_tool('ffmpeg')
     if ffmpeg:
         params['ffmpeg_location'] = os.path.dirname(ffmpeg)

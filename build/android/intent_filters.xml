@@ -1,0 +1,16 @@
+<!-- Added to Grabbit's activity in the manifest by python-for-android.
+
+     Between them these are how a link normally reaches a phone app: the share
+     sheet from a browser or a social app, and magnet links, which nothing else
+     on a phone usually claims. -->
+<intent-filter>
+    <action android:name="android.intent.action.SEND" />
+    <category android:name="android.intent.category.DEFAULT" />
+    <data android:mimeType="text/plain" />
+</intent-filter>
+<intent-filter>
+    <action android:name="android.intent.action.VIEW" />
+    <category android:name="android.intent.category.DEFAULT" />
+    <category android:name="android.intent.category.BROWSABLE" />
+    <data android:scheme="magnet" />
+</intent-filter>

@@ -28,6 +28,17 @@ from grabbit.util import human_size             # noqa: E402
 from grabbit_mobile import paths as mobile_paths  # noqa: E402
 from grabbit_mobile.engine import MobileEngine  # noqa: E402
 
+# Everything this test touches lives in the workspace, including finished
+# files: a previous run's downloads must not be able to satisfy this one.
+mobile_paths.downloads_dir = lambda: _ensure(os.path.join(WORKSPACE, 'Downloads'))
+
+
+def _ensure(path):
+    from pathlib import Path
+    directory = Path(path)
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
 YOUTUBE = 'https://www.youtube.com/watch?v=jNQXAC9IVRw'
 PHOTO_POST = 'https://www.instagram.com/nasa/p/DdWojaYFDf-/'
 
@@ -93,7 +104,8 @@ def main():
         done = [t for t in photos if t.state == State.COMPLETED]
         report('downloads every photo in a post', bool(done) and len(done) == len(photos),
                f'{len(done)} of {len(photos)} saved')
-        report('the task list grew', len(list(engine.store)) > before)
+        after = len(list(engine.store))
+        report('the task list grew', after > before, f'{before} task(s) -> {after}')
 
         print('\n-- pausing and removing --')
         if photos:

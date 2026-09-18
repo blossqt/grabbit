@@ -81,7 +81,11 @@ if [ ! -f "$PREFIX/lib/libssl.a" ]; then
   (
     cd "openssl-$OPENSSL_VERSION"
     # no-apps: we want libcrypto and libssl, not the openssl command line.
-    ANDROID_NDK_ROOT="$NDK" ./Configure android-arm64 no-shared no-tests no-apps no-docs \
+    # no-module: build the legacy provider *into* libcrypto instead of leaving
+    # it as a loadable module. aria2 insists on loading "legacy" at start-up
+    # for RC4, which BitTorrent peer encryption uses, and a statically linked
+    # binary has no module file to find - it aborts on launch without this.
+    ANDROID_NDK_ROOT="$NDK" ./Configure android-arm64 no-shared no-module no-tests no-apps no-docs \
       -D__ANDROID_API__="$API" --prefix="$PREFIX"
     make -j"$JOBS"
     make install_sw
