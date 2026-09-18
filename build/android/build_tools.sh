@@ -4,12 +4,14 @@
 #   quickjs  - the JavaScript engine yt-dlp needs for YouTube's challenges.
 #              Deno, which the desktop build uses, has no Android target at all.
 #   lame     - the only MP3 encoder yt-dlp will ask for by name (libmp3lame).
+#   dav1d    - AV1 decoding. FFmpeg has no software AV1 decoder of its own, and
+#              AV1 is what YouTube hands out for much of its catalogue now.
 #   ffmpeg   - merging separate video and audio streams, extracting audio,
 #              embedding thumbnails and metadata, and making GIFs. ffprobe is
 #              built alongside it: yt-dlp's metadata and chapter handling has no
 #              fallback when it is missing.
 #
-#   bash build/android/build_tools.sh [quickjs|lame|ffmpeg|all]
+#   bash build/android/build_tools.sh [quickjs|lame|dav1d|ffmpeg|all]
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,6 +25,7 @@ OUT="$ROOT/vendor/android"
 WHAT="${1:-all}"
 
 LAME_VERSION=3.100
+DAV1D_VERSION=1.5.1
 FFMPEG_TAG=n8.0
 
 NDK="${ANDROID_NDK_HOME:-$(ls -d "$ANDROID_ROOT"/android-ndk-r* 2>/dev/null | sort -V | tail -1)}"
@@ -83,9 +86,53 @@ build_lame() {
   ls -l "$PREFIX/lib/libmp3lame.a"
 }
 
+# ------------------------------------------------------------------ dav1d
+# FFmpeg's own "av1" decoder only drives hardware; there is no software AV1
+# decoder in FFmpeg itself. Without dav1d, making a GIF out of an AV1 video -
+# which is most of YouTube now - fails at the first frame.
+build_dav1d() {
+  [ -f "$PREFIX/lib/libdav1d.a" ] && { echo 'dav1d already built'; return; }
+  say "dav1d $DAV1D_VERSION (AV1 decoding)"
+  # meson and ninja come from a throwaway virtualenv rather than the system,
+  # so this needs no root and cannot disturb anything else.
+  TOOLS_VENV="$WORK/meson-venv"
+  [ -x "$TOOLS_VENV/bin/meson" ] || {
+    python3 -m venv "$TOOLS_VENV"
+    "$TOOLS_VENV/bin/pip" install --quiet --upgrade pip meson ninja
+  }
+  cd "$WORK"
+  [ -d dav1d ] || git clone --depth 1 --branch "$DAV1D_VERSION" \
+    https://code.videolan.org/videolan/dav1d.git dav1d
+  cat > "$WORK/dav1d-android.ini" <<EOF
+[binaries]
+c = '$TOOLCHAIN/bin/${HOST}${API}-clang'
+cpp = '$TOOLCHAIN/bin/${HOST}${API}-clang++'
+ar = '$TOOLCHAIN/bin/llvm-ar'
+strip = '$TOOLCHAIN/bin/llvm-strip'
+pkg-config = 'pkg-config'
+
+[host_machine]
+system = 'android'
+cpu_family = 'aarch64'
+cpu = 'aarch64'
+endian = 'little'
+EOF
+  cd dav1d
+  rm -rf build-android
+  PATH="$TOOLS_VENV/bin:$PATH" meson setup build-android \
+    --cross-file "$WORK/dav1d-android.ini" \
+    --prefix="$PREFIX" --libdir=lib \
+    --default-library=static --buildtype=release \
+    -Denable_tools=false -Denable_tests=false
+  PATH="$TOOLS_VENV/bin:$PATH" ninja -C build-android
+  PATH="$TOOLS_VENV/bin:$PATH" ninja -C build-android install
+  ls -l "$PREFIX/lib/libdav1d.a"
+}
+
 # ----------------------------------------------------------------- ffmpeg
 build_ffmpeg() {
   build_lame
+  build_dav1d
   say "FFmpeg $FFMPEG_TAG (merging, audio extraction, GIFs)"
   cd "$WORK"
   if [ ! -d ffmpeg ]; then
@@ -96,9 +143,11 @@ build_ffmpeg() {
   # are what breaks on an unusual site, and they are cheap. The codec tables are
   # the bulk of the binary, so those are the curated part - everything a
   # downloader actually meets, plus what a GIF and an MP3 need.
-  decoders=h264,hevc,vp8,vp9,av1,mpeg4,mpeg2video,mpeg1video,msmpeg4v1,msmpeg4v2,msmpeg4v3,wmv1,wmv2,wmv3,vc1,theora,flv,h263,prores,dvvideo,rawvideo,gif,png,apng,mjpeg,webp,bmp,tiff,aac,aac_latm,ac3,eac3,mp3,mp3float,mp2,opus,vorbis,flac,alac,wmav1,wmav2,dca,truehd,amrnb,amrwb,pcm_s16le,pcm_s16be,pcm_u8,pcm_f32le,pcm_mulaw,pcm_alaw,subrip,srt,webvtt,ass,movtext,text
+  decoders=h264,hevc,vp8,vp9,av1,libdav1d,mpeg4,mpeg2video,mpeg1video,msmpeg4v1,msmpeg4v2,msmpeg4v3,wmv1,wmv2,wmv3,vc1,theora,flv,h263,prores,dvvideo,rawvideo,gif,png,apng,mjpeg,webp,bmp,tiff,aac,aac_latm,ac3,eac3,mp3,mp3float,mp2,opus,vorbis,flac,alac,wmav1,wmav2,dca,truehd,amrnb,amrwb,pcm_s16le,pcm_s16be,pcm_u8,pcm_f32le,pcm_mulaw,pcm_alaw,subrip,srt,webvtt,ass,movtext,text
   encoders=gif,png,apng,mjpeg,aac,flac,alac,libmp3lame,pcm_s16le,wrapped_avframe,srt,subrip,ass,webvtt,movtext
-  [ -f ffbuild/config.mak ] || ./configure \
+  # Always reconfigure: an existing config.mak is from whatever the options
+  # were last time, and a stale one is a confusing thing to debug.
+  ./configure \
     --prefix="$WORK/ffmpeg-install" \
     --target-os=android \
     --arch=aarch64 \
@@ -119,6 +168,7 @@ build_ffmpeg() {
     --enable-encoder="$encoders" \
     --enable-openssl \
     --enable-libmp3lame \
+    --enable-libdav1d \
     --extra-cflags="-I$PREFIX/include -Os -fPIE" \
     --extra-ldflags="-L$PREFIX/lib -fPIE -pie"
   make -j"$JOBS" ffmpeg ffprobe
@@ -131,7 +181,8 @@ build_ffmpeg() {
 case "$WHAT" in
   quickjs) build_quickjs ;;
   lame)    build_lame ;;
+  dav1d)   build_dav1d ;;
   ffmpeg)  build_ffmpeg ;;
   all)     build_quickjs; build_ffmpeg ;;
-  *) echo "usage: $0 [quickjs|lame|ffmpeg|all]" >&2; exit 2 ;;
+  *) echo "usage: $0 [quickjs|lame|dav1d|ffmpeg|all]" >&2; exit 2 ;;
 esac

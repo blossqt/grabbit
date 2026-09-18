@@ -81,6 +81,37 @@ def prepare_environment() -> None:
     tempfile.tempdir = str(scratch)
 
 
+def link_farm(found: dict) -> dict:
+    """Give the tools their ordinary names, in one directory.
+
+    yt-dlp looks for a file called ffmpeg, with ffprobe beside it, in whatever
+    directory it is pointed at. What Android lets an app execute is
+    libffmpeg.so, in a directory the app cannot add anything to. Symlinks
+    answer both: the names are ordinary, and executing one follows it back to
+    the native library directory, where the rule about executable files is
+    satisfied.
+    """
+    tools = paths.tools_dir()
+    linked = {}
+    for name, target in found.items():
+        link = tools / name
+        if Path(target).parent == tools:
+            linked[name] = target          # already a real file of ours
+            continue
+        try:
+            if link.is_symlink() or link.exists():
+                if os.path.realpath(link) == os.path.realpath(target):
+                    linked[name] = str(link)
+                    continue
+                link.unlink()
+            os.symlink(target, link)
+            linked[name] = str(link)
+        except OSError:
+            log.warning('could not link %s into %s; using it where it is', name, tools)
+            linked[name] = target
+    return linked
+
+
 def unpack_tools() -> dict:
     """Resolve every bundled tool once, at start-up."""
     prepare_environment()
@@ -92,6 +123,7 @@ def unpack_tools() -> dict:
             log.info('%s -> %s', name, path)
         else:
             log.info('%s is not in this build', name)
+    found = link_farm(found)
     paths.TOOL_PATHS.update(found)
     # The shared modules look for tools the desktop way, so tell them where
     # these actually are on a phone.

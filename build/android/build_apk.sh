@@ -107,15 +107,21 @@ PY
 find "$APPDIR" -name '__pycache__' -type d -prune -exec rm -rf {} +
 
 # ------------------------------------- hand the binaries to p4a as libs
-LIBS="$STORAGE/build/libs_collections/$DIST/$ARCH"
-say "placing native tools in $LIBS"
-mkdir -p "$LIBS"
-cp "$VENDOR/aria2c"  "$LIBS/libaria2c.so"
-cp "$VENDOR/ffmpeg"  "$LIBS/libffmpeg.so"
-cp "$VENDOR/ffprobe" "$LIBS/libffprobe.so"
-cp "$VENDOR/qjs"     "$LIBS/libquickjs.so"
-chmod 755 "$LIBS"/lib*.so
-ls -l "$LIBS"
+# Two places, and both are needed. p4a gathers libraries from its collection
+# when it assembles a distribution - but it only assembles one once, and every
+# later build reuses what is already in the distribution. Copying into just the
+# collection means a rebuilt binary silently never reaches the APK.
+say 'placing native tools where p4a will package them'
+for LIBS in "$STORAGE/build/libs_collections/$DIST/$ARCH" "$STORAGE/dists/$DIST/libs/$ARCH"; do
+  [ -d "$(dirname "$LIBS")" ] || continue
+  mkdir -p "$LIBS"
+  cp "$VENDOR/aria2c"  "$LIBS/libaria2c.so"
+  cp "$VENDOR/ffmpeg"  "$LIBS/libffmpeg.so"
+  cp "$VENDOR/ffprobe" "$LIBS/libffprobe.so"
+  cp "$VENDOR/qjs"     "$LIBS/libquickjs.so"
+  chmod 755 "$LIBS"/lib*.so
+  echo "   $LIBS"
+done
 
 # ------------------------------------------------------------- build
 # p4a installs the pure-Python requirements through a throwaway venv, but keeps

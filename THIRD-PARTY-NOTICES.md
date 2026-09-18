@@ -66,6 +66,7 @@ Statically linked into those:
 |---|---|---|
 | OpenSSL 3.5.4 | Apache-2.0 | aria2, FFmpeg |
 | LAME 3.100 | LGPL-2.0-or-later | FFmpeg, for MP3 |
+| dav1d 1.5.1 | BSD-2-Clause | FFmpeg, for AV1 |
 | zlib, expat, c-ares | Zlib, MIT, MIT | aria2 |
 
 Unlike the Windows build, none of these come from someone else's release page:

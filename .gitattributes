@@ -1,0 +1,7 @@
+# The shell scripts run inside WSL, where a carriage return at the end of a
+# line is part of the command. Windows checkouts must not convert these.
+*.sh text eol=lf
+*.patch text eol=lf
+
+# And these are read by Windows tools, which prefer the opposite.
+*.ps1 text eol=crlf

@@ -125,7 +125,14 @@ def format_selection(quality: str, container: str) -> dict:
     if quality == 'gif':
         # No audio in a GIF, so skip downloading it. 720p is plenty of detail
         # for something that gets scaled down and reduced to 256 colours.
-        params['format'] = 'bv*[height<=720]/b[height<=720]/bv*/b'
+        #
+        # AV1 is asked for last: it has to be decoded to make a GIF, and a
+        # software AV1 decoder is a large thing to carry on a phone for a
+        # format that ends up with 256 colours anyway. Anything else will do
+        # just as well here.
+        params['format'] = ('bv*[vcodec!^=av01][height<=720]/b[vcodec!^=av01][height<=720]'
+                            '/bv*[vcodec!^=av01]/b[vcodec!^=av01]'
+                            '/bv*[height<=720]/b[height<=720]/bv*/b')
     elif quality == 'audio_mp3':
         params['format'] = 'ba/b'
         postprocessors.append({'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3',
