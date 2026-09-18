@@ -68,8 +68,16 @@ def _tool_candidates(name: str):
             yield components / 'ffmpeg' / f'{name}.exe'
 
 
+# A front-end for another platform (the Android build) registers absolute paths
+# here, because its executables live somewhere this module knows nothing about.
+TOOL_OVERRIDES: dict = {}
+
+
 def find_tool(name: str) -> str | None:
     """Locate aria2c, ffmpeg, ffprobe or deno; bundled copies win over PATH."""
+    override = TOOL_OVERRIDES.get(name)
+    if override and os.path.isfile(override):
+        return override
     for candidate in _tool_candidates(name):
         if candidate.is_file():
             return str(candidate)
