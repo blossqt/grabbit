@@ -395,6 +395,39 @@ def _check_magnet_engine(folder):
     engine.shutdown()
 
 
+def check_gif(folder):
+    """Downloading a video straight to an animated GIF."""
+    print('\n== animated GIF ==')
+    from grabbit.tasks import Task
+    settings = _make_settings(folder)
+    settings.gif_max_seconds = 5           # keep the check quick
+    settings.gif_width = 320
+    engine = Engine(folder)
+    try:
+        result = media_mod.probe(YOUTUBE_URL, settings)
+        item = result.items[0]
+        task = Task(kind='media', source=item.url or YOUTUBE_URL, save_dir=folder, name=item.title)
+        task.media = {'quality': 'gif', 'container': 'mp4', 'info': item.info,
+                      'info_time': time.time()}
+        runner = _JobRunner(engine, task)
+        job = media_mod.MediaJob(task, settings, runner.callbacks())
+        job.start()
+        job.join(timeout=300)
+        print()
+        path = runner.filepath
+        ok = bool(path) and os.path.exists(path) and path.lower().endswith('.gif')
+        report('gif: produces a .gif', ok,
+               f'{os.path.basename(path)} {human_size(os.path.getsize(path))}' if ok else runner.error)
+        if ok:
+            with open(path, 'rb') as handle:
+                header = handle.read(6)
+            report('gif: the file is a real GIF', header in (b'GIF89a', b'GIF87a'), header.decode('latin1'))
+            leftovers = [f for f in os.listdir(folder) if f.endswith(('.palette.png', '.mp4.palette.png'))]
+            report('gif: cleans up after itself', not leftovers, 'no palette files left')
+    finally:
+        engine.stop()
+
+
 def check_more_sources(folder):
     """Photo sites via gallery-dl, and reading media off an ordinary page."""
     print('\n== other sources ==')
@@ -514,7 +547,7 @@ def check_preview(url, label='preview'):
 def main():
     parser = argparse.ArgumentParser()
     for name in ('all', 'http', 'torrent', 'magnet', 'youtube', 'instagram', 'tiktok',
-                 'preview', 'sources', 'metalink', 'probe'):
+                 'preview', 'sources', 'metalink', 'gif', 'probe'):
         parser.add_argument(f'--{name}', action='store_true')
     parser.add_argument('--keep', action='store_true', help='keep the temporary download folder')
     args = parser.parse_args()
@@ -559,6 +592,8 @@ def main():
             run('other sources', check_more_sources, folder)
         if args.all or args.metalink:
             run('metalink', check_metalink, folder)
+        if args.all or args.gif:
+            run('gif', check_gif, folder)
         if args.probe:
             for url in (YOUTUBE_URL, INSTAGRAM_URL, TIKTOK_PHOTO_URL, TIKTOK_VIDEO_URL):
                 check_probe(url, label=url.split('/')[2])

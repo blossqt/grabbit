@@ -22,7 +22,8 @@ def quality_options(heights) -> list:
     options = [('best', 'Best available')]
     for height in sorted({h for h in (heights or []) if h}, reverse=True)[:8]:
         options.append((str(height), f'{height}p'))
-    options += [('audio_m4a', 'Audio only (M4A)'), ('audio_mp3', 'Audio only (MP3)')]
+    options += [('audio_m4a', 'Audio only (M4A)'), ('audio_mp3', 'Audio only (MP3)'),
+                ('gif', 'Animated GIF')]
     return options
 
 

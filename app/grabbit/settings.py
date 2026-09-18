@@ -28,6 +28,7 @@ def _default_download_dir() -> str:
 
 VIDEO_QUALITIES = [
     ('best', 'Best available'),
+    ('gif', 'Animated GIF'),
     ('2160', '2160p (4K)'),
     ('1440', '1440p'),
     ('1080', '1080p'),
@@ -85,6 +86,9 @@ class Settings:
     download_subtitles: bool = False
     subtitle_langs: str = 'en.*'
     filename_template: str = '%(title).150B [%(id)s].%(ext)s'
+    gif_fps: int = 15
+    gif_width: int = 480
+    gif_max_seconds: int = 30      # 0 = convert the whole video
     site_subfolders: bool = False
     cookies_browser: str = ''
     cookies_file: str = ''

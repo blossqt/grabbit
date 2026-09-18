@@ -10,6 +10,7 @@ yt-dlp's own downloader, which knows how to reassemble them.
 import itertools
 import logging
 import os
+import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
@@ -21,7 +22,7 @@ from yt_dlp.utils import DownloadCancelled, determine_protocol, traverse_obj
 
 from . import extractors
 from .paths import find_tool
-from .util import safe_filename, site_name
+from .util import CREATE_NO_WINDOW, safe_filename, site_name
 
 log = logging.getLogger(__name__)
 
@@ -116,7 +117,11 @@ def format_selection(quality: str, container: str) -> dict:
     params: dict = {}
     postprocessors: list[dict] = []
 
-    if quality == 'audio_mp3':
+    if quality == 'gif':
+        # No audio in a GIF, so skip downloading it. 720p is plenty of detail
+        # for something that gets scaled down and reduced to 256 colours.
+        params['format'] = 'bv*[height<=720]/b[height<=720]/bv*/b'
+    elif quality == 'audio_mp3':
         params['format'] = 'ba/b'
         postprocessors.append({'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3',
                                'preferredquality': '0', 'nopostoverwrites': False})
@@ -148,6 +153,11 @@ def download_params(settings, save_dir: str, quality: str | None = None,
     selection = format_selection(quality, container)
     postprocessors = selection.pop('_postprocessors')
     is_audio = quality.startswith('audio')
+    if quality == 'gif':
+        # Cover art, chapters and subtitles mean nothing in a GIF.
+        return {'paths': {'home': save_dir},
+                'outtmpl': {'default': settings.filename_template},
+                'noplaylist': True, 'postprocessors': [], **selection}
 
     params = {
         'paths': {'home': save_dir},
@@ -392,6 +402,51 @@ def resolve_stream(url: str, settings, log_sink=None) -> dict:
             'seekable': not audio_url,
             'height': chosen.get('height'),
         }
+
+
+def convert_to_gif(source: str, settings, log_sink=None) -> str:
+    """Turn a downloaded video into an animated GIF.
+
+    Two passes: ffmpeg first works out one colour palette for the whole clip,
+    then re-encodes using it. A GIF only holds 256 colours, and letting ffmpeg
+    pick them per frame is what makes home-made GIFs look muddy and banded.
+    """
+    ffmpeg = find_tool('ffmpeg')
+    if not ffmpeg:
+        raise RuntimeError('FFmpeg is needed to make a GIF')
+
+    fps = max(1, int(getattr(settings, 'gif_fps', 15) or 15))
+    width = max(64, int(getattr(settings, 'gif_width', 480) or 480))
+    limit = max(0, int(getattr(settings, 'gif_max_seconds', 30) or 0))
+    target = os.path.splitext(source)[0] + '.gif'
+    palette = source + '.palette.png'
+    scale = f'fps={fps},scale={width}:-1:flags=lanczos'
+    duration = ['-t', str(limit)] if limit else []
+
+    def run(args):
+        result = subprocess.run([ffmpeg, '-y', '-v', 'error', '-nostdin', *args],
+                                capture_output=True, text=True, errors='replace',
+                                creationflags=CREATE_NO_WINDOW)
+        if result.returncode != 0:
+            raise RuntimeError((result.stderr or '').strip().splitlines()[-1:][0]
+                               if result.stderr else 'ffmpeg failed')
+
+    try:
+        run(['-i', source, *duration, '-vf', f'{scale},palettegen=stats_mode=diff', palette])
+        run(['-i', source, '-i', palette, *duration,
+             '-lavfi', f'{scale}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle',
+             '-loop', '0', target])
+    finally:
+        try:
+            os.remove(palette)
+        except OSError:
+            pass
+
+    if log_sink:
+        size = os.path.getsize(target) if os.path.exists(target) else 0
+        log_sink(f'GIF ready: {os.path.basename(target)} ({size / 1048576:.1f} MiB, '
+                 f'{fps} fps, {width}px wide)')
+    return target
 
 
 def _clean_error(exc: Exception) -> str:
@@ -687,6 +742,17 @@ class MediaJob(threading.Thread):
 
         filepath = (traverse_obj(result, ('requested_downloads', 0, 'filepath'))
                     or result.get('filepath') or '')
+
+        if self.media.get('quality') == 'gif' and filepath and os.path.exists(filepath):
+            self.check_interrupts()
+            self._emit(self.task_id, 'state', {'state': 'processing', 'note': 'Making the GIF'})
+            video = filepath
+            filepath = convert_to_gif(video, self.settings, self._log)
+            try:
+                os.remove(video)          # the source clip was only a means to an end
+            except OSError:
+                pass
+
         size = os.path.getsize(filepath) if filepath and os.path.exists(filepath) else 0
         self._emit(self.task_id, 'finished', {'filepath': filepath, 'size': size})
 

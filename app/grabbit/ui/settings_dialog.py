@@ -175,6 +175,30 @@ class SettingsDialog(QDialog):
         hint.setObjectName('Muted')
         form.addRow('', hint)
 
+        gif_row = QHBoxLayout()
+        self.gif_fps = QSpinBox()
+        self.gif_fps.setRange(5, 50)
+        self.gif_fps.setSuffix(' fps')
+        self.gif_fps.setValue(settings.gif_fps)
+        self.gif_width = QSpinBox()
+        self.gif_width.setRange(120, 1920)
+        self.gif_width.setSingleStep(40)
+        self.gif_width.setSuffix(' px wide')
+        self.gif_width.setValue(settings.gif_width)
+        self.gif_seconds = QSpinBox()
+        self.gif_seconds.setRange(0, 600)
+        self.gif_seconds.setSuffix(' s')
+        self.gif_seconds.setSpecialValueText('whole video')
+        self.gif_seconds.setValue(settings.gif_max_seconds)
+        for widget in (self.gif_fps, self.gif_width, self.gif_seconds):
+            gif_row.addWidget(widget)
+        gif_row.addStretch(1)
+        form.addRow('GIF settings', gif_row)
+        gif_hint = QLabel('GIFs get big fast — a minute at 480px and 15 fps is tens of megabytes.')
+        gif_hint.setObjectName('Muted')
+        gif_hint.setWordWrap(True)
+        form.addRow('', gif_hint)
+
         self.cookies_browser = QComboBox()
         for value, label in COOKIE_BROWSERS:
             self.cookies_browser.addItem(label, value)
@@ -317,6 +341,9 @@ class SettingsDialog(QDialog):
         s.download_subtitles = self.subtitles.isChecked()
         s.subtitle_langs = self.subtitle_langs.text().strip() or 'en.*'
         s.filename_template = self.filename_template.text().strip() or '%(title).150B [%(id)s].%(ext)s'
+        s.gif_fps = self.gif_fps.value()
+        s.gif_width = self.gif_width.value()
+        s.gif_max_seconds = self.gif_seconds.value()
         s.cookies_browser = self.cookies_browser.currentData()
         s.cookies_file = self.cookies_file.text().strip()
         s.media_via_aria2 = self.media_via_aria2.isChecked()
