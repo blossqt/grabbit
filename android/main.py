@@ -58,21 +58,30 @@ STATE_COLOURS = {
 class TaskRow(BoxLayout):
     """One download: name, progress, and what it is doing."""
 
-    def __init__(self, **kwargs):
+    def __init__(self, on_remove=None, **kwargs):
         super().__init__(orientation='vertical', size_hint_y=None, height=dp(86),
                          padding=dp(10), spacing=dp(4), **kwargs)
+        self.task_id = ''
+        heading = BoxLayout(size_hint_y=None, height=dp(28), spacing=dp(6))
         self.title = Label(text='', color=TEXT, halign='left', valign='middle',
-                           shorten=True, shorten_from='right', size_hint_y=None, height=dp(24))
+                           shorten=True, shorten_from='right')
         self.title.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
+        # A downloader you cannot stop is an annoying downloader.
+        remove = Button(text='×', size_hint_x=None, width=dp(36), font_size=dp(20),
+                        background_normal='', background_color=CARD, color=MUTED)
+        remove.bind(on_release=lambda *_: on_remove and on_remove(self.task_id))
+        heading.add_widget(self.title)
+        heading.add_widget(remove)
         self.bar = ProgressBar(max=1.0, value=0, size_hint_y=None, height=dp(8))
         self.status = Label(text='', color=MUTED, font_size=dp(12), halign='left',
                             valign='middle', size_hint_y=None, height=dp(20))
         self.status.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
-        self.add_widget(self.title)
+        self.add_widget(heading)
         self.add_widget(self.bar)
         self.add_widget(self.status)
 
     def show(self, task):
+        self.task_id = task.id
         self.title.text = task.name or task.source
         self.bar.value = task.progress
         bits = [task.status_text]
@@ -289,6 +298,37 @@ class GrabbitApp(App):
         self.input.text = ''
         self._queue_link(url)
 
+    def confirm_remove(self, task_id: str):
+        """Stop a download, and ask before throwing away what it has."""
+        task = self.engine.store.get(task_id)
+        if task is None:
+            return
+        body = BoxLayout(orientation='vertical', padding=dp(14), spacing=dp(12))
+        body.add_widget(Label(text=task.name or task.source, color=TEXT, shorten=True,
+                              shorten_from='right', text_size=(Window.width * 0.7, None),
+                              halign='left', valign='top'))
+        buttons = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(10))
+        popup = Popup(title='Remove this download', content=body,
+                      size_hint=(0.88, None), height=dp(240))
+
+        def finish(delete_files):
+            popup.dismiss()
+            self.engine.remove([task_id], delete_files=delete_files)
+            self._schedule_refresh()
+
+        for label, delete, colour in (('Keep the file', False, CARD),
+                                      ('Delete it too', True, (0.9, 0.28, 0.31, 1))):
+            button = Button(text=label, background_normal='', background_color=colour,
+                            color=TEXT, font_size=dp(14))
+            button.bind(on_release=lambda widget, d=delete: finish(d))
+            buttons.add_widget(button)
+        cancel = Button(text='Cancel', background_normal='', background_color=CARD,
+                        color=MUTED, font_size=dp(14))
+        cancel.bind(on_release=popup.dismiss)
+        buttons.add_widget(cancel)
+        body.add_widget(buttons)
+        popup.open()
+
     def refresh(self):
         tasks = list(self.engine.store)
         seen = set()
@@ -296,7 +336,7 @@ class GrabbitApp(App):
             seen.add(task.id)
             row = self._rows.get(task.id)
             if row is None:
-                row = TaskRow()
+                row = TaskRow(on_remove=self.confirm_remove)
                 self._rows[task.id] = row
                 self.list.add_widget(row)
             row.show(task)
