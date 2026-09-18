@@ -1,0 +1,152 @@
+# Grabbit
+
+A paste-a-link downloader for Windows. One window, one box: drop in a YouTube
+or TikTok link, an Instagram post, a magnet link or a plain file URL, and it
+downloads. Photo carousels open a picker so you choose which slides you want.
+
+The download engine is **aria2 1.37.0, compiled from source** (`aria2/`), driven
+over its JSON-RPC interface. Site support comes from **yt-dlp**, with FFmpeg for
+merging video and audio and Deno for YouTube's JavaScript challenges.
+
+## Getting it
+
+Download the zip from [Releases](../../releases), unpack it anywhere, and run
+`Grabbit.exe`. Windows x64 only.
+
+## Running it
+
+    dist\Grabbit\Grabbit.exe
+
+Everything it needs sits next to the exe in `tools\`; there is nothing to
+install. Move the whole `Grabbit` folder wherever you like.
+
+Settings, the download list and torrent metadata live in
+`%LOCALAPPDATA%\Grabbit`. Dropping an empty `portable.txt` next to the exe keeps
+that data in a `data\` folder beside it instead.
+
+## What it handles
+
+| You paste | What happens |
+|---|---|
+| YouTube, TikTok, Twitch, Vimeo… (the ~1,700 sites yt-dlp reads) | Preview card with quality and container pickers; video and audio are fetched separately and merged |
+| Instagram post or carousel | Grid of every slide — click to include or exclude, double-click for a full-size preview |
+| TikTok photo post | Same grid, plus the post's soundtrack as an optional item |
+| YouTube playlist / channel | Every entry as a tickable thumbnail |
+| Photo-first sites (X, Pinterest, Tumblr, imgur, DeviantArt, Bluesky, Wikimedia…) | Handed to gallery-dl when yt-dlp finds no video, and shown in the same picker |
+| Any other web page | Grabbit reads the page itself and lists the videos, images, audio and documents it links to |
+| `magnet:` link | Fetches the file list from the swarm, then asks which files to download |
+| `.torrent` file or URL | File picker, then downloads and seeds |
+| `.metalink` / `.meta4` | Every file, downloaded from all its mirrors at once and checked against its checksum |
+| Direct file link | Downloads it with up to 16 connections |
+| Anything else | Says so, and offers to save the page as a file |
+
+## Watching before you download
+
+Video cards have a **Watch** button, and any video in the list has **Watch** in
+its right-click menu. It opens the full video in your own player — paused on the
+first frame — so you can check it is the right thing before committing to a
+download. Finished files play from disk; anything else streams.
+
+Players cannot normally send the `Referer` and cookies these streams need, so
+Grabbit serves the video from `127.0.0.1` and adds the headers itself, passing
+range requests through so seeking still works. When a site only offers separate
+video and audio tracks (most of YouTube), FFmpeg joins them as they play.
+
+mpv, VLC, PotPlayer and MPC are started directly and told to start paused;
+anything else gets a one-line playlist opened with your default player.
+
+The transfer list has the usual qBittorrent furniture: status and type filters
+with counts, sortable columns, progress bars, speed and ETA, per-download
+details (files, peers, trackers, log), speed limits you can click in the status
+bar, a tray icon, drag-and-drop, and a prompt when you copy a link.
+
+## Rebuilding
+
+Needs Python 3.12 and about 3 GB of disk for the toolchain. From the project
+folder:
+
+    powershell -ExecutionPolicy Bypass -File build\bootstrap.ps1     # aria2 source + MSYS2 + venv + ffmpeg + deno + gallery-dl
+    set MSYSTEM=UCRT64 & set CHERE_INVOKING=1
+    %LOCALAPPDATA%\GrabbitBuild\msys64\usr\bin\bash.exe -l build\build_aria2.sh
+    powershell -ExecutionPolicy Bypass -File build\build_app.ps1     # -> dist\Grabbit\Grabbit.exe
+
+`bootstrap.ps1` puts the compiler, the Python venv and the bundled binaries in
+`%LOCALAPPDATA%\GrabbitBuild`, which you can delete once the build is done.
+
+Checks that exercise the engine against real downloads:
+
+    %LOCALAPPDATA%\GrabbitBuild\venv\Scripts\python.exe build\selftest.py --all
+
+## Layout
+
+    app/grabbit/        the application
+      engine.py         aria2 process + task list + media jobs
+      aria2rpc.py       JSON-RPC client and process supervision
+      media.py          yt-dlp probing and downloads (streams routed through aria2)
+      extractors.py     Instagram photo slides, TikTok photo posts
+      gallerydl.py      photo-first sites, via gallery-dl
+      pagescrape.py     reads media straight off an ordinary page
+      analyze.py        works out what a pasted link is
+      torrentmeta.py    .torrent / magnet parsing
+      metalink.py       .metalink / .meta4 (mirrors + checksums)
+      streamserver.py   serves a stream on localhost so any player can open it
+      player.py         finds and launches your video player
+      associations.py   magnet / .torrent registration (per-user, no admin)
+      ui/               Qt interface
+    aria2/              aria2's source, fetched by bootstrap.ps1 (not in git)
+    build/              build scripts, patches, self-test
+    vendor/aria2c.exe   the compiled engine
+    dist/Grabbit/       the finished app
+
+## Why downloads re-read the page
+
+The preview and the download deliberately do **not** share extracted URLs. Some
+sites (TikTok is one) tie their media URLs to the cookies of the session that
+handed them out, so a URL captured during the preview gives a 403 when a
+different session fetches it. Every download re-reads the page in the session
+that will fetch the bytes; the preview's copy is only a fallback for when the
+page cannot be read a second time. This is also why the local stream server
+carries the session's cookies.
+
+## Two fixes made along the way
+
+**aria2 ignored DHT bootstrap replies.** `build/patches/0001-dht-optional-token.patch`
+makes the `token` in a `get_peers` reply optional. The live bootstrap routers
+answer with a node list and no token, and aria2 was rejecting those replies
+wholesale, so a fresh routing table could never bootstrap and magnet links with
+no working tracker found no peers. With the patch, the same magnet went from 0
+peers to metadata in about a minute.
+
+**IPv6 that does not work.** If a machine has no route to the IPv6 internet,
+aria2 tries a tracker's IPv6 address, gets an instant "network unreachable" and
+gives up before its IPv4 fallback runs — so torrents sit at zero peers. Grabbit
+tests for real IPv6 connectivity at startup and disables it when there is none
+(Options → Advanced → IPv6 to override).
+
+## Worth knowing
+
+- **YouTube needs Deno**, which is bundled. Without a JavaScript runtime yt-dlp
+  can only reach some formats.
+- **No account needed** for public posts on YouTube, TikTok (video and photo),
+  Instagram and the rest. Cookies are only for genuinely private or login-walled
+  content: Options → Videos & photos, where Firefox is the reliable choice
+  because Chrome and Edge lock their cookie database while running.
+- **Reddit** blocks anonymous requests from some networks outright ("blocked by
+  network security"), which no downloader can work around; cookies or a
+  different connection are the only fix.
+- **Magnet links:** Options → Interface can make Grabbit the handler, so magnet
+  links anywhere in Windows open here. Grabbit is also added to the "Open with"
+  list for `.torrent` files without taking the association from another app.
+- **Torrent speeds** improve a lot if you forward the listening port (Options →
+  BitTorrent) — incoming peer connections are blocked by default on Windows.
+- **Sites change.** yt-dlp is the part that ages; update it with
+  `pip install -U yt-dlp` in the build venv and rebuild to refresh the bundle.
+
+## Licences
+
+Grabbit's own code is MIT (see `LICENSE`). The programs it ships in `tools/` —
+aria2, FFmpeg, gallery-dl, Deno — each keep their own licence and run as
+separate processes rather than being linked in. gallery-dl in particular is
+GPL-2.0-only and is called through its command line for exactly that reason.
+`THIRD-PARTY-NOTICES.md` lists every one of them, where its source is, and what
+the aria2 patch changes.

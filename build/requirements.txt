@@ -1,0 +1,6 @@
+PySide6-Essentials==6.11.2
+pyinstaller==6.22.3
+yt-dlp[default,curl-cffi]==2026.8.19
+# gallery-dl is not listed here on purpose: it runs as a separate program
+# (tools\gallery-dl.exe, fetched by bootstrap.ps1) rather than being imported,
+# which keeps its GPL-2.0-only licence at arm's length from this code.

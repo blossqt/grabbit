@@ -1,0 +1,36 @@
+Treat the token in a DHT get_peers reply as optional
+
+BEP 5 says a get_peers reply carries a token, and aria2 rejects the whole
+message when it is absent. The live bootstrap routers (dht.transmissionbt.com,
+dht.libtorrent.org) answer bootstrap queries with a node list and no token, so
+every reply is discarded as "Malformed DHT message. Missing token" and a fresh
+routing table can never bootstrap - which breaks peer discovery for magnet
+links that have no working tracker.
+
+Accept a missing token and pass an empty one instead. Nothing downstream needs
+it for the node list or the peer list: DHTPeerLookupTask::getPeers already
+skips announcing to nodes whose stored token is empty ("Token is empty for
+ID:..."), so a tokenless router is used for lookups and never announced to.
+
+Verified against dht.transmissionbt.com: before the patch, 5 replies rejected
+and 0 peers found; after it, the lookup proceeds and magnet metadata arrives.
+
+--- a/src/DHTMessageFactoryImpl.cc
++++ b/src/DHTMessageFactoryImpl.cc
+@@ -445,9 +445,14 @@ DHTMessageFactoryImpl::createGetPeersReplyMessage(
+       }
+     }
+   }
+-  const String* token = getString(rDict, DHTGetPeersReplyMessage::TOKEN);
++  // Bootstrap routers reply with nodes but no token. Dropping the message
++  // would leave an empty routing table unable to bootstrap, so the token is
++  // optional here; DHTPeerLookupTask skips announcing to tokenless nodes.
++  const String* token =
++      downcast<String>(rDict->get(DHTGetPeersReplyMessage::TOKEN));
+   return createGetPeersReplyMessage(remoteNode, std::move(nodes),
+-                                    std::move(peers), token->s(),
++                                    std::move(peers),
++                                    token ? token->s() : std::string(),
+                                     transactionID);
+ }
+

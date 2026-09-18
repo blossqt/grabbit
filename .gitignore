@@ -1,0 +1,16 @@
+# Build output
+dist/
+vendor/
+build/grabbit.ico
+*.zip
+
+# aria2's source is fetched by build/bootstrap.ps1 (see README)
+aria2/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Editors
+.vscode/
+.idea/
