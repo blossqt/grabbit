@@ -155,8 +155,11 @@ class GrabbitApp(App):
 
         root.add_widget(self._build_filters())
 
+        # One line, ellipsised: a shared TikTok title is long enough to wrap
+        # twice and push itself out of its own row.
         self.message = Label(text='Starting…', color=theme.DIM, font_size=dp(11),
-                             size_hint_y=None, height=dp(18), halign='left', valign='middle')
+                             size_hint_y=None, height=dp(18), halign='left',
+                             valign='middle', shorten=True, shorten_from='right')
         self.message.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
         root.add_widget(self.message)
 

@@ -57,15 +57,33 @@ print(sum(run) // len(run) if run else -1)"
     return $false
 }
 
+function Sizes {
+    (& $adb shell "ls -l $folder 2>/dev/null") -join "`n"
+}
+
 function Wait-ForFile($before, $pattern, $seconds) {
     # Poll rather than sleep for a fixed time: a download that also has to be
     # re-encoded (MP3, GIF) takes much longer than one that does not, and
     # guessing a single number either wastes minutes or fails a working app.
+    #
+    # And once the name appears, wait for its size to stop moving. ffmpeg
+    # creates the output file before it has written it, so a name on its own
+    # can mean "still being made" - which once left a scratch palette in the
+    # listing and looked like a leak.
     $deadline = (Get-Date).AddSeconds($seconds)
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 5
         $new = @(Saved) | Where-Object { $_ -notin $before -and $_ -match $pattern }
-        if ($new.Count -gt 0) { return $new }
+        if ($new.Count -gt 0) {
+            $last = ''
+            for ($still = 0; $still -lt 24; $still++) {
+                $now = Sizes
+                if ($now -eq $last) { return $new }
+                $last = $now
+                Start-Sleep -Seconds 5
+            }
+            return $new
+        }
     }
     return @()
 }
