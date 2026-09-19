@@ -112,7 +112,7 @@ desktop binaries — faster still, and enough to catch most mistakes:
 So does the phone interface. `preview_ui.py` runs it in a phone-shaped
 window against invented downloads, and `--check` taps through it and
 reports what happened — which is where interface mistakes are cheapest
-to find:
+to find. It needs Kivy in the build venv (`pip install "kivy[base]"`):
 
     %LOCALAPPDATA%\GrabbitBuild\venv\Scripts\python.exe build\android\preview_ui.py
     %LOCALAPPDATA%\GrabbitBuild\venv\Scripts\python.exe build\android\preview_ui.py --check
