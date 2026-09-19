@@ -388,10 +388,18 @@ def _check_magnet_engine(folder):
             app.processEvents()
             time.sleep(0.05)
         got = bool(ready)
+        # Whether the swarm answers is out of our hands; what happens next is
+        # not, and it is the part worth guarding. So a timeout here is a skip,
+        # and the saved-copy attempt below still runs - its metadata is put in
+        # place from the .torrent this test already fetched over HTTP.
         report(f'magnet: file list arrives {attempt}', got,
-               f'{meta.name} ({len(meta.files)} file(s))' if got else 'timed out')
+               f'{meta.name} ({len(meta.files)} file(s))' if got else 'timed out',
+               external=not got)
         if not got:
-            break
+            engine.remove([task.id], delete_files=False)
+            app.processEvents()
+            shutil.copyfile(path, torrents_dir() / f'{meta.info_hash.lower()}.torrent')
+            continue
         stray = [f for f in os.listdir(torrents_dir()) if not f.endswith(('.torrent', '.aria2'))]
         report(f'magnet: downloads nothing until you choose ({attempt})', not stray,
                f'stray files: {stray}' if stray else 'data folder holds only metadata')
