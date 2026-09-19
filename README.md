@@ -77,6 +77,11 @@ Checks that exercise the engine against real downloads:
 
     %LOCALAPPDATA%\GrabbitBuild\venv\Scripts\python.exe build\selftest.py --all
 
+And the window itself — filters, speed graph, details tabs — offscreen,
+with invented downloads, in a couple of seconds:
+
+    %LOCALAPPDATA%\GrabbitBuild\venv\Scripts\python.exe build\ui_check.py
+
 ## The Android build
 
 The APK carries the same engine — aria2, yt-dlp, FFmpeg — cross-compiled for
@@ -104,6 +109,14 @@ desktop binaries — faster still, and enough to catch most mistakes:
 
     %LOCALAPPDATA%\GrabbitBuild\venv\Scripts\python.exe build\android\test_engine.py
 
+So does the phone interface. `preview_ui.py` runs it in a phone-shaped
+window against invented downloads, and `--check` taps through it and
+reports what happened — which is where interface mistakes are cheapest
+to find:
+
+    %LOCALAPPDATA%\GrabbitBuild\venv\Scripts\python.exe build\android\preview_ui.py
+    %LOCALAPPDATA%\GrabbitBuild\venv\Scripts\python.exe build\android\preview_ui.py --check
+
 Two facts about phones shape the code. Android 10 and later refuse to execute
 anything from an app's data directory, so the binaries travel as `lib*.so` and
 run from the native library directory, which stays executable. And Android 11
@@ -126,10 +139,12 @@ reachable over USB, just not listed in the Downloads app.
       streamserver.py   serves a stream on localhost so any player can open it
       player.py         finds and launches your video player
       associations.py   magnet / .torrent registration (per-user, no admin)
-      ui/               Qt interface
+      speeds.py         the speed history both graphs draw
+      ui/               Qt interface (speedgraph.py is the graph pane)
     android/            the phone build
       main.py           Kivy interface
       grabbit_mobile/   the same engine without Qt, plus Android's storage rules
+        ui/             the desktop layout, folded into one column
     aria2/              aria2's source, fetched by bootstrap.ps1 (not in git)
     build/              build scripts, patches, self-test
       android/          cross-compilers for arm64 and the APK build
