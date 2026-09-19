@@ -198,3 +198,30 @@ def select_file_spec(indexes: list[int], total: int) -> str:
         start = prev = index
     parts.append(f'{start}-{prev}' if prev > start else str(start))
     return ','.join(parts)
+
+
+# The prefix each client stamps into its peer id. Both front-ends show this,
+# so it lives here rather than in either of them.
+_CLIENTS = {
+    'qB': 'qBittorrent', 'TR': 'Transmission', 'UT': 'µTorrent', 'UM': 'µTorrent Mac',
+    'UW': 'µTorrent Web', 'AZ': 'Azureus', 'DE': 'Deluge', 'LT': 'libtorrent',
+    'lt': 'libTorrent', 'BT': 'BitTorrent', 'BC': 'BitComet', 'KT': 'KTorrent',
+    'TX': 'Tixati', 'FD': 'Free Download Manager', 'WW': 'WebTorrent', 'A2': 'aria2',
+    'PI': 'PicoTorrent', 'XL': 'Xunlei', 'BI': 'BiglyBT', 'TS': 'Torrentstorm',
+}
+
+
+def peer_client(peer_id: str) -> str:
+    """Turn a peer id into the name of the program behind it."""
+    raw = unquote(peer_id or '')
+    if len(raw) >= 8 and raw[0] == '-':
+        name = _CLIENTS.get(raw[1:3])
+        version = raw[3:7].rstrip('-')
+        if name:
+            digits = [c for c in version if c.isdigit()]
+            pretty = '.'.join(digits[:3]) if len(digits) >= 3 else version
+            return f'{name} {pretty}'.strip()
+        return raw[1:7]
+    if raw.startswith('A2-'):
+        return 'aria2 ' + raw[3:].strip('-').replace('-', '.')
+    return raw[:8].strip() or 'unknown'

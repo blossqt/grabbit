@@ -1,0 +1,194 @@
+"""Run the phone interface on a desktop, with downloads that are not real.
+
+Building an APK to look at a layout takes minutes; this takes seconds. Kivy
+runs anywhere, and the interface only needs a task store to draw, so a handful
+of made-up tasks is enough to see every state at once.
+
+    %LOCALAPPDATA%\\GrabbitBuild\\venv\\Scripts\\python.exe build\\android\\preview_ui.py
+    ... --shot out.png     render once, save it, and quit
+"""
+
+import math
+import os
+import sys
+import tempfile
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.abspath(os.path.join(HERE, '..', '..'))
+sys.path.insert(0, os.path.join(ROOT, 'app'))
+sys.path.insert(0, os.path.join(ROOT, 'android'))
+
+os.environ.setdefault('ANDROID_PRIVATE', tempfile.mkdtemp(prefix='grabbit-preview-'))
+os.environ.setdefault('KIVY_NO_ARGS', '1')
+
+from kivy.config import Config                              # noqa: E402
+
+# A phone-shaped window, so the layout is judged at the size it will be used.
+Config.set('graphics', 'width', '412')
+Config.set('graphics', 'height', '892')
+Config.set('graphics', 'resizable', '1')
+
+from kivy.clock import Clock                                # noqa: E402
+from kivy.core.window import Window                         # noqa: E402
+
+from grabbit.tasks import (KIND_HTTP, KIND_IMAGE, KIND_MEDIA, KIND_TORRENT,  # noqa: E402
+                           State, Task, TaskStore)
+
+import main as phone                                        # noqa: E402
+
+
+class FakeEngine:
+    """Enough of MobileEngine for the interface to draw itself."""
+
+    process = None          # the real engine has an aria2 behind this
+
+    def __init__(self, settings, on_change=None, on_message=None):
+        self.settings = settings
+        self.store = TaskStore()
+        self.running = True
+        self.stats = {'download_speed': 4_100_000, 'upload_speed': 620_000}
+        self.on_change = on_change or (lambda: None)
+        self.on_message = on_message or (lambda level, text: None)
+        self._tick = 0
+        for task in _sample_tasks():
+            self.store.add(task)
+
+    def start(self):
+        return True
+
+    def add_link(self, url, quality=''):
+        self.on_message('info', f'Reading the link… ({url[:40]})')
+
+    def pause(self, ids):
+        for task_id in ids:
+            task = self.store.get(task_id)
+            if task:
+                task.state = State.PAUSED
+                task.down_speed = task.up_speed = 0
+
+    def resume(self, ids):
+        for task_id in ids:
+            task = self.store.get(task_id)
+            if task:
+                task.state = State.DOWNLOADING
+
+    def remove(self, ids, delete_files=False):
+        for task_id in ids:
+            self.store.remove(task_id)
+
+    def fetch_files(self, task, callback):
+        callback([{'path': f'/storage/emulated/0/Download/Grabbit/{task.name}',
+                   'length': str(task.total), 'completedLength': str(task.done),
+                   'selected': 'true'}])
+
+    def fetch_peers(self, task, callback):
+        callback([
+            {'ip': '81.2.69.144', 'port': '51413', 'peerId': '-qB5000-abcdefghijkl',
+             'downloadSpeed': '820000', 'uploadSpeed': '10240', 'bitfield': 'ffffff'},
+            {'ip': '203.0.113.7', 'port': '6881', 'peerId': '-TR4060-xyzxyzxyzxyz',
+             'downloadSpeed': '0', 'uploadSpeed': '240000', 'bitfield': '0fff00'},
+        ])
+
+    def fetch_status(self, task, keys, callback):
+        callback({'bittorrent': {'announceList': [['https://torrent.ubuntu.com/announce'],
+                                                  ['https://ipv6.torrent.ubuntu.com/announce']]}})
+
+    def shutdown(self):
+        self.running = False
+
+    # The preview moves the numbers around so the graph has something to draw.
+    def advance(self):
+        self._tick += 1
+        phase = self._tick / 6.0
+        for task in self.store:
+            if task.state in (State.DOWNLOADING, State.EXTRACTING):
+                task.down_speed = max(0, int(2_600_000 + 1_800_000 * math.sin(phase + hash(task.id) % 7)))
+                task.done = min(task.total, task.done + task.down_speed // 4)
+                task.eta = (task.total - task.done) / max(1, task.down_speed)
+            elif task.state == State.SEEDING:
+                task.up_speed = max(0, int(700_000 + 400_000 * math.sin(phase * 0.8)))
+        self.stats = {
+            'download_speed': sum(t.down_speed for t in self.store),
+            'upload_speed': sum(t.up_speed for t in self.store),
+        }
+
+
+def _sample_tasks():
+    now = time.time()
+    folder = '/storage/emulated/0/Download/Grabbit'
+    return [
+        Task(kind=KIND_MEDIA, source='https://www.youtube.com/watch?v=jNQXAC9IVRw',
+             name='Me at the zoo [jNQXAC9IVRw].mp4', save_dir=folder,
+             state=State.DOWNLOADING, total=44_800_000, done=19_300_000,
+             down_speed=3_400_000, connections=8, added_at=now - 90,
+             media={'quality': 'best'}, log=['Reading the page', 'Downloading 2 parts']),
+        Task(kind=KIND_TORRENT, source='magnet:?xt=urn:btih:9ecd4676fd0f',
+             name='ubuntu-24.04.3-desktop-amd64.iso', save_dir=folder,
+             state=State.SEEDING, total=5_170_000_000, done=5_170_000_000,
+             up_speed=910_000, seeds=5, connections=23, uploaded=3_100_000_000,
+             info_hash='9ecd4676fd0f0474151a4b74a5958f42639cebdf',
+             added_at=now - 4200, completed_at=now - 600),
+        Task(kind=KIND_MEDIA, source='https://www.tiktok.com/@jade.wood/video/7434103280294300960',
+             name='did you know there are two types of tiktok photo mode.mp4',
+             save_dir=folder, state=State.COMPLETED, total=2_742_793, done=2_742_793,
+             completed_at=now - 300, added_at=now - 360, media={'quality': 'best'}),
+        Task(kind=KIND_IMAGE, source='https://scontent.cdninstagram.com/v/NASA-01.jpg',
+             name='NASA - 01.jpg', save_dir=folder, state=State.COMPLETED,
+             total=294_861, done=294_861, added_at=now - 280, completed_at=now - 270),
+        Task(kind=KIND_MEDIA, source='https://www.youtube.com/watch?v=aqz-KE-bpKQ',
+             name='Big Buck Bunny.mp3', save_dir=folder, state=State.PAUSED,
+             total=9_400_000, done=2_100_000, added_at=now - 500,
+             media={'quality': 'audio_mp3'}),
+        Task(kind=KIND_HTTP, source='https://example.com/handbook.pdf',
+             name='handbook.pdf', save_dir=folder, state=State.ERROR,
+             total=0, done=0, error='403 Forbidden', added_at=now - 120),
+    ]
+
+
+def main():
+    phone.MobileEngine = FakeEngine
+    app = phone.GrabbitApp()
+
+    # No phone here, so skip the parts that talk to Android.
+    app._start_engine = lambda: app._schedule_message('info', 'Preview - nothing is real')
+    shot = None
+    if '--shot' in sys.argv:
+        shot = sys.argv[sys.argv.index('--shot') + 1]
+
+    def tick(_):
+        app.engine.advance()
+        app.refresh()
+
+    def ready(_):
+        app.show_graph(True)
+        for _ in range(40):
+            app.engine.advance()
+            app.graph.push(app.engine.stats['download_speed'], app.engine.stats['upload_speed'])
+            app.graph.push_tasks(app.engine.store)
+        app.select_task(list(app.engine.store)[0].id)
+        app.refresh()
+        Clock.schedule_interval(tick, 1.0)
+        if shot:
+            def sheet(_):
+                Window.screenshot(name=shot)
+                if '--details' in sys.argv:
+                    app.open_details(list(app.engine.store)[1].id)
+                    # Every tab, so a broken one shows up here rather than on
+                    # a phone.
+                    for name in ('Files', 'Peers', 'Trackers', 'Log', 'General'):
+                        app.details.show_tab(name)
+                    wanted = sys.argv[sys.argv.index('--tab') + 1] if '--tab' in sys.argv else 'General'
+                    app.details.show_tab(wanted)
+                    Clock.schedule_once(
+                        lambda _: (Window.screenshot(name=shot), app.stop()), 0.8)
+                else:
+                    app.stop()
+            Clock.schedule_once(sheet, 0.6)
+
+    Clock.schedule_once(ready, 0.4)
+    app.run()
+
+
+if __name__ == '__main__':
+    main()

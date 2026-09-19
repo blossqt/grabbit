@@ -20,6 +20,7 @@ from . import icons, theme
 from .add_dialog import AddDialog
 from .details import DetailsPanel
 from .settings_dialog import SettingsDialog
+from .speedgraph import SpeedGraph
 from .torrent_dialog import TorrentFilesDialog
 from .transfer_model import (COL_NAME, COL_PROGRESS, ProgressDelegate, TASK_ID_ROLE,
                              TransferFilter, TransferModel)
@@ -158,6 +159,13 @@ class MainWindow(QMainWindow):
         select_all.triggered.connect(lambda: self.view.selectAll())
         edit_menu.addAction(select_all)
 
+        view_menu = self.menuBar().addMenu('&View')
+        self.action_graph = QAction('Speed graph', self)
+        self.action_graph.setCheckable(True)
+        self.action_graph.setShortcut(QKeySequence('Ctrl+G'))
+        self.action_graph.toggled.connect(self.show_graph)
+        view_menu.addAction(self.action_graph)
+
         tools_menu = self.menuBar().addMenu('&Tools')
         tools_menu.addAction(self.action_settings)
         open_data = QAction('Open data folder', self)
@@ -178,6 +186,7 @@ class MainWindow(QMainWindow):
         self.sidebar.setFrameShape(QListWidget.NoFrame)
         self._fill_sidebar()
         self.sidebar.currentItemChanged.connect(self._on_filter_changed)
+        self.sidebar.itemClicked.connect(self._on_sidebar_clicked)
         self.splitter.addWidget(self.sidebar)
 
         right = QWidget()
@@ -233,13 +242,20 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.view, 1)
 
         self.details = DetailsPanel(self.engine, self)
-        self.details.setMaximumHeight(280)
+
+        # The graph is a pane of its own between the list and the details, so
+        # dragging either handle resizes it. It starts hidden; the sidebar and
+        # the View menu turn it on.
+        self.graph = SpeedGraph(store=self.engine.store)
+        self.graph.hide()
 
         self.vertical_splitter = QSplitter(Qt.Vertical)
         self.vertical_splitter.addWidget(right)
+        self.vertical_splitter.addWidget(self.graph)
         self.vertical_splitter.addWidget(self.details)
         self.vertical_splitter.setStretchFactor(0, 3)
-        self.vertical_splitter.setStretchFactor(1, 1)
+        self.vertical_splitter.setStretchFactor(1, 2)
+        self.vertical_splitter.setStretchFactor(2, 1)
         self.splitter.addWidget(self.vertical_splitter)
         self.splitter.setStretchFactor(1, 1)
         self.setCentralWidget(self.splitter)
@@ -268,6 +284,17 @@ class MainWindow(QMainWindow):
             item = QListWidgetItem(icons.icon(icon_name, icons.theme_color('dim'), 16), label)
             item.setData(Qt.UserRole, ('kind', key))
             self.sidebar.addItem(item)
+
+        header('VIEW')
+        # Not selectable: clicking it turns the graph on and off rather than
+        # changing what the list is filtered to.
+        self.graph_item = QListWidgetItem(
+            icons.icon('chart', icons.theme_color('dim'), 16), 'Speed graph')
+        self.graph_item.setData(Qt.UserRole, ('view', 'graph'))
+        self.graph_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
+        self.graph_item.setCheckState(Qt.Unchecked)
+        self.sidebar.addItem(self.graph_item)
+
         self.sidebar.setCurrentRow(1)
 
     def _build_status_bar(self):
@@ -319,6 +346,7 @@ class MainWindow(QMainWindow):
         self._update_actions()
 
     def _on_stats(self, stats):
+        self.graph.push(stats.get('download_speed') or 0, stats.get('upload_speed') or 0)
         down = human_speed(stats.get('download_speed')) or '0 B/s'
         up = human_speed(stats.get('upload_speed')) or '0 B/s'
         limit_down = f' / {self.settings.download_limit_kib} KiB/s' if self.settings.download_limit_kib else ''
@@ -522,6 +550,7 @@ class MainWindow(QMainWindow):
     def _on_selection_changed(self):
         ids = self._selected_ids()
         self.details.set_task(ids[0] if ids else '')
+        self.graph.select(ids[:1] or None)
         self._update_actions()
 
     def _on_double_click(self, index):
@@ -584,6 +613,34 @@ class MainWindow(QMainWindow):
             action.toggled.connect(lambda checked, c=column: header.setSectionHidden(c, not checked))
         menu.exec(header.mapToGlobal(position))
 
+    def _on_sidebar_clicked(self, item):
+        role = item.data(Qt.UserRole)
+        if role and role[0] == 'view':
+            self.show_graph(item.checkState() != Qt.Checked)
+
+    def show_graph(self, visible: bool):
+        """Turn the speed graph on or off, keeping the sidebar and menu honest."""
+        visible = bool(visible)
+        self.graph.setVisible(visible)
+        self.graph_item.setCheckState(Qt.Checked if visible else Qt.Unchecked)
+        if self.action_graph.isChecked() != visible:
+            self.action_graph.setChecked(visible)
+        self.settings.show_graph = visible
+
+        if visible:
+            sizes = self.vertical_splitter.sizes()
+            if sizes[1] < 80:
+                # First time, or after being hidden: about half the window, as
+                # a starting point. Once it has been dragged, that height is
+                # what comes back.
+                total = max(360, self.vertical_splitter.height())
+                details = min(sizes[2] or int(total * 0.22), int(total * 0.35))
+                graph = int(total * 0.45)
+                self.vertical_splitter.setSizes(
+                    [max(120, total - graph - details), graph, details])
+            self.graph.select(self._selected_ids()[:1] or None)
+            self.graph.push_tasks(self.engine.store)
+
     def _on_filter_changed(self, current, previous):
         if current is None:
             return
@@ -635,6 +692,8 @@ class MainWindow(QMainWindow):
                 count = sum(1 for t in self.engine.store if not (t.down_speed or t.up_speed))
             label = dict((k, l) for k, l, _ in STATUS_FILTERS)[key]
             item.setText(f'{label}  ({count})' if count else label)
+        if self.graph.isVisible():
+            self.graph.push_tasks(self.engine.store)
         if self.details.task_id:
             self.details.refresh()
 
@@ -737,6 +796,9 @@ class MainWindow(QMainWindow):
                     splitter.restoreState(QByteArray.fromBase64(value.encode('ascii')))
                 except Exception:
                     pass
+        # After the splitter, so a remembered height survives being shown.
+        if self.settings.show_graph:
+            self.show_graph(True)
 
     def _save_layout(self):
         def encode(data: QByteArray) -> str:

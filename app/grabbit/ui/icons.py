@@ -41,6 +41,7 @@ _SHAPES = {
     'queue': '<path d="M4 7h11M4 12h11M4 17h7"/><path d="M17.5 14.5 20 17l-2.5 2.5"/>',
     'grid': '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/>'
             '<rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
+    'chart': '<path d="M4 19h16"/><path d="M5 15.5 9.5 10l3.5 3.5L19 6"/><path d="M19 6h-3.5M19 6v3.5"/>',
     'info': '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8v.3"/>',
 }
 

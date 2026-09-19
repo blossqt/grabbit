@@ -107,6 +107,7 @@ class Settings:
     header_state: str = ''
     splitter_state: str = ''
     details_splitter_state: str = ''
+    show_graph: bool = False
 
     # Advanced
     aria2_extra_options: str = ''

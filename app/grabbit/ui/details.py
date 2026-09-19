@@ -1,39 +1,15 @@
 """Bottom panel: everything about the selected download."""
 
 import os
-import urllib.parse
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QFormLayout, QHBoxLayout, QLabel, QPlainTextEdit, QTabWidget,
                                QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from ..tasks import KIND_MEDIA, State
+from ..torrentmeta import peer_client
 from ..util import human_size, human_speed, human_time
 from . import thumbs
-
-_CLIENTS = {
-    'qB': 'qBittorrent', 'TR': 'Transmission', 'UT': 'µTorrent', 'UM': 'µTorrent Mac',
-    'UW': 'µTorrent Web', 'AZ': 'Azureus', 'DE': 'Deluge', 'LT': 'libtorrent',
-    'lt': 'libTorrent', 'BT': 'BitTorrent', 'BC': 'BitComet', 'KT': 'KTorrent',
-    'TX': 'Tixati', 'FD': 'Free Download Manager', 'WW': 'WebTorrent', 'A2': 'aria2',
-    'PI': 'PicoTorrent', 'XL': 'Xunlei', 'BI': 'BiglyBT', 'TS': 'Torrentstorm',
-}
-
-
-def peer_client(peer_id: str) -> str:
-    raw = urllib.parse.unquote(peer_id or '')
-    if len(raw) >= 8 and raw[0] == '-':
-        name = _CLIENTS.get(raw[1:3])
-        version = raw[3:7].rstrip('-')
-        if name:
-            digits = [c for c in version if c.isdigit()]
-            pretty = '.'.join(digits[:3]) if len(digits) >= 3 else version
-            return f'{name} {pretty}'.strip()
-        return raw[1:7]
-    if raw.startswith('A2-'):
-        return 'aria2 ' + raw[3:].strip('-').replace('-', '.')
-    return raw[:8].strip() or 'unknown'
-
 
 class DetailsPanel(QTabWidget):
     def __init__(self, engine, parent=None):

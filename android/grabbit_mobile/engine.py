@@ -630,6 +630,43 @@ class MobileEngine:
         self._pump_media()
         self.on_change()
 
+    # ------------------------------------------------- what the details ask
+    def _query(self, method: str, *args, default=None, callback=None):
+        """One aria2 call on a thread, with the answer handed back.
+
+        The details panel asks for file lists, peers and tracker lists while
+        the interface is drawing; none of that can happen on the thread that
+        draws.
+        """
+        def work():
+            try:
+                result = self.client.call(method, *args)
+            except (Aria2Error, AttributeError):
+                result = default
+            if callback:
+                callback(result if result is not None else default)
+
+        threading.Thread(target=work, name='grabbit-query', daemon=True).start()
+
+    def fetch_files(self, task: Task, callback):
+        """aria2's per-file list, for the Files tab."""
+        if not task.gid or not self.client:
+            callback([])
+            return
+        self._query('aria2.getFiles', task.gid, default=[], callback=callback)
+
+    def fetch_peers(self, task: Task, callback):
+        if not task.gid or not task.is_torrent or not self.client:
+            callback([])
+            return
+        self._query('aria2.getPeers', task.gid, default=[], callback=callback)
+
+    def fetch_status(self, task: Task, keys: list, callback):
+        if not task.gid or not self.client:
+            callback({})
+            return
+        self._query('aria2.tellStatus', task.gid, keys, default={}, callback=callback)
+
     def shutdown(self):
         self.running = False
         for job in list(self._media_jobs.values()):
