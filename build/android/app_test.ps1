@@ -11,11 +11,12 @@
     a link to a finished file.
 #>
 param(
-    [int]$Wait = 75,
+    [int]$Wait = 150,
     [switch]$KeepFiles
 )
 
 $adb = "$env:LOCALAPPDATA\GrabbitBuild\platform-tools-win\adb.exe"
+$python = "$env:LOCALAPPDATA\GrabbitBuild\venv\Scripts\python.exe"
 $package = 'com.grabbit.downloader'
 $activity = "$package/org.kivy.android.PythonActivity"
 $folder = '/storage/emulated/0/Download/Grabbit'
@@ -34,6 +35,39 @@ function Saved {
 
 function Share($url) {
     & $adb shell "am start -a android.intent.action.SEND -t text/plain --es android.intent.extra.TEXT '$url' -n $activity" | Out-Null
+}
+
+function Select-Format($x, $low, $high) {
+    # Tap the format chip and check it actually took. While yt-dlp is
+    # extracting, the interface thread can be starved for a few seconds and a
+    # tap arrives late - after the link has already been shared with the old
+    # format still selected, which used to look like a broken download.
+    $probe = Join-Path $env:TEMP 'grabbit-chip-probe.png'
+    for ($attempt = 1; $attempt -le 8; $attempt++) {
+        & $adb shell "input tap $x 326" | Out-Null
+        Start-Sleep -Seconds 6
+        & $adb shell "screencap -p /sdcard/chip-probe.png" | Out-Null
+        & $adb pull /sdcard/chip-probe.png $probe 2>&1 | Out-Null
+        $centre = & $python -c "from PIL import Image
+im = Image.open(r'$probe').convert('RGB')
+run = [x for x in range(im.size[0]) if im.getpixel((x, 300)) == (42, 44, 49)]
+print(sum(run) // len(run) if run else -1)"
+        if ([int]$centre -ge $low -and [int]$centre -le $high) { return $true }
+    }
+    return $false
+}
+
+function Wait-ForFile($before, $pattern, $seconds) {
+    # Poll rather than sleep for a fixed time: a download that also has to be
+    # re-encoded (MP3, GIF) takes much longer than one that does not, and
+    # guessing a single number either wastes minutes or fails a working app.
+    $deadline = (Get-Date).AddSeconds($seconds)
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds 5
+        $new = @(Saved) | Where-Object { $_ -notin $before -and $_ -match $pattern }
+        if ($new.Count -gt 0) { return $new }
+    }
+    return @()
 }
 
 "=== device ==="
@@ -63,8 +97,7 @@ foreach ($case in @(
     "`n=== $($case.Name) ==="
     $before = @(Saved)
     Share $case.Url
-    Start-Sleep -Seconds $Wait
-    $new = @(Saved) | Where-Object { $_ -notin $before -and $_ -match $case.Match }
+    $new = Wait-ForFile $before $case.Match $Wait
     Report $case.Name ($new.Count -gt 0) ($new -join ', ')
 }
 
@@ -72,17 +105,19 @@ foreach ($case in @(
 # The format buttons sit under the link box: Video, MP3, GIF.
 $width = [int]((& $adb shell "wm size") -replace '.*?(\d+)x\d+.*', '$1')
 foreach ($format in @(
-    @{ Name = 'MP3'; X = [int]($width * 0.5); Match = '\.mp3$' },
-    @{ Name = 'GIF'; X = [int]($width * 0.82); Match = '\.gif$' }
+    @{ Name = 'MP3'; X = [int]($width * 0.5); Low = $width * 0.35; High = $width * 0.65; Match = '\.mp3$' },
+    @{ Name = 'GIF'; X = [int]($width * 0.82); Low = $width * 0.68; High = $width * 0.99; Match = '\.gif$' }
 )) {
     $before = @(Saved)
     & $adb shell "am start -n $activity" | Out-Null
     Start-Sleep -Seconds 2
-    & $adb shell "input tap $($format.X) 240" | Out-Null
-    Start-Sleep -Seconds 2
+    if (-not (Select-Format $format.X $format.Low $format.High)) {
+        Report "$($format.Name) from the same link" $false 'the format chip never took the tap'
+        continue
+    }
     Share 'https://www.youtube.com/watch?v=jNQXAC9IVRw'
-    Start-Sleep -Seconds ($Wait + 45)
-    $new = @(Saved) | Where-Object { $_ -notin $before -and $_ -match $format.Match }
+    # These two download and then re-encode, so they get considerably longer.
+    $new = Wait-ForFile $before $format.Match ($Wait + 180)
     Report "$($format.Name) from the same link" ($new.Count -gt 0) ($new -join ', ')
 }
 

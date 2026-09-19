@@ -29,8 +29,10 @@ Config.set('graphics', 'width', '412')
 Config.set('graphics', 'height', '892')
 Config.set('graphics', 'resizable', '1')
 
+from kivy.base import EventLoop                             # noqa: E402
 from kivy.clock import Clock                                # noqa: E402
 from kivy.core.window import Window                         # noqa: E402
+from kivy.input.motionevent import MotionEvent              # noqa: E402
 
 from grabbit.tasks import (KIND_HTTP, KIND_IMAGE, KIND_MEDIA, KIND_TORRENT,  # noqa: E402
                            State, Task, TaskStore)
@@ -114,6 +116,134 @@ class FakeEngine:
         }
 
 
+class Tap(MotionEvent):
+    """A touch, made the way the mouse provider makes one.
+
+    is_touch and type_id are not decoration: without them the window's motion
+    filter drops the event and nothing in the interface ever sees it.
+    """
+
+    def depack(self, args):
+        self.is_touch = True
+        self.sx, self.sy = args[0], args[1]
+        self.profile = ['pos']
+        super().depack(args)
+
+
+def reveal(widget):
+    """Scroll a widget into view, if it lives in something that scrolls.
+
+    The filter strip is wider than the screen; a chip that is off to the right
+    cannot be tapped where it thinks it is, because something else is drawn
+    there.
+    """
+    from kivy.uix.scrollview import ScrollView
+    parent = widget.parent
+    while parent is not None and not isinstance(parent, ScrollView):
+        parent = parent.parent
+    if parent is None:
+        return
+    content = parent.children[0]
+    span = max(1.0, content.width - parent.width)
+    parent.scroll_x = min(1.0, max(0.0, (widget.center_x - parent.width / 2) / span))
+    settle()
+
+
+def settle(frames: int = 3):
+    """Let Kivy finish laying out before anything is measured or touched."""
+    for _ in range(frames):
+        EventLoop.idle()
+
+
+def tap(widget):
+    """Touch the middle of a widget, through Kivy's own event loop.
+
+    The position goes through to_window because a row inside the scrolling
+    list is positioned in the list's coordinates, not the window's.
+    """
+    settle()
+    x, y = widget.to_window(*widget.center)
+    touch = Tap('preview', 1, [x / Window.width, y / Window.height],
+                is_touch=True, type_id='touch')
+    EventLoop.post_dispatch_input('begin', touch)
+    EventLoop.post_dispatch_input('end', touch)
+    settle(1)
+
+
+def check(app):
+    """Tap through everything and report it, the way the other tests do."""
+    results = []
+
+    def report(name, ok, detail=''):
+        results.append((name, ok))
+        print(f'  [{"PASS" if ok else "FAIL"}] {name}' + (f' - {detail}' if detail else ''))
+
+    tap(app._format_chips['gif'])
+    report('the format chips choose a format', app.format == 'gif', repr(app.format))
+    tap(app._format_chips[''])
+
+    reveal(app._status_chips['completed'])
+    tap(app._status_chips['completed'])
+    completed = [t for t in app.engine.store if t.state == State.COMPLETED]
+    report('a status filter narrows the list', app.status_filter == 'completed'
+           and len(app._rows) == len(completed), f'{len(app._rows)} rows shown')
+    reveal(app._status_chips['all'])
+    tap(app._status_chips['all'])
+
+    reveal(app._kind_chips['torrent'])
+    tap(app._kind_chips['torrent'])
+    report('a type filter narrows the list', app.kind_filter == 'torrent'
+           and all(t.is_torrent for t in app.engine.store if t.id in app._rows),
+           f'{len(app._rows)} rows shown')
+    reveal(app._kind_chips['all'])
+    tap(app._kind_chips['all'])
+
+    was = app.graph_shown
+    tap(app.graph_chip)
+    report('the graph toggle works', app.graph_shown != was,
+           f'{"shown" if app.graph_shown else "hidden"}')
+    if not app.graph_shown:
+        tap(app.graph_chip)
+
+    first = next(iter(app.engine.store))
+    app.select_task('')          # start from nothing selected
+    row = app._rows[first.id]
+    tap(row.title)
+    chosen = app.selected_id == first.id and first.name in app.graph.caption.text
+    tap(row.title)               # and tapping it again goes back to the totals
+    report('tapping a name picks that download for the graph',
+           chosen and not app.selected_id, app.graph.caption.text[:40])
+
+    running = next((t for t in app.engine.store if t.state == State.DOWNLOADING), None)
+    if running is not None:
+        tap(app._rows[running.id].detail)
+        report('tapping the status line pauses it',
+               app.engine.store.get(running.id).state == State.PAUSED)
+        tap(app._rows[running.id].detail)
+        report('and tapping it again starts it',
+               app.engine.store.get(running.id).state != State.PAUSED)
+
+    app.open_details(first.id)
+    opened = app.details.title.text == (first.name or first.source)
+    report('the details sheet opens on the right download', opened,
+           app.details.title.text[:40])
+    for name in ('Files', 'Peers', 'Trackers', 'Log', 'General'):
+        tap(app.details.tab_chips[name])
+        if app.details.tab != name:
+            report(f'the {name} tab', False)
+            break
+    else:
+        report('every details tab opens', True, 'General, Files, Peers, Trackers, Log')
+    app.details.dismiss()
+
+    failures = [name for name, ok in results if not ok]
+    print()
+    print(f'{len(results) - len(failures)}/{len(results)} checks passed')
+    for name in failures:
+        print(f'  failed: {name}')
+    return 1 if failures else 0
+
+
 def _sample_tasks():
     now = time.time()
     folder = '/storage/emulated/0/Download/Grabbit'
@@ -168,6 +298,10 @@ def main():
             app.graph.push_tasks(app.engine.store)
         app.select_task(list(app.engine.store)[0].id)
         app.refresh()
+        if '--check' in sys.argv:
+            code = check(app)
+            app.stop()
+            sys.exit(code)
         Clock.schedule_interval(tick, 1.0)
         if shot:
             def sheet(_):

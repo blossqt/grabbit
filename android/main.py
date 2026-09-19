@@ -80,7 +80,8 @@ class DragHandle(Button):
     """The splitter handle from the desktop, as something to drag on glass."""
 
     def __init__(self, on_drag=None, **kwargs):
-        super().__init__(text='———', size_hint_y=None, height=dp(18), font_size=dp(11),
+        # Tall enough to find with a thumb.
+        super().__init__(text='———', size_hint_y=None, height=dp(24), font_size=dp(12),
                          color=theme.DIM, background_normal='', background_down='',
                          background_color=theme.TRANSPARENT, **kwargs)
         self._on_drag = on_drag
@@ -113,6 +114,12 @@ class GrabbitApp(App):
     title = 'Grabbit'
 
     def build(self):
+        # Extraction is pure Python and CPU-bound, and it runs on a worker
+        # thread while the interface draws on this one. With the default switch
+        # interval the worker keeps the interpreter long enough for taps to
+        # arrive seconds late; asking for finer slicing costs a little
+        # throughput and keeps the interface answering.
+        sys.setswitchinterval(0.002)
         theme.use_symbol_font()
         Window.clearcolor = theme.WINDOW
         self.settings = Settings.load()
@@ -136,11 +143,15 @@ class GrabbitApp(App):
         self.graph = SpeedGraph(store=self.engine.store, size_hint_y=None,
                                 height=dp(200))
         self.graph_handle = DragHandle(on_drag=self._resize_graph)
-        self.graph_pane = BoxLayout(orientation='vertical', size_hint_y=None,
-                                    height=0, spacing=dp(2), opacity=0)
+        self.graph_pane = BoxLayout(orientation='vertical', spacing=dp(2))
         self.graph_pane.add_widget(self.graph)
         self.graph_pane.add_widget(self.graph_handle)
-        root.add_widget(self.graph_pane)
+        # The pane lives in a slot that is emptied when the graph is off.
+        # Leaving it in place at zero height does not work: its children keep
+        # their own heights, so they stay laid out over whatever is above
+        # them, invisible and still taking every touch meant for the chips.
+        self.graph_slot = BoxLayout(size_hint_y=None, height=0)
+        root.add_widget(self.graph_slot)
 
         root.add_widget(self._build_filters())
 
@@ -371,6 +382,8 @@ class GrabbitApp(App):
         self.format = value
         for option, chip in self._format_chips.items():
             chip.set_selected(option == value)
+        chosen = dict((v, k) for k, v in FORMATS).get(value, 'Video')
+        self._schedule_message('info', f'Next download: {chosen}')
 
     def _choose_status(self, key: str):
         self.status_filter = key
@@ -390,9 +403,13 @@ class GrabbitApp(App):
         self.graph_chip.set_selected(self.graph_shown)
         height = getattr(self, '_graph_height', 0) or int(Window.height * 0.42)
         self._graph_height = height
-        self.graph_pane.height = height + dp(20) if self.graph_shown else 0
-        self.graph_pane.opacity = 1 if self.graph_shown else 0
-        self.graph.height = height
+        self.graph_slot.clear_widgets()
+        if self.graph_shown:
+            self.graph_slot.add_widget(self.graph_pane)
+            self.graph_slot.height = height + dp(26)
+            self.graph.height = height
+        else:
+            self.graph_slot.height = 0
         self.settings.show_graph = self.graph_shown
         if self.graph_shown:
             self.graph.refresh()
@@ -404,7 +421,7 @@ class GrabbitApp(App):
         smallest, largest = dp(120), Window.height * 0.7
         self._graph_height = max(smallest, min(largest, self._graph_height + delta))
         self.graph.height = self._graph_height
-        self.graph_pane.height = self._graph_height + dp(20)
+        self.graph_slot.height = self._graph_height + dp(26)
 
     def select_task(self, task_id: str):
         self.selected_id = '' if task_id == self.selected_id else task_id
