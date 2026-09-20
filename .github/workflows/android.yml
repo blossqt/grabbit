@@ -22,6 +22,13 @@ on:
 permissions:
   contents: read
 
+env:
+  # Written twice each - once to restore, once to save - so they live here
+  # rather than being repeated four lines apart and drifting.
+  TOOLCHAIN_KEY: android-toolchain-v1
+  NATIVES_KEY: android-natives-v1
+  P4A_KEY: android-p4a-v1
+
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -30,9 +37,9 @@ jobs:
     # The runner ships its own Android SDK under /usr/local/lib/android and
     # points these at it. We delete that SDK below to make room, and the build
     # scripts honour whatever ANDROID_HOME says - so say our own directory,
-    # which is also what the caches above and below are keyed to. The NDK
-    # variables are emptied rather than set: every script falls back to finding
-    # the NDK itself, and an inherited path to a deleted one is worse than none.
+    # which is also what the caches are keyed to. The NDK variables are
+    # emptied rather than set: every script falls back to finding the NDK
+    # itself, and an inherited path to a deleted one is worse than none.
     env:
       ANDROID_HOME: /home/runner/android
       ANDROID_SDK_ROOT: /home/runner/android
@@ -62,18 +69,26 @@ jobs:
           python-version: '3.12'
 
       - name: Install what the cross-compiles need
+        # autopoint and gettext are for aria2's autoreconf, which will not
+        # run without them and says so only once it is well underway.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             autoconf automake libtool pkg-config cmake ninja-build ccache \
+            gettext autopoint texinfo \
             build-essential patch unzip zip curl git \
             libffi-dev libssl-dev zlib1g-dev libbz2-dev liblzma-dev libsqlite3-dev
 
+      # Three caches, each restored here and written back further down as
+      # soon as the thing it holds is built. Writing them back at the end
+      # instead - which is what a plain cache step does - would mean a
+      # failure in the last half hour threw away the first two hours too.
+
       # The Android SDK and NDK: ~2.5 GB, and unchanged between runs unless
       # the fetch script changes.
-      - name: Cache the Android toolchain
+      - name: Restore the Android toolchain
         id: toolchain
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/android/ndk
@@ -82,25 +97,28 @@ jobs:
             ~/android/build-tools
             ~/android/cmdline-tools
             ~/android/platform-tools
-          key: android-toolchain-${{ hashFiles('build/android/fetch_sdk.sh', 'build/android/build_apk.sh') }}
+          key: ${{ env.TOOLCHAIN_KEY }}-${{ hashFiles('build/android/fetch_sdk.sh', 'build/android/build_apk.sh') }}
+          restore-keys: ${{ env.TOOLCHAIN_KEY }}-
 
-      # The four binaries the APK carries. Compiling them takes most of the
-      # run, and only these scripts and the aria2 patch can change them.
-      - name: Cache the compiled tools
+      # The four binaries the APK carries. Compiling them takes a good part
+      # of the run, and only these scripts and the aria2 patch change them.
+      # No restore-keys: a near-miss would leave a sysroot built by different
+      # scripts, and these are cheap enough to build again from nothing.
+      - name: Restore the compiled tools
         id: natives
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             vendor/android
             ~/android/arm64-sysroot
-          key: android-natives-${{ hashFiles('build/android/build_aria2.sh', 'build/android/build_tools.sh', 'build/patches/*.patch') }}
+          key: ${{ env.NATIVES_KEY }}-${{ hashFiles('build/android/build_aria2.sh', 'build/android/build_tools.sh', 'build/patches/*.patch') }}
 
       # CPython, SDL and Kivy are compiled from source the first time and
       # take most of an hour between them. Nothing in the app changes them,
-      # so keep the tree p4a builds them in. It is only written back when the
-      # run succeeds, so a failed build cannot poison it.
-      - name: Cache python-for-android's build tree
-        uses: actions/cache@v4
+      # so keep the tree p4a builds them in.
+      - name: Restore python-for-android's build tree
+        id: p4a
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/android/p4a-venv
@@ -108,10 +126,25 @@ jobs:
             ~/android/p4a-build/build/other_builds
             ~/android/p4a-build/build/bootstrap_builds
             ~/android/p4a-build/dists
-          key: android-p4a-${{ hashFiles('build/android/setup_p4a.sh', 'build/android/build_apk.sh', 'build/android/recipes/**') }}
+          key: ${{ env.P4A_KEY }}-${{ hashFiles('build/android/setup_p4a.sh', 'build/android/build_apk.sh', 'build/android/recipes/**') }}
+          restore-keys: ${{ env.P4A_KEY }}-
 
       - name: Fetch the SDK and NDK
+        id: sdk
         run: bash build/android/fetch_sdk.sh
+
+      - name: Keep the Android toolchain
+        if: always() && steps.sdk.outcome == 'success' && steps.toolchain.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/android/ndk
+            ~/android/android-ndk-*
+            ~/android/platforms
+            ~/android/build-tools
+            ~/android/cmdline-tools
+            ~/android/platform-tools
+          key: ${{ env.TOOLCHAIN_KEY }}-${{ hashFiles('build/android/fetch_sdk.sh', 'build/android/build_apk.sh') }}
 
       - name: Cross-compile aria2
         if: steps.natives.outputs.cache-hit != 'true' || inputs.rebuild_natives
@@ -122,6 +155,7 @@ jobs:
         run: bash build/android/build_tools.sh
 
       - name: Check the tools came out
+        id: toolcheck
         run: |
           ls -l vendor/android
           for tool in aria2c ffmpeg ffprobe qjs; do
@@ -130,11 +164,39 @@ jobs:
               || { echo "$tool is not an arm64 binary"; exit 1; }
           done
 
+      # Only once the four binaries have been looked at, so a half-finished
+      # sysroot is never written back under a key that claims to be whole.
+      - name: Keep the compiled tools
+        if: always() && steps.toolcheck.outcome == 'success' && steps.natives.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            vendor/android
+            ~/android/arm64-sysroot
+          key: ${{ env.NATIVES_KEY }}-${{ hashFiles('build/android/build_aria2.sh', 'build/android/build_tools.sh', 'build/patches/*.patch') }}
+
       - name: Set up python-for-android
+        id: p4asetup
         run: bash build/android/setup_p4a.sh
 
       - name: Build the APK
+        id: build
         run: bash build/android/build_apk.sh
+
+      # Written back even when the build failed, because what it holds is
+      # CPython, SDL and Kivy - none of which this app can break, and all of
+      # which p4a rebuilds by itself if a recipe did not finish.
+      - name: Keep python-for-android's build tree
+        if: always() && steps.p4asetup.outcome == 'success' && steps.p4a.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/android/p4a-venv
+            ~/android/p4a-build/packages
+            ~/android/p4a-build/build/other_builds
+            ~/android/p4a-build/build/bootstrap_builds
+            ~/android/p4a-build/dists
+          key: ${{ env.P4A_KEY }}-${{ hashFiles('build/android/setup_p4a.sh', 'build/android/build_apk.sh', 'build/android/recipes/**') }}
 
       - name: Name it after the commit
         id: apk
