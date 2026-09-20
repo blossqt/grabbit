@@ -108,21 +108,31 @@ PY
 find "$APPDIR" -name '__pycache__' -type d -prune -exec rm -rf {} +
 
 # ------------------------------------- hand the binaries to p4a as libs
-# Two places, and both are needed. p4a gathers libraries from its collection
-# when it assembles a distribution - but it only assembles one once, and every
-# later build reuses what is already in the distribution. Copying into just the
-# collection means a rebuilt binary silently never reaches the APK.
+# Two places, for the two reasons given at each of them below.
 say 'placing native tools where p4a will package them'
-for LIBS in "$STORAGE/build/libs_collections/$DIST/$ARCH" "$STORAGE/dists/$DIST/libs/$ARCH"; do
-  [ -d "$(dirname "$LIBS")" ] || continue
-  mkdir -p "$LIBS"
-  cp "$VENDOR/aria2c"  "$LIBS/libaria2c.so"
-  cp "$VENDOR/ffmpeg"  "$LIBS/libffmpeg.so"
-  cp "$VENDOR/ffprobe" "$LIBS/libffprobe.so"
-  cp "$VENDOR/qjs"     "$LIBS/libquickjs.so"
-  chmod 755 "$LIBS"/lib*.so
-  echo "   $LIBS"
-done
+place_tools() {   # place_tools <directory>
+  mkdir -p "$1"
+  cp "$VENDOR/aria2c"  "$1/libaria2c.so"
+  cp "$VENDOR/ffmpeg"  "$1/libffmpeg.so"
+  cp "$VENDOR/ffprobe" "$1/libffprobe.so"
+  cp "$VENDOR/qjs"     "$1/libquickjs.so"
+  chmod 755 "$1"/lib*.so
+  echo "   $1"
+}
+
+# The collection is where p4a gathers libraries as it assembles a
+# distribution, so it has to exist before the build - including on a machine
+# that has never built this app, where nothing has created it yet.
+place_tools "$STORAGE/build/libs_collections/$DIST/$ARCH"
+
+# And the distribution's own libs directory, when there is one. p4a assembles
+# a distribution once and every later build repackages what is already in it,
+# so a rebuilt binary copied only into the collection would never reach the
+# APK. There is no distribution to write to on a first build; the line above
+# covers that one.
+if [ -d "$STORAGE/dists/$DIST" ]; then
+  place_tools "$STORAGE/dists/$DIST/libs/$ARCH"
+fi
 
 # ------------------------------------------------------------- build
 # p4a installs the pure-Python requirements through a throwaway venv, but keeps
@@ -168,3 +178,14 @@ p4a apk \
 
 say 'result'
 ls -lh "$OUTDIR"/*.apk
+
+# Everything above is in aid of getting four files into one directory inside
+# the APK, and when that quietly does not happen the app still installs and
+# still starts - it just cannot download anything. Look inside and say so now.
+APK="$(ls -t "$OUTDIR"/*.apk | head -1)"
+say "checking $(basename "$APK") carries the engine"
+for lib in libaria2c.so libffmpeg.so libffprobe.so libquickjs.so; do
+  unzip -l "$APK" | grep -q "lib/$ARCH/$lib" \
+    || { echo "error: $lib is missing from the APK" >&2; exit 1; }
+  echo "   $lib"
+done
