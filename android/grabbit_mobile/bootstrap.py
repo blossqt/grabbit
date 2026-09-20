@@ -172,3 +172,34 @@ def open_all_files_settings() -> bool:
     except Exception:
         log.exception('could not open the storage settings screen')
         return False
+
+
+def safe_insets() -> tuple:
+    """How far the system's own furniture reaches in, in pixels.
+
+    The app draws edge to edge, which on this phone means the title sits under
+    the camera cutout and the footer under the gesture bar. Android will say
+    where those are; asking is better than picking a number that happens to
+    suit one handset.
+
+    Returns (top, bottom), both zero anywhere that cannot answer.
+    """
+    try:
+        from jnius import autoclass
+        activity = autoclass('org.kivy.android.PythonActivity').mActivity
+        insets = activity.getWindow().getDecorView().getRootWindowInsets()
+        if insets is None:
+            return 0, 0
+        top = bottom = 0
+        cutout = insets.getDisplayCutout()
+        if cutout is not None:
+            top, bottom = cutout.getSafeInsetTop(), cutout.getSafeInsetBottom()
+        try:
+            types = autoclass('android.view.WindowInsets$Type')
+            bars = insets.getInsets(types.statusBars() | types.navigationBars())
+            top, bottom = max(top, bars.top), max(bottom, bars.bottom)
+        except Exception:
+            pass          # older Android: the cutout is the best we have
+        return int(top), int(bottom)
+    except Exception:
+        return 0, 0

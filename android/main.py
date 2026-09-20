@@ -136,6 +136,7 @@ class GrabbitApp(App):
         self.format = ''
 
         root = BoxLayout(orientation='vertical', padding=dp(8), spacing=dp(6))
+        self.root_box = root
         root.add_widget(self._build_top_bar())
         root.add_widget(self._build_add_row())
         root.add_widget(self._build_formats())
@@ -176,6 +177,10 @@ class GrabbitApp(App):
         self.details = DetailsSheet(self.engine)
         self.show_graph(bool(getattr(self.settings, 'show_graph', False)))
 
+        # The window is not attached yet, so Android cannot be asked about its
+        # cutout until a moment later.
+        Clock.schedule_once(lambda *_: self._apply_insets(), 0.3)
+        Clock.schedule_once(lambda *_: self._apply_insets(), 1.5)
         Clock.schedule_once(lambda *_: self._start_engine(), 0.4)
         Clock.schedule_interval(lambda *_: self.refresh(), 1.0)
         return root
@@ -246,6 +251,16 @@ class GrabbitApp(App):
 
         strip.add_widget(row)
         return strip
+
+    def _apply_insets(self):
+        """Keep the interface clear of the camera cutout and the gesture bar.
+
+        The app draws edge to edge, so without this the title sits under the
+        punch-hole and the footer under the bar at the bottom.
+        """
+        from grabbit_mobile.bootstrap import safe_insets
+        top, bottom = safe_insets()
+        self.root_box.padding = [dp(8), dp(8) + top, dp(8), dp(8) + bottom]
 
     # ------------------------------------------------------------- plumbing
     def _start_engine(self):
