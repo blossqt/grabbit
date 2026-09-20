@@ -31,5 +31,19 @@ class GrabbitKivyRecipe(type(_upstream.recipe)):
     python_depends = [name for name in type(_upstream.recipe).python_depends
                       if name != 'requests']
 
+    def get_recipe_dir(self):
+        """Where the inherited patches actually live.
+
+        p4a looks for a recipe's patch files beside the recipe, and once a
+        local recipe exists that means beside *this* file - where Kivy's own
+        patches are not. Point it back at the upstream directory, so the list
+        of patches and the files it names stay together whatever p4a ships.
+
+        A machine that had already built Kivy from the upstream recipe never
+        noticed, because p4a does not patch a build directory twice. A clean
+        one stops on the first patch.
+        """
+        return os.path.dirname(_UPSTREAM)
+
 
 recipe = GrabbitKivyRecipe()
