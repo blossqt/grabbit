@@ -37,20 +37,47 @@ function Share($url) {
     & $adb shell "am start -a android.intent.action.SEND -t text/plain --es android.intent.extra.TEXT '$url' -n $activity" | Out-Null
 }
 
+function Get-ChipRow {
+    # Which screen row the format chips are on. This used to be a number, and
+    # the number was right until the interface started padding itself down by
+    # however far the camera cutout reaches - which differs by handset. So
+    # look: the chips are the topmost band of the selected-chip colour, with
+    # the filter chips making a second band below them.
+    $probe = Join-Path $env:TEMP 'grabbit-chip-probe.png'
+    & $adb shell "screencap -p /sdcard/chip-probe.png" | Out-Null
+    & $adb pull /sdcard/chip-probe.png $probe 2>&1 | Out-Null
+    $row = & $python -c "from PIL import Image
+im = Image.open(r'$probe').convert('RGB')
+w, h = im.size
+start = None
+for y in range(h):
+    wide = sum(1 for x in range(0, w, 2) if im.getpixel((x, y)) == (42, 44, 49)) > 20
+    if wide and start is None:
+        start = y
+    elif not wide and start is not None:
+        print((start + y - 1) // 2)
+        break
+else:
+    print(-1)"
+    return [int]$row
+}
+
 function Select-Format($x, $low, $high) {
     # Tap the format chip and check it actually took. While yt-dlp is
     # extracting, the interface thread can be starved for a few seconds and a
     # tap arrives late - after the link has already been shared with the old
     # format still selected, which used to look like a broken download.
     $probe = Join-Path $env:TEMP 'grabbit-chip-probe.png'
+    $row = Get-ChipRow
+    if ($row -lt 0) { return $false }
     for ($attempt = 1; $attempt -le 8; $attempt++) {
-        & $adb shell "input tap $x 326" | Out-Null
+        & $adb shell "input tap $x $row" | Out-Null
         Start-Sleep -Seconds 6
         & $adb shell "screencap -p /sdcard/chip-probe.png" | Out-Null
         & $adb pull /sdcard/chip-probe.png $probe 2>&1 | Out-Null
         $centre = & $python -c "from PIL import Image
 im = Image.open(r'$probe').convert('RGB')
-run = [x for x in range(im.size[0]) if im.getpixel((x, 300)) == (42, 44, 49)]
+run = [x for x in range(im.size[0]) if im.getpixel((x, $row)) == (42, 44, 49)]
 print(sum(run) // len(run) if run else -1)"
         if ([int]$centre -ge $low -and [int]$centre -le $high) { return $true }
     }
