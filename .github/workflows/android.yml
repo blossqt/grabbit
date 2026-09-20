@@ -27,6 +27,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 240
 
+    # The runner ships its own Android SDK under /usr/local/lib/android and
+    # points these at it. We delete that SDK below to make room, and the build
+    # scripts honour whatever ANDROID_HOME says - so say our own directory,
+    # which is also what the caches above and below are keyed to. The NDK
+    # variables are emptied rather than set: every script falls back to finding
+    # the NDK itself, and an inherited path to a deleted one is worse than none.
+    env:
+      ANDROID_HOME: /home/runner/android
+      ANDROID_SDK_ROOT: /home/runner/android
+      ANDROID_NDK_HOME: ''
+      ANDROID_NDK_ROOT: ''
+      ANDROID_NDK: ''
+      ANDROID_NDK_LATEST_HOME: ''
+
     steps:
       - uses: actions/checkout@v4
 
@@ -38,7 +52,7 @@ jobs:
                       /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
           df -h /
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'          # what Gradle 8.14 and AGP 8.11 expect
