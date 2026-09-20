@@ -133,7 +133,11 @@ fi
 # ----------------------------------------------------------------- aria2
 say 'aria2'
 SRC="$ROOT/aria2"
-[ -f "$SRC/configure.ac" ] || { echo "error: aria2 source missing - run build/bootstrap.ps1 first" >&2; exit 1; }
+# Not in git. On Windows bootstrap.ps1 has already put it there; anywhere else
+# - a Linux machine, a CI runner - fetch it now rather than sending the reader
+# to a PowerShell script they cannot run.
+[ -f "$SRC/configure.ac" ] || bash "$HERE/fetch_aria2.sh"
+[ -f "$SRC/configure.ac" ] || { echo 'error: aria2 source missing' >&2; exit 1; }
 
 cd "$SRC"
 for patch_file in "$ROOT"/build/patches/*.patch; do

@@ -94,6 +94,11 @@ has no Android target. Building it needs WSL (Ubuntu), a JDK, and roughly 15 GB:
     bash build/android/setup_p4a.sh        # python-for-android
     bash build/android/build_apk.sh        # -> dist/android/Grabbit-*.apk
 
+No Linux to hand? **Actions → Android APK → Run workflow** runs those same
+five scripts on a GitHub runner and leaves the APK as a build artifact.
+The compiled binaries are cached between runs, so only the first one takes
+the full hour; tick *rebuild_natives* to compile them again anyway.
+
 Then from Windows, with the phone plugged in and USB debugging on:
 
     powershell -File build\android\install_apk.ps1

@@ -37,10 +37,13 @@ get() {      # get <file>
   fi
 }
 
-say "downloading $NDK_ZIP, $TOOLS_ZIP and platform-tools"
-get "$NDK_ZIP"
-get "$TOOLS_ZIP"
-get platform-tools-latest-linux.zip
+# Only what is not already unpacked. The NDK zip alone is well over a
+# gigabyte, and a CI runner that restored the unpacked one from a cache should
+# not spend the run fetching it again.
+say 'downloading what is missing'
+[ -d "$ROOT/${NDK_ZIP%-linux.zip}" ] || get "$NDK_ZIP"
+[ -d "$ROOT/cmdline-tools/latest" ]  || get "$TOOLS_ZIP"
+[ -d "$ROOT/platform-tools" ]        || get platform-tools-latest-linux.zip
 
 say 'unpacking'
 cd "$ROOT"

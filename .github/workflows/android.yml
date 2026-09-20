@@ -1,0 +1,143 @@
+name: Android APK
+
+# Builds the phone app on a Linux runner, so no machine here needs a
+# hypervisor switched on to produce one. The steps are the same scripts a
+# person would run locally, in the same order.
+
+on:
+  workflow_dispatch:
+    inputs:
+      rebuild_natives:
+        description: 'Recompile aria2, FFmpeg, QuickJS and dav1d instead of reusing the cache'
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - 'app/grabbit/**'
+      - 'build/android/**'
+      - '.github/workflows/android.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Make room on the runner
+        # The image ships SDKs we do not use, and the NDK plus p4a's build
+        # tree need roughly 15 GB between them.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'          # what Gradle 8.14 and AGP 8.11 expect
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install what the cross-compiles need
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            autoconf automake libtool pkg-config cmake ninja-build ccache \
+            build-essential patch unzip zip curl git \
+            libffi-dev libssl-dev zlib1g-dev libbz2-dev liblzma-dev libsqlite3-dev
+
+      # The Android SDK and NDK: ~2.5 GB, and unchanged between runs unless
+      # the fetch script changes.
+      - name: Cache the Android toolchain
+        id: toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/android/ndk
+            ~/android/android-ndk-*
+            ~/android/platforms
+            ~/android/build-tools
+            ~/android/cmdline-tools
+            ~/android/platform-tools
+          key: android-toolchain-${{ hashFiles('build/android/fetch_sdk.sh', 'build/android/build_apk.sh') }}
+
+      # The four binaries the APK carries. Compiling them takes most of the
+      # run, and only these scripts and the aria2 patch can change them.
+      - name: Cache the compiled tools
+        id: natives
+        uses: actions/cache@v4
+        with:
+          path: |
+            vendor/android
+            ~/android/arm64-sysroot
+          key: android-natives-${{ hashFiles('build/android/build_aria2.sh', 'build/android/build_tools.sh', 'build/patches/*.patch') }}
+
+      # CPython, SDL and Kivy are compiled from source the first time and
+      # take most of an hour between them. Nothing in the app changes them,
+      # so keep the tree p4a builds them in. It is only written back when the
+      # run succeeds, so a failed build cannot poison it.
+      - name: Cache python-for-android's build tree
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/android/p4a-venv
+            ~/android/p4a-build/packages
+            ~/android/p4a-build/build/other_builds
+            ~/android/p4a-build/build/bootstrap_builds
+            ~/android/p4a-build/dists
+          key: android-p4a-${{ hashFiles('build/android/setup_p4a.sh', 'build/android/build_apk.sh', 'build/android/recipes/**') }}
+
+      - name: Fetch the SDK and NDK
+        run: bash build/android/fetch_sdk.sh
+
+      - name: Cross-compile aria2
+        if: steps.natives.outputs.cache-hit != 'true' || inputs.rebuild_natives
+        run: bash build/android/build_aria2.sh
+
+      - name: Cross-compile QuickJS, LAME, dav1d and FFmpeg
+        if: steps.natives.outputs.cache-hit != 'true' || inputs.rebuild_natives
+        run: bash build/android/build_tools.sh
+
+      - name: Check the tools came out
+        run: |
+          ls -l vendor/android
+          for tool in aria2c ffmpeg ffprobe qjs; do
+            test -s "vendor/android/$tool" || { echo "missing $tool"; exit 1; }
+            file "vendor/android/$tool" | grep -q 'ARM aarch64' \
+              || { echo "$tool is not an arm64 binary"; exit 1; }
+          done
+
+      - name: Set up python-for-android
+        run: bash build/android/setup_p4a.sh
+
+      - name: Build the APK
+        run: bash build/android/build_apk.sh
+
+      - name: Name it after the commit
+        id: apk
+        run: |
+          built=$(ls dist/android/grabbit-debug-*.apk | head -1)
+          version=$(sed -n "s/^APP_VERSION = '\(.*\)'/\1/p" app/grabbit/__init__.py)
+          final="dist/android/Grabbit-${version}-arm64-${GITHUB_SHA::7}.apk"
+          mv "$built" "$final"
+          sha256sum "$final" | tee "$final.sha256"
+          echo "path=$final" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$final")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.apk.outputs.name }}
+          path: |
+            ${{ steps.apk.outputs.path }}
+            ${{ steps.apk.outputs.path }}.sha256
+          if-no-files-found: error
+          retention-days: 30

@@ -70,14 +70,15 @@ fi
 export ANDROID_HOME="$ANDROID_ROOT"
 export ANDROID_SDK_ROOT="$ANDROID_ROOT"
 SDKMANAGER="$ANDROID_ROOT/cmdline-tools/latest/bin/sdkmanager"
-if [ ! -d "$ANDROID_ROOT/platforms/android-$API" ]; then
-  say "installing SDK platform $API"
+# p4a is tested against NDK 28; the newer one fetch_sdk.sh brings down builds
+# our own binaries happily but is past what p4a supports, so install 28 for it.
+P4A_NDK=28.2.13676358
+if [ ! -d "$ANDROID_ROOT/platforms/android-$API" ] || [ ! -d "$ANDROID_ROOT/ndk/$P4A_NDK" ]; then
+  say "installing SDK platform $API, build-tools and NDK $P4A_NDK"
   yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
-  "$SDKMANAGER" "platforms;android-$API" "build-tools;35.0.0" >/dev/null
+  "$SDKMANAGER" "platforms;android-$API" "build-tools;35.0.0" "ndk;$P4A_NDK" >/dev/null
 fi
 
-# p4a is tested against NDK 28; ours built the binaries with a newer one, which
-# it only warns about. Prefer an SDK-installed 28 if it is there.
 NDK="$(ls -d "$ANDROID_ROOT"/ndk/28.* 2>/dev/null | sort -V | tail -1 || true)"
 [ -n "$NDK" ] || NDK="${ANDROID_NDK_HOME:-$(ls -d "$ANDROID_ROOT"/android-ndk-r* | sort -V | tail -1)}"
 say "NDK: $NDK"

@@ -5,3 +5,6 @@
 
 # And these are read by Windows tools, which prefer the opposite.
 *.ps1 text eol=crlf
+
+# Workflow files carry shell scripts inside them, so they follow the same rule.
+*.yml text eol=lf
