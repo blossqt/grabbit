@@ -74,17 +74,34 @@ def program(folder: Path, stub: Path, mode: str, name='Grabbit.exe') -> Path:
     return folder / name
 
 
+# The stand-in writes these beside itself, and the checks mark each copy with
+# one, so the swap has to count them as Grabbit's own here.
+STUB_FILES = ('mode.txt', 'launches.txt', 'old.txt', 'new.txt')
+
+
 def run_helper(scratch: Path, install: Path, staged: Path, version: str, old_pid: int):
     script = scratch / 'install-update.ps1'
     script.write_text(selfupdate.HELPER_SCRIPT, encoding='utf-8-sig')
     marker, log = scratch / f'started-{version}', scratch / 'install-update.log'
+    log.unlink(missing_ok=True)
     result = subprocess.run(
         ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
          str(script), '-OldPid', str(old_pid), '-Install', str(install), '-Staged', str(staged),
-         '-Version', version, '-Marker', str(marker), '-Log', str(log)],
+         '-Version', version, '-Marker', str(marker), '-Log', str(log),
+         '-Ours', '|'.join(selfupdate.SHIPPED + selfupdate.HARMLESS + STUB_FILES)],
         cwd=str(scratch), capture_output=True, text=True, timeout=300)
     text = log.read_text(encoding='utf-8', errors='replace') if log.exists() else ''
     return result.returncode, marker, text
+
+
+def wait_for_launch(install: Path) -> str:
+    """The script starts a copy and leaves; give it a moment to record that it ran."""
+    launches = install / 'launches.txt'
+    for _ in range(30):
+        if launches.exists():
+            return launches.read_text()
+        time.sleep(0.5)
+    return ''
 
 
 def old_copy() -> subprocess.Popen:
@@ -134,16 +151,55 @@ def check_swap(scratch: Path, stub: Path) -> None:
     report('the previous version is put back', code == 1 and (install / 'old.txt').exists(),
            f'exit {code}')
     report('with its data', (install / 'data' / 'tasks.json').exists())
-    # The script starts it and leaves; give it a moment to record that it ran.
-    launches = install / 'launches.txt'
-    for _ in range(30):
-        if launches.exists():
-            break
-        time.sleep(0.5)
-    report('and started, told the update failed',
-           launches.exists() and '--update-failed 9.9.9' in launches.read_text())
+    report('and started, told the update failed', '--update-failed 9.9.9' in wait_for_launch(install))
     report('the broken one is kept aside, not deleted', (base / 'Grabbit.failed' / 'new.txt').exists())
     report('the log says what happened', 'did not start' in log, log.strip().splitlines()[-1] if log else '')
+
+    print('\na Grabbit.exe sharing its folder with other things')
+    # Unpacked into a project folder, say. The swap would rename that folder
+    # and delete it once the new version was up - so it must not start.
+    base = scratch / 'shared'
+    install, staged = base / 'Project', base / 'Project.update'
+    program(install, stub, 'ok')
+    (install / 'old.txt').write_text('old')
+    (install / 'my-work.txt').write_text('not Grabbit')
+    (install / '.git').mkdir()
+    program(staged, stub, 'ok')
+    (staged / 'new.txt').write_text('new')
+    code, marker, log = run_helper(scratch, install, staged, '9.9.9', old_copy().pid)
+    report('it refuses to touch the folder', code == 1 and (install / 'my-work.txt').exists()
+           and (install / '.git').is_dir() and (install / 'old.txt').exists()
+           and not (base / 'Project.previous').exists(), f'exit {code}')
+    report('and says why', 'holds more than Grabbit' in log and 'my-work.txt' in log,
+           log.strip().splitlines()[-1] if log else 'no log')
+    report('the copy that was running is started again', '--update-failed 9.9.9' in wait_for_launch(install))
+    report('the app itself refuses first', 'shares its folder' in (selfupdate.blocker(install) or ''),
+           (selfupdate.blocker(install) or 'no objection')[:70])
+
+    print('\nwhat earlier updates left behind')
+    base = scratch / 'leftovers'
+    install = base / 'Grabbit'
+    program(install, stub, 'ok')
+    ours = base / 'Grabbit.failed'
+    program(ours, stub, 'ok')
+    holding_data = base / 'Grabbit.previous'
+    program(holding_data, stub, 'ok')
+    (holding_data / 'data').mkdir()
+    (holding_data / 'data' / 'tasks.json').write_text('{"tasks": []}')
+    not_ours = base / 'Grabbit.update'
+    not_ours.mkdir()
+    (not_ours / 'something-else.txt').write_text('keep me')
+    shipped, work = selfupdate.SHIPPED, selfupdate.WORK
+    selfupdate.SHIPPED, selfupdate.WORK = shipped + STUB_FILES, base / 'work'
+    try:
+        report('a clean install has nothing in the way', selfupdate.blocker(install) is None,
+               selfupdate.blocker(install) or '')
+        selfupdate.cleanup(install)
+    finally:
+        selfupdate.SHIPPED, selfupdate.WORK = shipped, work
+    report('an old copy of Grabbit is cleared away', not ours.exists())
+    report('one still holding data is kept', (holding_data / 'data' / 'tasks.json').exists())
+    report('a folder that is not Grabbit is kept', (not_ours / 'something-else.txt').exists())
 
 
 # ---------------------------------------------------------------- the real app
@@ -182,7 +238,8 @@ def check_real(scratch: Path) -> None:
     # An "installed" copy, a version behind as far as it knows.
     install = scratch / 'installed' / 'Grabbit'
     shutil.copytree(dist, install)
-    (install / 'this-is-the-old-copy.txt').write_text('old')
+    # Marked in a file Grabbit ships: anything else would, rightly, stop the swap.
+    (install / 'build-commit.txt').write_text('the old copy')
     # Portable, so it keeps its data beside itself - an empty list of its own
     # rather than anyone's real downloads - and so the data has to survive
     # the swap, which is checked below.
@@ -205,7 +262,7 @@ def check_real(scratch: Path) -> None:
     report('it downloaded, checked, unpacked and handed over', old_gone and marker.exists(),
            f'old copy exited: {old_gone}')
     report('the folder now holds the new version', (install / 'Grabbit.exe').exists()
-           and not (install / 'this-is-the-old-copy.txt').exists())
+           and (install / 'build-commit.txt').read_text() != 'the old copy')
     report('the new version came up', 'updated to' in log, log.strip().splitlines()[-1] if log else 'no log')
     report('nothing is left beside it', not install.with_name('Grabbit.previous').exists()
            and not install.with_name('Grabbit.update').exists())

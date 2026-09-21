@@ -50,7 +50,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'app'))
 
-from grabbit import ed25519, updates    # noqa: E402
+from grabbit import ed25519, selfupdate, updates    # noqa: E402
 
 REPO = updates.REPO
 WORKFLOW = 'android.yml'
@@ -301,6 +301,12 @@ def build_windows(version: str, head: str, build: bool) -> Path:
                if not (folder / 'tools' / tool).is_file()]
     if missing:
         fail('the build is missing ' + ', '.join(missing) + ' - see the warnings from build_app.ps1')
+    # The updater swaps only a folder holding what selfupdate.SHIPPED lists, so
+    # a build with anything more would never update itself again.
+    extra = sorted(p.name for p in folder.iterdir() if p.name not in selfupdate.SHIPPED)
+    if extra:
+        fail(f'dist\\Grabbit holds {", ".join(extra)}, which selfupdate.SHIPPED does not list - '
+             'add it there, or copies with it could never update themselves')
     # And that it starts: the same --self-test the updater will ask of it on
     # every machine it reaches, asked here first.
     answer = Path(tempfile.gettempdir()) / f'grabbit-release-self-test-{os.getpid()}.txt'

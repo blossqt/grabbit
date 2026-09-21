@@ -19,6 +19,11 @@ folder:
 Nothing is replaced while it is running, and every step before the last can be
 undone, so a failure anywhere leaves a Grabbit that works. Downloads that were
 under way are restored and carry on, as after any restart.
+
+Because the old folder is deleted at the end, the swap only ever touches a
+folder that holds Grabbit and nothing else. Unpack Grabbit.exe into a folder
+full of other things and it will not update itself there, rather than take
+the other things with it.
 """
 
 from __future__ import annotations
@@ -45,8 +50,13 @@ log = logging.getLogger(__name__)
 # because a portable copy's data folder moves during the swap.
 WORK = Path(tempfile.gettempdir()) / 'grabbit-update'
 EXE = 'Grabbit.exe'
+# Everything a release puts in the folder. release.py refuses a build that
+# holds anything else, since this list is what the swap trusts.
+SHIPPED = (EXE, '_internal', 'tools', 'README.md', 'build-commit.txt')
 # What a portable copy keeps beside the exe (paths.py), carried to the new one.
 PORTABLE = ('portable.txt', 'data')
+# Windows drops these into folders it has shown; they are nobody's work.
+HARMLESS = ('desktop.ini', 'Thumbs.db')
 
 CREATE_NO_WINDOW = 0x08000000
 CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -59,6 +69,21 @@ def install_dir() -> Path | None:
     return Path(sys.executable).resolve().parent
 
 
+def strangers(folder: Path, portable: bool = True) -> list[str]:
+    """What in this folder a Grabbit release did not put there.
+
+    The swap renames the whole install and later deletes the old copy, so it
+    only touches a folder where this comes back empty. With portable=False a
+    portable copy's data counts too: a folder still holding it is never
+    deleted.
+    """
+    ours = {name.lower() for name in SHIPPED + HARMLESS + (PORTABLE if portable else ())}
+    try:
+        return sorted(p.name for p in folder.iterdir() if p.name.lower() not in ours)
+    except OSError as error:
+        return [f'({error.strerror or error})']
+
+
 def blocker(install: Path | None = None) -> str | None:
     """Why this copy cannot replace itself, if it cannot."""
     install = install or install_dir()
@@ -66,6 +91,12 @@ def blocker(install: Path | None = None) -> str | None:
         return 'This copy runs from source. Update it with git instead.'
     if sys.platform != 'win32':
         return 'Only the Windows app installs its own updates.'
+    others = strangers(install)
+    if others:
+        shown = ', '.join(others[:3]) + (f' and {len(others) - 3} more' if len(others) > 3 else '')
+        return (f'Grabbit shares its folder, {install}, with other things ({shown}), and '
+                'updating replaces the whole folder. Put Grabbit.exe, _internal and tools in '
+                'a folder of their own and it can update itself from there.')
     # os.access() reads only the read-only flag on Windows, so try for real.
     try:
         with tempfile.TemporaryFile(dir=install.parent):
@@ -223,7 +254,8 @@ def launch_helper(install: Path, staged: Path, version: str) -> None:
     arguments = ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
                  '-WindowStyle', 'Hidden', '-File', str(script),
                  '-OldPid', str(os.getpid()), '-Install', str(install), '-Staged', str(staged),
-                 '-Version', version, '-Marker', str(marker), '-Log', str(log_path())]
+                 '-Version', version, '-Marker', str(marker), '-Log', str(log_path()),
+                 '-Ours', '|'.join(SHIPPED + HARMLESS)]
     # Its working folder is WORK, not the install: a process sitting in a folder
     # stops that folder being renamed.
     subprocess.Popen(arguments, cwd=str(WORK), env=clean_environment(), close_fds=True,
@@ -246,7 +278,10 @@ def cleanup(install: Path | None = None) -> None:
     install = install or install_dir()
     if install is not None:
         for leftover in ('.previous', '.failed', '.update'):
-            shutil.rmtree(install.with_name(install.name + leftover), ignore_errors=True)
+            folder = install.with_name(install.name + leftover)
+            # Only what the swap itself made, and never one still holding data.
+            if folder.is_dir() and not strangers(folder, portable=False):
+                shutil.rmtree(folder, ignore_errors=True)
     if WORK.exists():
         for path in WORK.iterdir():
             if path.name == log_path().name:
@@ -262,16 +297,41 @@ HELPER_SCRIPT = r'''
 # started by grabbit/selfupdate.py; see there for the whole sequence.
 param(
     [int]$OldPid, [string]$Install, [string]$Staged, [string]$Version,
-    [string]$Marker, [string]$Log
+    [string]$Marker, [string]$Log, [string]$Ours
 )
 $ErrorActionPreference = 'Stop'
 $Leaf = Split-Path -Leaf $Install
 $Previous = "$Install.previous"
 $Failed = "$Install.failed"
 $Exe = Join-Path $Install 'Grabbit.exe'
+$Portable = 'portable.txt', 'data'
 
 function Say([string]$Message) {
     try { Add-Content -LiteralPath $Log -Value ('{0:yyyy-MM-dd HH:mm:ss} {1}' -f (Get-Date), $Message) } catch { }
+}
+
+# What in a folder Grabbit did not put there (-Ours, from selfupdate.py). A
+# folder is renamed only if this is empty, and deleted only if it is empty
+# without counting a portable copy's data - so nothing else is ever lost.
+function Strangers([string]$Folder, [switch]$WithData) {
+    $known = @($Ours -split '\|')
+    if ($WithData) { $known += $Portable }
+    try {
+        return @(Get-ChildItem -LiteralPath $Folder -Force -ErrorAction Stop |
+                 ForEach-Object { $_.Name } | Where-Object { $known -notcontains $_ })
+    } catch {
+        return @("(unreadable: $($_.Exception.Message))")
+    }
+}
+
+function Remove-Leftover([string]$Folder) {
+    if (-not (Test-Path -LiteralPath $Folder)) { return $true }
+    $others = @(Strangers $Folder)
+    if ($others.Count -gt 0) {
+        Say "left $Folder alone: it holds $($others -join ', ')"
+        return $false
+    }
+    return (Retry { Remove-Item -LiteralPath $Folder -Recurse -Force })
 }
 
 # A virus scanner or the search indexer can hold a file for a moment after a
@@ -324,7 +384,17 @@ foreach ($process in $left) {
 }
 
 # 2. Swap the folders. Each rename is undone if the next one fails.
-if (Test-Path -LiteralPath $Previous) { Retry { Remove-Item -LiteralPath $Previous -Recurse -Force } | Out-Null }
+$others = @(Strangers $Install -WithData)
+if ($others.Count -gt 0) {
+    Say "$Install holds more than Grabbit ($($others -join ', ')); nothing was changed"
+    Start-Old
+    exit 1
+}
+if (-not (Remove-Leftover $Previous)) {
+    Say 'an earlier update left something behind; nothing was changed'
+    Start-Old
+    exit 1
+}
 if (-not (Retry { Rename-Item -LiteralPath $Install -NewName "$Leaf.previous" })) {
     Say 'could not move the old version aside; nothing was changed'
     Start-Old
@@ -346,7 +416,8 @@ $new = Start-Process -FilePath $Exe -WorkingDirectory $Install -PassThru `
 $deadline = (Get-Date).AddSeconds(120)
 while ((Get-Date) -lt $deadline) {
     if (Test-Path -LiteralPath $Marker) {
-        Retry { Remove-Item -LiteralPath $Previous -Recurse -Force } | Out-Null
+        # Kept if the data could not be carried across, rather than lost.
+        Remove-Leftover $Previous | Out-Null
         Say "updated to $Version"
         exit 0
     }
@@ -359,8 +430,9 @@ Say "$Version did not start; putting the previous version back"
 if (-not $new.HasExited) { Stop-Process -Id $new.Id -Force -ErrorAction SilentlyContinue }
 Start-Sleep -Seconds 1
 Carry $Install $Previous
-if (Test-Path -LiteralPath $Failed) { Retry { Remove-Item -LiteralPath $Failed -Recurse -Force } | Out-Null }
-Retry { Rename-Item -LiteralPath $Install -NewName "$Leaf.failed" } | Out-Null
+$FailedLeaf = "$Leaf.failed"
+if (-not (Remove-Leftover $Failed)) { $FailedLeaf = "$Leaf.failed-{0:yyyyMMddHHmmss}" -f (Get-Date) }
+Retry { Rename-Item -LiteralPath $Install -NewName $FailedLeaf } | Out-Null
 Retry { Rename-Item -LiteralPath $Previous -NewName $Leaf } | Out-Null
 Start-Old
 exit 1

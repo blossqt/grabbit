@@ -773,8 +773,8 @@ class MainWindow(QMainWindow):
     def _show_update_failed(self, version: str):
         QMessageBox.warning(
             self, 'Update Grabbit',
-            f'{APP_NAME} {version} was installed but didn’t start, so {APP_NAME} {APP_VERSION} '
-            f'was put back.\n\nWhat happened is recorded in {selfupdate.log_path()}.')
+            f'{APP_NAME} {version} couldn’t be installed, so this is still {APP_NAME} '
+            f'{APP_VERSION}.\n\nWhat happened is recorded in {selfupdate.log_path()}.')
 
     def _clean_up_after_updates(self):
         if not self._installing:
