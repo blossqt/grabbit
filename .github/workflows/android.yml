@@ -48,6 +48,10 @@ jobs:
       ANDROID_NDK_ROOT: ''
       ANDROID_NDK: ''
       ANDROID_NDK_LATEST_HOME: ''
+      # Where Gradle keeps its debug signing key. This is its documented
+      # default spelled out, because the default alone left the key somewhere
+      # the cache below never found.
+      ANDROID_USER_HOME: /home/runner/.android
 
     steps:
       - uses: actions/checkout@v4
@@ -193,6 +197,32 @@ jobs:
           path: ~/.android/debug.keystore
           key: ${{ env.DEBUGKEY_KEY }}
 
+      # Leaving Gradle to make the key did not work: it never appeared where
+      # the cache looks, and a cache save that finds nothing only warns, so
+      # the step went green having kept nothing. Make it here instead, in the
+      # standard debug form, where ANDROID_USER_HOME tells Gradle to look.
+      - name: Make the debug signing key if there is none
+        id: keystore
+        run: |
+          mkdir -p "$ANDROID_USER_HOME"
+          if [ ! -f "$ANDROID_USER_HOME/debug.keystore" ]; then
+            keytool -genkeypair -keystore "$ANDROID_USER_HOME/debug.keystore" \
+              -storepass android -keypass android -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname 'CN=Android Debug,O=Android,C=US'
+          fi
+          sha=$(keytool -list -v -keystore "$ANDROID_USER_HOME/debug.keystore" -storepass android \
+                | sed -n 's/^[[:space:]]*SHA256:[[:space:]]*//p' | head -1 | tr -d ':' | tr 'A-F' 'a-f')
+          echo "debug key SHA-256: $sha"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Keep the debug signing key
+        if: steps.debugkey.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: ${{ env.DEBUGKEY_KEY }}
+
       - name: Set up python-for-android
         id: p4asetup
         run: bash build/android/setup_p4a.sh
@@ -200,15 +230,6 @@ jobs:
       - name: Build the APK
         id: build
         run: bash build/android/build_apk.sh
-
-      # Only after a build that got as far as signing, which is when Gradle
-      # makes the key; once saved, every later run restores this same one.
-      - name: Keep the debug signing key
-        if: always() && steps.build.outcome == 'success' && steps.debugkey.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.android/debug.keystore
-          key: ${{ env.DEBUGKEY_KEY }}
 
       # Written back even when the build failed, because what it holds is
       # CPython, SDL and Kivy - none of which this app can break, and all of
@@ -234,6 +255,16 @@ jobs:
         id: apk
         run: |
           built=$(ls dist/android/grabbit-debug-*.apk | head -1)
+          # The whole point of keeping the key is that the next APK installs
+          # over this one, and that only holds if Gradle actually signed with
+          # it. Look, rather than trust that it did.
+          signer=$("$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$built" \
+                   | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -1)
+          echo "APK signed by SHA-256: $signer"
+          if [ "$signer" != "${{ steps.keystore.outputs.sha256 }}" ]; then
+            echo "::error::the APK is not signed with the kept debug key, so it will not install over the last one"
+            exit 1
+          fi
           version=$(sed -n "s/^APP_VERSION = '\(.*\)'/\1/p" app/grabbit/__init__.py)
           final="dist/android/Grabbit-${version}-arm64-${GITHUB_SHA::7}.apk"
           mv "$built" "$final"
