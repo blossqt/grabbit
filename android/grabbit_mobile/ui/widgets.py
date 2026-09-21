@@ -78,6 +78,36 @@ class Chip(ButtonBehavior, Label):
         self.color = theme.TEXT if self.selected else theme.DIM
 
 
+class Option(Chip):
+    """One of a few choices, like a segment of a switch: outlined while it is
+    only on offer, filled with the accent once it is the one chosen."""
+
+    def __init__(self, text='', selected=False, **kwargs):
+        self._outline = None
+        super().__init__(text=text, selected=selected, **kwargs)
+        self.size_hint_y = None
+        self.height = dp(34)
+        self.font_size = dp(14)
+        with self.canvas.before:
+            self._outline_color = Color(*theme.BORDER)
+            self._outline = Line(width=1.0)
+        self._apply()
+        self._redraw()
+
+    def _redraw(self, *_):
+        super()._redraw()
+        radius = min(dp(17), self.height / 2)
+        self._rect.radius = [radius]
+        if self._outline is not None:
+            self._outline.rounded_rectangle = (self.x, self.y, self.width, self.height, radius)
+
+    def _apply(self):
+        self._color.rgba = theme.BLUE if self.selected else theme.TRANSPARENT
+        self.color = (1, 1, 1, 1) if self.selected else theme.TEXT
+        if self._outline is not None:
+            self._outline_color.rgba = theme.BLUE if self.selected else theme.BORDER
+
+
 class FlatButton(Button):
     """A button that draws its own rounded background, because Kivy's default
     one is a grey bitmap from 2011."""
@@ -163,7 +193,10 @@ class KindGlyph(Widget):
             self._kind = 'image'
         elif kind == KIND_MEDIA:
             quality = str((task.media or {}).get('quality', ''))
-            self._kind = 'audio' if quality.startswith('audio') else 'video'
+            if quality == 'frame':              # one picture out of a video
+                self._kind = 'image'
+            else:
+                self._kind = 'audio' if quality.startswith('audio') else 'video'
         else:
             self._kind = 'file'
         self._color = theme.state_color(task.state)

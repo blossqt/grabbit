@@ -7,18 +7,24 @@ of made-up tasks is enough to see every state at once.
     %LOCALAPPDATA%\\GrabbitBuild\\venv\\Scripts\\python.exe build\\android\\preview_ui.py
     ... --shot out.png     render once, save it, and quit
     ... --update           with the banner a newer release would show
+    ... --page video       with the page a pasted link opens (video, audio,
+                           gif or image), for a video served from this machine
 """
 
 import math
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, '..', '..'))
 sys.path.insert(0, os.path.join(ROOT, 'app'))
 sys.path.insert(0, os.path.join(ROOT, 'android'))
+sys.path.insert(0, os.path.join(ROOT, 'build'))
 
 os.environ.setdefault('ANDROID_PRIVATE', tempfile.mkdtemp(prefix='grabbit-preview-'))
 os.environ.setdefault('KIVY_NO_ARGS', '1')
@@ -35,16 +41,61 @@ from kivy.clock import Clock                                # noqa: E402
 from kivy.core.window import Window                         # noqa: E402
 from kivy.input.motionevent import MotionEvent              # noqa: E402
 
+from grabbit import analyze as analyze_mod                  # noqa: E402
+from grabbit.media import MediaItem, ProbeResult            # noqa: E402
 from grabbit.tasks import (KIND_HTTP, KIND_IMAGE, KIND_MEDIA, KIND_TORRENT,  # noqa: E402
                            State, Task, TaskStore)
 
 import main as phone                                        # noqa: E402
 
 
+class SampleSite:
+    """A video served from this machine, as a site would serve it.
+
+    The page's frame chooser reads real frames through yt-dlp and FFmpeg, so
+    it needs a real video to read them from: frames_check.py's, whose
+    brightness climbs steadily, with a thumbnail beside it.
+    """
+
+    def __init__(self):
+        from http.server import ThreadingHTTPServer
+        from pathlib import Path
+
+        import frames_check
+        from grabbit.paths import find_tool
+        self.folder = tempfile.mkdtemp(prefix='grabbit-sample-')
+        video = frames_check.make_video(Path(self.folder))
+        subprocess.run([find_tool('ffmpeg'), '-v', 'error', '-y', '-ss', '5', '-i', str(video),
+                        '-frames:v', '1', os.path.join(self.folder, 'thumb.jpg')], check=True)
+        self.server = ThreadingHTTPServer(
+            ('127.0.0.1', 0), lambda *a: frames_check.RangeHandler(*a, directory=self.folder))
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        base = f'http://127.0.0.1:{self.server.server_port}'
+        self.url = f'{base}/climb.mp4'
+        self.thumbnail = f'{base}/thumb.jpg'
+        self.duration = float(frames_check.SECONDS)
+
+    def analysis(self, url=None):
+        item = MediaItem(key='climb', kind='video', title='A video that gets brighter',
+                         thumbnail=self.thumbnail, preview=self.thumbnail,
+                         duration=self.duration, url=self.url,
+                         heights=[1080, 720, 480, 360, 240])
+        probe = ProbeResult(url=url or self.url, kind='video', site='Sample',
+                            title=item.title, uploader='Grabbit', items=[item],
+                            heights=item.heights)
+        return analyze_mod.Analysis(url=url or self.url, kind=analyze_mod.KIND_MEDIA,
+                                    title=item.title, probe=probe)
+
+    def close(self):
+        self.server.shutdown()
+        shutil.rmtree(self.folder, ignore_errors=True)
+
+
 class FakeEngine:
     """Enough of MobileEngine for the interface to draw itself."""
 
     process = None          # the real engine has an aria2 behind this
+    site = None             # a SampleSite, when the page is being looked at
 
     def __init__(self, settings, on_change=None, on_message=None):
         self.settings = settings
@@ -54,14 +105,29 @@ class FakeEngine:
         self.on_change = on_change or (lambda: None)
         self.on_message = on_message or (lambda level, text: None)
         self._tick = 0
+        self.added = []
         for task in _sample_tasks():
             self.store.add(task)
 
     def start(self):
         return True
 
-    def add_link(self, url, quality=''):
-        self.on_message('info', f'Reading the link… ({url[:40]})')
+    def analyze_link(self, url, on_done):
+        """Magnets and the like are read for real - there is no network in
+        that; any web link stands for the sample video."""
+        def work():
+            time.sleep(0.3)
+            if url.startswith('magnet:') or self.site is None:
+                on_done(analyze_mod.analyze(url, self.settings))
+            else:
+                on_done(self.site.analysis(url))
+        threading.Thread(target=work, daemon=True).start()
+
+    def add_analysis(self, result, choice=None):
+        self.added.append((result, dict(choice or {})))
+        self.store.add(Task(kind=KIND_MEDIA, source=result.url, name=result.title or result.url,
+                            state=State.QUEUED, media=dict(choice or {})))
+        self.on_change()
 
     def pause(self, ids):
         for task_id in ids:
@@ -171,6 +237,136 @@ def tap(widget):
     settle(1)
 
 
+def wait_until(condition, seconds: float = 10.0) -> bool:
+    """Run the interface until something is true, or the time is up."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        EventLoop.idle()
+        if condition():
+            return True
+        time.sleep(0.02)
+    return bool(condition())
+
+
+def drag(widget, start: float, end: float, steps: int = 8):
+    """A finger along a widget, from one fraction of its width to another."""
+    settle()
+    y = widget.to_window(*widget.center)[1]
+    x0 = widget.to_window(widget.x + widget.width * start, 0)[0]
+    x1 = widget.to_window(widget.x + widget.width * end, 0)[0]
+    touch = Tap('preview', 4, [x0 / Window.width, y / Window.height],
+                is_touch=True, type_id='touch')
+    EventLoop.post_dispatch_input('begin', touch)
+    for step in range(1, steps + 1):
+        x = x0 + (x1 - x0) * step / steps
+        touch.move([x / Window.width, y / Window.height])
+        EventLoop.post_dispatch_input('update', touch)
+        EventLoop.idle()
+    EventLoop.post_dispatch_input('end', touch)
+    settle(1)
+
+
+def brightness_time(texture) -> float:
+    """When in the sample video a frame is from: its brightness says so."""
+    pixels = texture.pixels
+    reds = pixels[0::4]
+    full = sum(reds) / max(1, len(reds))
+    return (full * 219 / 255) / 10          # frames_check.RATE a second, from 16
+
+
+def check_page(app, report):
+    """A pasted link: the page that asks what to make of it."""
+    from grabbit import frames
+    from kivy.metrics import dp
+    site = SampleSite()
+    app.engine.site = site
+    try:
+        app.input.text = site.url
+        tap(app.download_button)
+        page = app.page
+        report('Download opens a page for the link straight away',
+               page is not None and page.parent is Window, page.about.text if page else 'no page')
+        wait_until(lambda: page.analysis is not None, 10)
+        report('which fills in once the link has been read',
+               page.title.text == 'A video that gets brighter' and 'Sample' in page.about.text,
+               page.about.text)
+        report('the page keeps clear of the camera, as the main screen does',
+               page.column.padding[1] >= dp(10) + app._insets[0])
+        report('a video can be saved as a video, its sound, a GIF or one picture',
+               list(page.type_row.buttons) == ['video', 'audio', 'gif', 'image'],
+               ', '.join(b.text for b in page.type_row.buttons.values()))
+        wait_until(lambda: page.picture.opacity == 1, 10)
+        report('with its thumbnail', page.picture.opacity == 1 and page.picture.texture is not None)
+        report('Video offers the qualities that video comes in, and file types',
+               list(page.quality_row.buttons) == ['best', '1080', '720', '480', '360', '240']
+               and list(page.container_row.buttons) == ['mp4', 'mkv', 'any'],
+               ', '.join(b.text for b in page.quality_row.buttons.values()))
+        tap(page.quality_row.buttons['720'])
+        tap(page.container_row.buttons['mkv'])
+        report('choosing one chooses only that one', page.quality == '720'
+               and page.quality_row.buttons['720'].selected
+               and not page.quality_row.buttons['best'].selected)
+        tap(page.type_row.buttons['audio'])
+        report('Audio offers MP3 and M4A', list(page.audio_row.buttons) == ['audio_mp3', 'audio_m4a'])
+        tap(page.audio_row.buttons['audio_m4a'])
+        tap(page.go)
+        wait_until(lambda: page.parent is None, 3)       # it fades out first
+        result, choice = app.engine.added[-1] if app.engine.added else (None, {})
+        report('Download queues exactly that, and the page closes',
+               choice.get('quality') == 'audio_m4a' and page.parent is None and app.page is None,
+               str(choice))
+
+        app.input.text = site.url
+        tap(app.download_button)
+        page = app.page
+        wait_until(lambda: page.analysis is not None, 10)
+        report('the page remembers the last choice', page.kind == 'audio'
+               and page.audio == 'audio_m4a', f'{page.kind}, {page.audio}')
+        tap(page.type_row.buttons['image'])
+        report('Image shows a slider along the whole video', page.scrubber.duration == site.duration,
+               f'{page.scrubber.duration:.0f}s')
+        wait_until(lambda: page._frame_texture is not None, 40)
+        first = page._frame_texture
+        report('and the frame at the start', first is not None and page.picture.texture is first,
+               page.picture_note.text)
+        drag(page.scrubber, 0.0, 0.5)
+        middle = site.duration / 2
+        report('dragging moves the moment chosen', abs(page.frame_at - middle) < site.duration * 0.08,
+               frames.clock(page.frame_at))
+        wait_until(lambda: page._frame_texture is not first, 30)
+        shown = brightness_time(page._frame_texture) if page._frame_texture is not first else -1
+        report('and the frame from there is shown once the finger stops',
+               abs(shown - page.frame_at) < 1.0,
+               f'wanted {page.frame_at:.1f}s, shows {shown:.1f}s')
+        before = page.frame_at
+        tap(page.step_forward)
+        report('› steps on a little', 0 < page.frame_at - before <= 0.2,
+               f'{before:.2f}s -> {page.frame_at:.2f}s')
+        tap(page.frame_row.buttons['jpg'])
+        tap(page.go)
+        wait_until(lambda: page.parent is None, 3)
+        result, choice = app.engine.added[-1]
+        report('Download queues that one frame, as a JPG',
+               choice.get('quality') == 'frame' and choice.get('frame_format') == 'jpg'
+               and abs(choice.get('frame_at', -1) - page.frame_at) < 0.01, str(choice))
+
+        count = len(app.engine.added)
+        app.input.text = ('magnet:?xt=urn:btih:9ecd4676fd0f0474151a4b74a5958f42639cebdf'
+                          '&dn=ubuntu-24.04.3-desktop-amd64.iso')
+        tap(app.download_button)
+        page = app.page
+        wait_until(lambda: page.analysis is not None, 10)
+        report('a magnet link gets the page too, with nothing to choose',
+               'BitTorrent' in page.about.text and not page.choices.children, page.about.text)
+        page.dismiss()
+        wait_until(lambda: page.parent is None, 3)
+        report('closing it adds nothing', len(app.engine.added) == count and app.page is None)
+        app.input.text = ''
+    finally:
+        app.engine.site = None
+        site.close()
+
+
 def check(app):
     """Tap through everything and report it, the way the other tests do."""
     results = []
@@ -192,17 +388,29 @@ def check(app):
     report('a newer Grabbit shows the update banner',
            app.update_banner.parent is app.update_slot and '9.0.0' in app.update_label.text,
            app.update_label.text)
-    tap(app._format_chips['audio_mp3'])
-    report('the controls below it still take taps', app.format == 'audio_mp3', repr(app.format))
+    reveal(app._status_chips['paused'])
+    tap(app._status_chips['paused'])
+    report('the controls below it still take taps', app.status_filter == 'paused',
+           app.status_filter)
+    reveal(app._status_chips['all'])
+    tap(app._status_chips['all'])
     tap(app.update_later)
     settle()
     report('Later takes it away entirely',
            not app.update_slot.children and app.update_slot.height == 0)
-    tap(app._format_chips[''])
 
-    tap(app._format_chips['gif'])
-    report('the format chips choose a format', app.format == 'gif', repr(app.format))
-    tap(app._format_chips[''])
+    from kivy.metrics import dp
+    title = app.root_box.children[-1].children[-1]
+    inset = title.to_window(title.x, 0)[0]
+    report("the title sits in from the edge, in line with the link box's text",
+           inset >= dp(16), f'{inset:.0f}px')
+    report('there are no format chips on the main screen any more',
+           not hasattr(app, '_format_chips'))
+
+    from grabbit_mobile.ui.linkbox import LinkBox
+    report("the link box is the one that becomes Android's own field on a phone",
+           isinstance(app.input, LinkBox), type(app.input).__name__)
+    check_page(app, report)
 
     reveal(app._status_chips['completed'])
     tap(app._status_chips['completed'])
@@ -298,6 +506,28 @@ def _sample_tasks():
     ]
 
 
+def show_page(app, kind: str, shot: str | None):
+    """Open the page for the sample video with one type chosen; with --shot,
+    save a picture of it once the thumbnail or frame is in."""
+    site = SampleSite()
+    app.engine.site = site
+    app.inspect(site.url)
+    page = app.page
+    wait_until(lambda: page.analysis is not None, 10)
+    page.type_row.choose(kind)
+    if kind == 'image':
+        page.scrubber.value = site.duration * 0.4
+        page._want_frame(page.scrubber.value)
+        wait_until(lambda: page._frame_texture is not None and page.picture.color[3] == 1, 40)
+    else:
+        wait_until(lambda: page.picture.opacity == 1, 10)
+    if shot:
+        settle()
+        Window.screenshot(name=shot)
+        site.close()
+        app.stop()
+
+
 def main():
     phone.MobileEngine = FakeEngine
     app = phone.GrabbitApp()
@@ -329,6 +559,9 @@ def main():
             code = check(app)
             app.stop()
             sys.exit(code)
+        if '--page' in sys.argv:
+            show_page(app, sys.argv[sys.argv.index('--page') + 1], shot)
+            return
         Clock.schedule_interval(tick, 1.0)
         if shot:
             def sheet(_):

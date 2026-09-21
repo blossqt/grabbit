@@ -22,7 +22,6 @@ from kivy.uix.button import Button                          # noqa: E402
 from kivy.uix.label import Label                            # noqa: E402
 from kivy.uix.popup import Popup                            # noqa: E402
 from kivy.uix.scrollview import ScrollView                  # noqa: E402
-from kivy.uix.textinput import TextInput                    # noqa: E402
 
 from grabbit import APP_VERSION, updates                    # noqa: E402
 from grabbit.settings import Settings                       # noqa: E402
@@ -32,18 +31,16 @@ from grabbit.util import human_speed                        # noqa: E402
 from grabbit_mobile import paths                            # noqa: E402
 from grabbit_mobile.engine import MobileEngine              # noqa: E402
 from grabbit_mobile.ui import theme                         # noqa: E402
+from grabbit_mobile.ui.choose import ChoosePage             # noqa: E402
 from grabbit_mobile.ui.details import DetailsSheet          # noqa: E402
 from grabbit_mobile.ui.graph import SpeedGraph              # noqa: E402
+from grabbit_mobile.ui.linkbox import LinkBox               # noqa: E402
 from grabbit_mobile.ui.rows import TaskRow                  # noqa: E402
 from grabbit_mobile.ui.widgets import Card, Chip, FlatButton, TapLabel  # noqa: E402
 
 # Shared text is rarely just a link - "look at this <url> 😂" is the normal
 # shape of it, so pick the link out rather than refusing the message.
 LINK_IN_TEXT = re.compile(r'(?:https?://|magnet:\?)\S+')
-
-# What to fetch. An empty string means whatever the settings say, which is the
-# best video; the other two are yt-dlp quality names the shared code knows.
-FORMATS = [('Video', ''), ('MP3', 'audio_mp3'), ('GIF', 'gif')]
 
 # The desktop sidebar, as two groups of chips.
 STATUS_FILTERS = [('all', 'All'), ('downloading', 'Downloading'), ('seeding', 'Seeding'),
@@ -131,11 +128,12 @@ class GrabbitApp(App):
                                    on_change=self._schedule_refresh,
                                    on_message=self._schedule_message)
         self._rows = {}
-        self._pending = []          # links that arrived before aria2 was up
+        self._pending = []          # choices made before aria2 was up
+        self._insets = (0, 0)
+        self.page = None            # the one asking what to make of a link
         self.selected_id = ''
         self.status_filter = 'all'
         self.kind_filter = 'all'
-        self.format = ''
 
         root = BoxLayout(orientation='vertical', padding=dp(8), spacing=dp(6))
         self.root_box = root
@@ -151,7 +149,6 @@ class GrabbitApp(App):
         self.update_slot = BoxLayout(size_hint_y=None, height=0)
         root.add_widget(self.update_slot)
         root.add_widget(self._build_add_row())
-        root.add_widget(self._build_formats())
 
         self.graph = SpeedGraph(store=self.engine.store, size_hint_y=None,
                                 height=dp(200))
@@ -195,9 +192,19 @@ class GrabbitApp(App):
         self.show_graph(bool(getattr(self.settings, 'show_graph', False)))
 
         # The window is not attached yet, so Android cannot be asked about its
-        # cutout until a moment later.
+        # cutout until a moment later - and is asked again whenever the space
+        # it gives the app may have changed: the keyboard coming or going moves
+        # the system bars, and on some phones the app's surface with them.
         Clock.schedule_once(lambda *_: self._apply_insets(), 0.3)
         Clock.schedule_once(lambda *_: self._apply_insets(), 1.5)
+        self._insets_later = Clock.create_trigger(lambda *_: self._apply_insets(), 0.35)
+        Window.bind(on_resize=lambda *_: self._insets_later(),
+                    keyboard_height=lambda *_: self._insets_later())
+        # Whatever part of the window the app does not draw - behind a
+        # keyboard as it slides in, around a surface Android has moved - is
+        # the app's own colour rather than black.
+        from grabbit_mobile.bootstrap import paint_window
+        paint_window(theme.PALETTE['window'])
         Clock.schedule_once(lambda *_: self._start_engine(), 0.4)
         Clock.schedule_interval(lambda *_: self.refresh(), 1.0)
         # The first check follows the engine starting (see _start_engine_worker);
@@ -207,7 +214,10 @@ class GrabbitApp(App):
 
     # ----------------------------------------------------------------- parts
     def _build_top_bar(self):
-        bar = BoxLayout(size_hint_y=None, height=dp(34), spacing=dp(8))
+        # The title starts where the text in the link box does, clear of the
+        # screen's rounded corner rather than hard against it.
+        bar = BoxLayout(size_hint_y=None, height=dp(34), spacing=dp(8),
+                        padding=[dp(10), 0, dp(2), 0])
         name = Label(text='Grabbit', color=theme.TEXT, font_size=dp(18), bold=True,
                      halign='left', valign='middle')
         name.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
@@ -241,27 +251,16 @@ class GrabbitApp(App):
 
     def _build_add_row(self):
         row = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
-        self.input = TextInput(hint_text='Paste a link', multiline=False,
-                               background_color=theme.BASE, foreground_color=theme.TEXT,
-                               hint_text_color=theme.DIM, cursor_color=theme.BLUE,
-                               font_size=dp(14), padding=[dp(10), dp(12)])
-        self.input.bind(on_text_validate=lambda *_: self.download())
+        # Android's own text field on a phone, so holding it gives Android's
+        # own copy and paste menu (ui/linkbox.py).
+        self.input = LinkBox(hint='Paste a link')
+        self.input.bind(on_submit=lambda *_: self.download())
         button = FlatButton(text='Download', size_hint_x=None, width=dp(112),
                             font_size=dp(14), color=(1, 1, 1, 1), fill=theme.BLUE)
+        self.download_button = button
         button.bind(on_release=lambda *_: self.download())
         row.add_widget(self.input)
         row.add_widget(button)
-        return row
-
-    def _build_formats(self):
-        row = BoxLayout(size_hint_y=None, height=dp(32), spacing=dp(6))
-        self._format_chips = {}
-        for label, value in FORMATS:
-            chip = Chip(text=label, selected=(value == self.format))
-            chip.size_hint_x = 1
-            chip.bind(on_release=lambda widget, v=value: self._choose_format(v))
-            self._format_chips[value] = chip
-            row.add_widget(chip)
         return row
 
     def _build_filters(self):
@@ -297,6 +296,7 @@ class GrabbitApp(App):
         """
         from grabbit_mobile.bootstrap import safe_insets
         top, bottom = safe_insets()
+        self._insets = (top, bottom)
         self.root_box.padding = [dp(8), dp(8) + top, dp(8), dp(8) + bottom]
 
     # ------------------------------------------------------------- plumbing
@@ -314,9 +314,9 @@ class GrabbitApp(App):
             return
         if self.engine.start():
             self._schedule_message('info', f'Saving to {paths.downloads_dir()}')
-            for url, wanted in self._pending:
-                self.engine.add_link(url, wanted)
-            self._pending.clear()
+            # On the interface thread, where the choices are made, so none can
+            # slip in between being read and being cleared.
+            Clock.schedule_once(lambda *_: self._add_pending(), 0)
             Clock.schedule_once(lambda *_: self._maybe_ask_for_storage(), 0.5)
             # Late enough not to compete with a link that was shared to open us.
             Clock.schedule_once(lambda *_: self.check_for_updates(), 10)
@@ -364,8 +364,7 @@ class GrabbitApp(App):
             return
         link = self._link_from_intent(intent)
         if link:
-            self._schedule_message('info', f'Shared with Grabbit: {link[:70]}')
-            self._queue_link(link)
+            self.inspect(link)
 
     @staticmethod
     def _link_from_intent(intent) -> str:
@@ -439,15 +438,48 @@ class GrabbitApp(App):
         url = self.input.text.strip()
         if not url:
             return
-        self.input.text = ''
-        self._queue_link(url)
+        found = LINK_IN_TEXT.search(url)
+        self.input.unfocus()
+        self.inspect(found.group(0) if found else url)
 
-    def _choose_format(self, value: str):
-        self.format = value
-        for option, chip in self._format_chips.items():
-            chip.set_selected(option == value)
-        chosen = dict((v, k) for k, v in FORMATS).get(value, 'Video')
-        self._schedule_message('info', f'Next download: {chosen}')
+    def inspect(self, url: str):
+        """Read a link, and ask what to make of it before fetching anything.
+
+        The page opens at once, saying it is reading the link, and fills in
+        when the answer comes: a video's qualities and types, a torrent's size,
+        a file's name.
+        """
+        if self.page is not None:
+            self.page.dismiss()
+        page = ChoosePage(url, self.settings, on_choose=self._chosen, insets=self._insets)
+        page.bind(on_dismiss=lambda *_: self._page_closed(page))
+        self.page = page
+        page.open()
+        self.engine.analyze_link(url, lambda result: Clock.schedule_once(
+            lambda *_: page.show(result)))
+
+    def _page_closed(self, page):
+        if self.page is page:
+            self.page = None
+
+    def _add_pending(self):
+        for analysis, choice in self._pending:
+            self.engine.add_analysis(analysis, choice)
+        self._pending.clear()
+
+    def _chosen(self, analysis, choice: dict):
+        """The page's Download: queue it, now or once the engine is up."""
+        from grabbit import analyze as analyze_mod
+        if analysis.kind == analyze_mod.KIND_ERROR:
+            choice['as_file'] = True          # the page offers that only for web links
+        if self.input.text.strip() and analysis.url in self.input.text:
+            self.input.set_text('')
+        self.settings.save()
+        if self.engine.running:
+            self.engine.add_analysis(analysis, choice)
+        else:
+            self._pending.append((analysis, choice))
+            self._schedule_message('info', 'It starts as soon as the engine is ready')
 
     def _choose_status(self, key: str):
         self.status_filter = key
@@ -634,13 +666,6 @@ class GrabbitApp(App):
         buttons.add_widget(cancel)
         body.add_widget(buttons)
         popup.open()
-
-    def _queue_link(self, url: str):
-        """Links can arrive before aria2 is listening; none of them get lost."""
-        if self.engine.running:
-            self.engine.add_link(url, self.format)
-        else:
-            self._pending.append((url, self.format))
 
     # --------------------------------------------------------------- drawing
     def refresh(self):

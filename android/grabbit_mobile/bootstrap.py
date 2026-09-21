@@ -283,19 +283,24 @@ def install_status(intent):
 
 
 def safe_insets() -> tuple:
-    """How far the system's own furniture reaches in, in pixels.
+    """How far the system's own furniture reaches into what the app draws, in
+    pixels.
 
     The app draws edge to edge, which on this phone means the title sits under
     the camera cutout and the footer under the gesture bar. Android will say
     where those are; asking is better than picking a number that happens to
-    suit one handset.
+    suit one handset. They are measured from the edges of SDL's surface, not
+    the screen's: when Android moves the surface - which some phones do while
+    the keyboard is up - an inset it has already moved clear of must not be
+    added again.
 
     Returns (top, bottom), both zero anywhere that cannot answer.
     """
     try:
         from jnius import autoclass
         activity = autoclass('org.kivy.android.PythonActivity').mActivity
-        insets = activity.getWindow().getDecorView().getRootWindowInsets()
+        decor = activity.getWindow().getDecorView()
+        insets = decor.getRootWindowInsets()
         if insets is None:
             return 0, 0
         top = bottom = 0
@@ -308,6 +313,43 @@ def safe_insets() -> tuple:
             top, bottom = max(top, bars.top), max(bottom, bars.bottom)
         except Exception:
             pass          # older Android: the cutout is the best we have
+        try:
+            surface = autoclass('org.libsdl.app.SDLActivity').getContentView().getChildAt(0)
+            where = autoclass('android.graphics.Rect')()
+            if surface is not None and surface.getGlobalVisibleRect(where):
+                top = max(0, top - where.top)
+                bottom = max(0, bottom - (decor.getHeight() - where.bottom))
+        except Exception:
+            pass          # no surface to measure: the window's edges will do
         return int(top), int(bottom)
     except Exception:
         return 0, 0
+
+
+def paint_window(colour: str) -> None:
+    """Give the window behind the app the app's own background colour.
+
+    SDL draws the app on a surface, and anything of the window it does not
+    cover - a strip Android leaves while it moves things for the keyboard,
+    the space behind a system bar - shows the window's background, which is
+    black unless something says otherwise.
+    """
+    try:
+        from android.runnable import run_on_ui_thread
+        from jnius import autoclass
+    except ImportError:
+        return        # not on a phone
+
+    @run_on_ui_thread
+    def paint():
+        try:
+            value = autoclass('android.graphics.Color').parseColor(colour)
+            window = autoclass('org.kivy.android.PythonActivity').mActivity.getWindow()
+            window.setBackgroundDrawable(autoclass('android.graphics.drawable.ColorDrawable')(value))
+            window.getDecorView().setBackgroundColor(value)
+            window.setStatusBarColor(value)
+            window.setNavigationBarColor(value)
+        except Exception:
+            log.exception('could not colour the window')
+
+    paint()

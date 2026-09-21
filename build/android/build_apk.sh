@@ -144,6 +144,11 @@ rm -rf "$STORAGE/build/venv"
 
 mkdir -p "$OUTDIR"
 cd "$OUTDIR"
+# --display-cutout=shortEdges lets the app draw beside the camera cutout at all
+# times. Without it Android may stop doing so whenever the system bars change -
+# as they do when the keyboard opens - and shift everything down, leaving a
+# black strip where the app was. The app keeps its own content clear of the
+# cutout (safe_insets in grabbit_mobile/bootstrap.py).
 say 'building the APK (first run compiles CPython, SDL and Kivy - expect a wait)'
 p4a apk \
   --private "$APPDIR" \
@@ -162,6 +167,7 @@ p4a apk \
   --ndk-api="$MINSDK" \
   --minsdk="$MINSDK" \
   --orientation=portrait \
+  --display-cutout=shortEdges \
   --activity-launch-mode=singleTask \
   --intent-filters="$HERE/intent_filters.xml" \
   --icon="$HERE/icon.png" \

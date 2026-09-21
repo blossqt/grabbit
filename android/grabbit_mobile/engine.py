@@ -152,28 +152,52 @@ class MobileEngine:
         self.store.mark_dirty()
 
     # ----------------------------------------------------------------- adding
+    def analyze_link(self, url: str, on_done) -> None:
+        """Work out what a link is, off the interface thread.
+
+        on_done(analysis) is called from the worker; nothing is queued until
+        the choices it allows have been made (add_analysis). This needs no
+        aria2, so a link can be read while the engine is still starting.
+        """
+        def work():
+            try:
+                result = analyze_mod.analyze(url.strip(), self.settings)
+            except Exception as exc:
+                result = analyze_mod.Analysis(url=url, kind=analyze_mod.KIND_ERROR,
+                                              error=f'Could not read that link: {exc}')
+            on_done(result)
+
+        threading.Thread(target=work, name='grabbit-analyze', daemon=True).start()
+
+    def add_analysis(self, result, choice: dict | None = None) -> None:
+        """Queue everything behind a link that has been read, as chosen."""
+        threading.Thread(target=self._add_analysis, args=(result, dict(choice or {})),
+                         name='grabbit-add', daemon=True).start()
+
     def add_link(self, url: str, quality: str = ''):
-        """Work out what a link is and queue everything behind it."""
-        threading.Thread(target=self._add_link, args=(url, quality),
-                         name='grabbit-analyze', daemon=True).start()
+        """Read a link and queue all of it, without asking: the device tests."""
+        def work():
+            try:
+                result = analyze_mod.analyze(url.strip(), self.settings)
+            except Exception as exc:
+                self.on_message('error', f'Could not read that link: {exc}')
+                return
+            self._add_analysis(result, {'quality': quality})
 
-    def _add_link(self, url: str, quality: str):
-        url = (url or '').strip()
-        if not url:
-            return
         self.on_message('info', 'Reading the link…')
-        try:
-            result = analyze_mod.analyze(url, self.settings)
-        except Exception as exc:
-            self.on_message('error', f'Could not read that link: {exc}')
-            return
+        threading.Thread(target=work, name='grabbit-analyze', daemon=True).start()
 
+    def _add_analysis(self, result, choice: dict):
+        url = result.url
         kind = result.kind
         try:
             if kind == analyze_mod.KIND_ERROR:
-                self.on_message('error', result.error or 'That link could not be read')
-                return
-            if kind == analyze_mod.KIND_MAGNET:
+                if not choice.get('as_file'):
+                    self.on_message('error', result.error or 'That link could not be read')
+                    return
+                # Asked for anyway: whatever the address answers, saved as a file.
+                self.add_file(url, name=analyze_mod.name_from_url(url))
+            elif kind == analyze_mod.KIND_MAGNET:
                 self.add_magnet(url)
             elif kind == analyze_mod.KIND_TORRENT:
                 self.add_torrent(result.torrent_data, source=url)
@@ -189,7 +213,7 @@ class MobileEngine:
                     if item.kind == 'image' and item.direct_url:
                         self.add_image(item, result.probe)
                     else:
-                        self.add_media(item, result.probe, quality)
+                        self.add_media(item, result.probe, choice)
             else:
                 self.add_file(url, name=result.filename)
             self.on_message('info', f'Added: {result.title[:60] or url[:60]}')
@@ -217,20 +241,30 @@ class MobileEngine:
         return self.add_file(item.direct_url, name=name, headers=headers,
                              kind=KIND_IMAGE, thumbnail=item.thumbnail)
 
-    def add_media(self, item, probe, quality: str = '') -> Task:
+    def add_media(self, item, probe, choice: dict | None = None) -> Task:
+        """Queue a video or sound, as chosen: quality and container, and for
+        one frame of it, the moment and the picture type (grabbit.frames)."""
+        choice = choice or {}
         task = Task(kind=KIND_MEDIA, source=item.url or probe.url,
                     save_dir=str(paths.downloads_dir()),
                     name=item.title or probe.title, site=probe.site,
                     thumbnail=item.thumbnail or probe.thumbnail)
         task.media = {
-            'quality': quality or self.settings.video_quality,
-            'container': self.settings.video_container,
+            'quality': choice.get('quality') or self.settings.video_quality,
+            'container': choice.get('container') or self.settings.video_container,
             'info': item.info,
             'info_time': time.time() if item.info else 0,
             'parent_url': probe.url if len(probe.items) > 1 else '',
             'entry_id': item.key,
             'entry_index': item.index,
+            'duration': item.duration,
         }
+        if task.media['quality'] == 'frame':
+            from grabbit import frames
+            task.media['frame_at'] = float(choice.get('frame_at') or 0)
+            task.media['frame_format'] = choice.get('frame_format') or 'png'
+            task.name = frames.frame_filename(task.name, task.media['frame_at'],
+                                              task.media['frame_format'])
         with self._lock:
             self.store.add(task)
         self._queue_media(task)
