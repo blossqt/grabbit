@@ -76,7 +76,7 @@ function Set-Remembered($quality) {
     # settings: write that choice in while the app is stopped, and the page
     # comes up with it already chosen.
     & $adb shell "am force-stop $package" | Out-Null
-    $file = 'files/app/grabbit/settings.json'
+    $file = 'files/grabbit/settings.json'
     $json = (& $adb exec-out "run-as $package cat $file") -join "`n"
     $local = Join-Path $env:TEMP 'grabbit-settings.json'
     $json | & $python -c "import json, sys

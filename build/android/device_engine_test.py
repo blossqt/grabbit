@@ -35,15 +35,17 @@ def report(name, ok, detail=''):
     print(f'  [{"PASS" if ok else "FAIL"}] {name}' + (f' - {detail}' if detail else ''), flush=True)
 
 
-def wait_for(engine, kind, seconds):
-    """Wait for every task of one kind to finish, and return them."""
+def wait_for(engine, kind, seconds, before=()):
+    """Wait for the tasks of one kind added since `before` to finish, and
+    return them. Finished ones from earlier runs do not count: the list keeps
+    them, and they would otherwise end the wait before a new link was added."""
     deadline = time.time() + seconds
     while time.time() < deadline:
-        tasks = [t for t in engine.store if t.kind == kind]
+        tasks = [t for t in engine.store if t.kind == kind and t.id not in before]
         if tasks and all(t.state in (State.COMPLETED, State.ERROR) for t in tasks):
             return tasks
         time.sleep(2)
-    return [t for t in engine.store if t.kind == kind]
+    return [t for t in engine.store if t.kind == kind and t.id not in before]
 
 
 def can_resolve_names() -> bool:
@@ -135,7 +137,7 @@ def main():
             print(f'\n-- {label} --', flush=True)
             before = {t.id for t in engine.store}
             engine.add_link(url)
-            tasks = [t for t in wait_for(engine, kind, seconds) if t.id not in before]
+            tasks = wait_for(engine, kind, seconds, before)
             done = [t for t in tasks if t.state == State.COMPLETED
                     and os.path.exists(t.file_path or '')]
             report(f'{label}: downloads', bool(done) and len(done) == len(tasks),
@@ -146,7 +148,7 @@ def main():
         print('\n-- the same video as a GIF --', flush=True)
         before = {t.id for t in engine.store}
         engine.add_link(YOUTUBE, 'gif')
-        tasks = [t for t in wait_for(engine, 'media', 420) if t.id not in before]
+        tasks = wait_for(engine, 'media', 420, before)
         gif = next((t for t in tasks if (t.file_path or '').endswith('.gif')), None)
         report('FFmpeg makes a GIF on the phone', bool(gif) and os.path.exists(gif.file_path),
                f'{os.path.basename(gif.file_path)} {human_size(os.path.getsize(gif.file_path))}'
