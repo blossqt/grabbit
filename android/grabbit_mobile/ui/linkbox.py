@@ -100,6 +100,7 @@ class _NativeField:
         self.box = box
         self.view = None
         self.visible = True
+        self._placed = None
         self._ui = run_on_ui_thread
         self._autoclass = autoclass
 
@@ -124,7 +125,10 @@ class _NativeField:
 
             @java_method('(Landroid/widget/TextView;ILandroid/view/KeyEvent;)Z')
             def onEditorAction(self, view, action, event):
-                Clock.schedule_once(lambda _: box.dispatch('on_submit'))
+                # The keyboard's Go comes once, with no event; a real Enter key
+                # comes as a press and a release - act on the press alone.
+                if event is None or event.getAction() == 0:
+                    Clock.schedule_once(lambda _: box.dispatch('on_submit'))
                 return True
 
         # Held here: a listener Java still calls must not be collected.
@@ -184,6 +188,8 @@ class _NativeField:
     def _place(self):
         if self.view is None:
             return
+        box = self.box
+        self._placed = (*box.to_window(box.x, box.y), box.width, box.height, Window.height)
         params = self._params()
         view = self.view
 
@@ -193,7 +199,13 @@ class _NativeField:
         place()
 
     def _follow_modals(self):
-        """Out of the way while something covers the main screen."""
+        """Out of the way while something covers the main screen - and where
+        the layout last put the box, which may have moved before Android had
+        made the field to move."""
+        box = self.box
+        if self.view is not None and self._placed != (*box.to_window(box.x, box.y), box.width,
+                                                       box.height, Window.height):
+            self._place()
         covered = any(isinstance(child, ModalView) for child in Window.children)
         if covered == (not self.visible) or self.view is None:
             return
