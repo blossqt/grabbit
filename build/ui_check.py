@@ -135,9 +135,17 @@ def main():
     gold = QPalette(app.palette())
     gold.setColor(QPalette.Highlight, QColor('#9c6f00'))
     app.setPalette(gold)
-    tile = icons.render_app_icon(64).toImage().pixelColor(12, 32).name()
+    image = icons.render_app_icon(64).toImage()
+    tile = image.pixelColor(12, 32).name()
     report('the app icon keeps its own colour under any accent',
            tile == icons.APP_ICON_COLOR, f'{tile} under a {app.palette().highlight().color().name()} accent')
+
+    # And the suite's shape: the tile runs to the edge, like Homework Hub's,
+    # with its corners rounded away.
+    edge, corner = image.pixelColor(0, 32), image.pixelColor(0, 0)
+    report('the app icon fills its square, corners rounded',
+           edge.name() == icons.APP_ICON_COLOR and edge.alpha() == 255 and corner.alpha() == 0,
+           f'edge {edge.name()} alpha {edge.alpha()}, corner alpha {corner.alpha()}')
 
     engine.shutdown()
     failures = [name for name, ok in results if not ok]
