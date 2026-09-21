@@ -797,13 +797,32 @@ class MediaJob(threading.Thread):
         title = processed.get('title') or info.get('title') or 'frame'
         os.makedirs(self.save_dir, exist_ok=True)
         target = unique_path(self.save_dir, frames.frame_filename(title, at, kind))
-        try:
-            stream = frames.stream_from_info(processed, ydl.cookiejar)
-            frames.save(stream.url, stream.headers, at, target)
-        except frames.FrameError as exc:
-            self.check_interrupts()
-            self._log(f'Could not read the frame from the stream ({exc}); '
-                      'downloading the video to read it from that instead.')
+
+        # The sharpest stream first, then the next best; and if the site turns
+        # all of those away - YouTube does, now and then, with addresses it has
+        # only just handed out - a second look at the page brings fresh ones.
+        saved = False
+        for look in range(2):
+            if look:
+                self.check_interrupts()
+                info = self._fetch_info(ydl)
+                self._emit(self.task_id, 'state', {
+                    'state': 'downloading', 'note': f'Reading the frame at {frames.clock(at)}'})
+                processed = ydl.process_ie_result(copy.deepcopy(info), download=False)
+            for stream in frames.streams_from_info(processed, ydl.cookiejar):
+                try:
+                    frames.save(stream.url, stream.headers, at, target)
+                    saved = True
+                    break
+                except frames.FrameError as exc:
+                    self.check_interrupts()
+                    which = f'the {stream.height}p stream' if stream.height else 'the stream'
+                    self._log(f'Could not read the frame from {which}: {exc}')
+            if saved:
+                break
+        if not saved:
+            self._log('No stream would give up the frame; downloading the video to read it '
+                      'from that instead.')
             self._emit(self.task_id, 'state', {'state': 'downloading', 'note': ''})
             result = ydl.process_ie_result(info, download=True)
             video = (traverse_obj(result, ('requested_downloads', 0, 'filepath'))

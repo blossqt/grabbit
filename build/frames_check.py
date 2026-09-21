@@ -45,6 +45,10 @@ class RangeHandler(SimpleHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        if 'refused' in self.path:
+            # A stream the site has handed out and then will not serve.
+            self.send_error(403)
+            return
         path = Path(self.translate_path(self.path))
         if not path.is_file():
             self.send_error(404)
@@ -156,6 +160,22 @@ def main():
             report('a stream that is not there is an error', False)
         except frames.FrameError as exc:
             report('a stream that is not there is an error', True, str(exc)[:60])
+
+        print('\na stream the site refuses')
+        refused = url.replace('climb.mp4', 'refused/climb.mp4')
+        info = {'url': refused, 'vcodec': 'h264', 'height': 1080, 'duration': SECONDS,
+                'formats': [{'url': url, 'vcodec': 'h264', 'height': 360, 'protocol': 'http'},
+                            {'url': refused, 'vcodec': 'h264', 'height': 1080, 'protocol': 'http'}]}
+        streams = frames.streams_from_info(info)
+        report('the chosen stream comes first, then the next best',
+               [s.url for s in streams] == [refused, url], ', '.join(f'{s.height}p' for s in streams))
+        try:
+            frames.save(refused, {}, 3.0, str(scratch / 'refused.png'))
+            report('the refused one fails', False)
+        except frames.FrameError as exc:
+            report('the refused one fails', '403' in str(exc), str(exc)[:60])
+        report('and the next one gives the frame',
+               bool(frames.save(streams[1].url, streams[1].headers, 3.0, str(scratch / 'next.png'))))
 
         print('\nmoving the slider')
         seen, errors, done = [], [], threading.Event()

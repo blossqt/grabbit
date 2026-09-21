@@ -77,6 +77,28 @@ def stream_from_info(info: dict, cookies=None) -> Stream:
                   title=info.get('title') or '')
 
 
+def streams_from_info(info: dict, cookies=None, limit: int = 3) -> list:
+    """The streams a frame could come from, sharpest first: the one yt-dlp
+    chose, then the next best it offered. A site - YouTube, now and then - can
+    refuse one stream it has just handed out and serve the next quite happily.
+    """
+    chosen = stream_from_info(info, cookies)
+    streams, seen = [chosen], {chosen.url}
+    # yt-dlp lists formats worst first, in the order of its own preferences.
+    for fmt in reversed(info.get('formats') or []):
+        if len(streams) >= limit:
+            break
+        if (not fmt.get('url') or fmt['url'] in seen or fmt.get('vcodec') in (None, 'none')
+                or not str(fmt.get('protocol') or 'https').startswith(('http', 'm3u8'))):
+            continue
+        seen.add(fmt['url'])
+        streams.append(stream_from_info({**info, 'requested_formats': None, **fmt,
+                                         'http_headers': {**(info.get('http_headers') or {}),
+                                                          **(fmt.get('http_headers') or {})}},
+                                        cookies))
+    return streams
+
+
 def find_stream(url: str, settings, fmt: str = PREVIEW_FORMAT, log_sink=None) -> Stream:
     """Ask the site for a stream to read frames from."""
     from . import media           # yt-dlp is slow to import; only when needed
