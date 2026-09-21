@@ -54,6 +54,75 @@ def sample(engine):
         engine.store.add(task)
 
 
+def check_still(app):
+    """A video's card offers one frame of it as a picture, chosen with a slider.
+
+    The frames are real: frames_check.py's video - its brightness climbs
+    steadily, so a frame's brightness says when it is from - served here the
+    way a site serves one, and read the way the app reads any other.
+    """
+    import threading
+    import time
+    from http.server import ThreadingHTTPServer
+    from pathlib import Path
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import frames_check
+    from grabbit import analyze
+    from grabbit.media import MediaItem, ProbeResult
+    from grabbit.ui.add_dialog import MediaCard
+
+    folder = Path(tempfile.mkdtemp(prefix='grabbit-still-'))
+    frames_check.make_video(folder)
+    server = ThreadingHTTPServer(('127.0.0.1', 0),
+                                 lambda *a: frames_check.RangeHandler(*a, directory=str(folder)))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f'http://127.0.0.1:{server.server_port}/climb.mp4'
+    item = MediaItem(key='climb', kind='video', title='A video that gets brighter', url=url,
+                     duration=float(frames_check.SECONDS), heights=[360])
+    probe = ProbeResult(url=url, title=item.title, items=[item], heights=[360])
+    card = MediaCard(analyze.Analysis(url=url, kind=analyze.KIND_MEDIA, probe=probe), Settings())
+
+    def wait(condition, seconds):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline and not condition():
+            app.processEvents()
+            time.sleep(0.02)
+        return condition()
+
+    def shown_time():
+        image = card.frame_picker.picture.pixmap().toImage()
+        reds = [image.pixelColor(x, y).red() for x in range(20, image.width() - 20, 23)
+                for y in range(20, image.height() - 20, 17)]
+        return (sum(reds) / max(1, len(reds))) * 219 / 255 / frames_check.RATE
+
+    try:
+        options = [card.quality.itemData(i) for i in range(card.quality.count())]
+        report("a video's card offers a still from it", 'frame' in options, ', '.join(options))
+        card.quality.setCurrentIndex(options.index('frame'))
+        picker = card.frame_picker
+        report('choosing it shows a slider along the video, and no container',
+               picker is not None and picker.isVisibleTo(card) and not card.container.isVisibleTo(card)
+               and picker.slider.maximum() == frames_check.SECONDS * 1000)
+        first = wait(lambda: not picker.picture.pixmap().isNull(), 40)
+        report('and the frame at the start', first and shown_time() < 1.0,
+               f'{shown_time():.1f}s' if first else picker.picture.text())
+        picker.slider.setValue(12_000)
+        report('the clock follows the slider', picker.clock.text().startswith('0:12.0'),
+               picker.clock.text())
+        moved = wait(lambda: abs(shown_time() - 12.0) < 1.0, 30)
+        report('and the frame there is shown once it stops', moved, f'{shown_time():.1f}s')
+        picker.kind.setCurrentIndex(picker.kind.findData('jpg'))
+        request = card.requests()[0]
+        report('Download asks for that frame, as that kind of picture',
+               request['quality'] == 'frame' and request['frame_at'] == 12.0
+               and request['frame_format'] == 'jpg',
+               f"{request['quality']} at {request.get('frame_at')}s as {request.get('frame_format')}")
+    finally:
+        card.shutdown()
+        server.shutdown()
+
+
 def main():
     app = QApplication([])
     theme.apply_theme(app, 'dark')
@@ -192,6 +261,8 @@ def main():
     report('the app icon fills its square, corners rounded',
            edge.name() == icons.APP_ICON_COLOR and edge.alpha() == 255 and corner.alpha() == 0,
            f'edge {edge.name()} alpha {edge.alpha()}, corner alpha {corner.alpha()}')
+
+    check_still(app)
 
     engine.shutdown()
     failures = [name for name, ok in results if not ok]

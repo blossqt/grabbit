@@ -81,6 +81,7 @@ class Settings:
     # Videos & images
     video_quality: str = 'best'
     video_container: str = 'mp4'
+    frame_format: str = 'png'        # a still taken from a video: png or jpg
     embed_thumbnail: bool = True
     embed_metadata: bool = True
     download_subtitles: bool = False

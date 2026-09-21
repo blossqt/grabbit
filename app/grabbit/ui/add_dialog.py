@@ -13,17 +13,21 @@ from .. import analyze as analyze_mod
 from ..torrentmeta import parse_torrent
 from ..util import extract_links, host_of, human_size, site_name
 from . import icons, preview, thumbs
+from .framepicker import FramePicker
 from .gallery import GalleryGrid, PreviewDialog
 
 THUMB_W, THUMB_H = 128, 72
 
 
-def quality_options(heights) -> list:
+def quality_options(heights, frame: bool = False) -> list:
     options = [('best', 'Best available')]
     for height in sorted({h for h in (heights or []) if h}, reverse=True)[:8]:
         options.append((str(height), f'{height}p'))
     options += [('audio_m4a', 'Audio only (M4A)'), ('audio_mp3', 'Audio only (MP3)'),
                 ('gif', 'Animated GIF')]
+    if frame:
+        # One picture, chosen with a slider: only for a single video.
+        options.append(('frame', 'Still image (one frame)'))
     return options
 
 
@@ -302,13 +306,16 @@ class MediaCard(LinkCard):
         row = QHBoxLayout()
         row.addWidget(QLabel('Quality'))
         self.quality = QComboBox()
-        for value, label in quality_options(self.item.heights or self.probe.heights):
+        still = self.item.kind == 'video' and not self.probe.is_live
+        for value, label in quality_options(self.item.heights or self.probe.heights, frame=still):
             self.quality.addItem(label, value)
         index = self.quality.findData(settings.video_quality)
         self.quality.setCurrentIndex(index if index >= 0 else 0)
+        self.quality.currentIndexChanged.connect(self._quality_changed)
         row.addWidget(self.quality)
         row.addSpacing(12)
-        row.addWidget(QLabel('Container'))
+        self.container_label = QLabel('Container')
+        row.addWidget(self.container_label)
         self.container = QComboBox()
         for value, label in (('mp4', 'MP4'), ('mkv', 'MKV'), ('any', 'Original')):
             self.container.addItem(label, value)
@@ -324,6 +331,26 @@ class MediaCard(LinkCard):
         self.preview_button.clicked.connect(self._watch)
         row.addWidget(self.preview_button)
         self.body.addLayout(row)
+        self.frame_picker = None        # made the first time a still is asked for
+
+    def _quality_changed(self):
+        """A still has no container, and needs its moment chosen instead."""
+        still = self.quality.currentData() == 'frame'
+        self.container_label.setVisible(not still)
+        self.container.setVisible(not still)
+        if still and self.frame_picker is None:
+            self.frame_picker = FramePicker(self.item.url or self.url, self.settings,
+                                            self.item.duration or 0)
+            self.body.addWidget(self.frame_picker)
+        if self.frame_picker is not None:
+            self.frame_picker.setVisible(still)
+            if still:
+                self.frame_picker.fetch()
+        self.changed.emit()
+
+    def shutdown(self):
+        if self.frame_picker is not None:
+            self.frame_picker.stop()
 
     def _watch(self):
         def state(busy, message):
@@ -333,9 +360,13 @@ class MediaCard(LinkCard):
         preview.play_link(self.item.url or self.url, self.settings, self, state)
 
     def requests(self):
-        return [{'type': 'media', 'item': self.item, 'probe': self.probe,
-                 'quality': self.quality.currentData(),
-                 'container': self.container.currentData()}]
+        request = {'type': 'media', 'item': self.item, 'probe': self.probe,
+                   'quality': self.quality.currentData(),
+                   'container': self.container.currentData()}
+        if request['quality'] == 'frame' and self.frame_picker is not None:
+            request['frame_at'] = self.frame_picker.at
+            request['frame_format'] = self.frame_picker.image_type
+        return [request]
 
 
 class GalleryCard(LinkCard):
@@ -548,6 +579,7 @@ class AddDialog(QDialog):
     def _drop_card(self, url: str):
         card = self._cards.pop(url, None)
         if card is not None:
+            getattr(card, 'shutdown', lambda: None)()
             self.card_layout.removeWidget(card)
             card.deleteLater()
         self.empty_label.setVisible(not self._cards)
@@ -589,6 +621,15 @@ class AddDialog(QDialog):
 
     def _accept(self):
         self.requests = [request for card in self._cards.values() for request in card.requests()]
+        for request in self.requests:
+            if request.get('frame_format'):
+                self.settings.frame_format = request['frame_format']
         self.save_dir = self.folder.currentText().strip() or self.settings.download_dir
         self.start_now = self.start_check.isChecked()
         self.accept()
+
+    def done(self, result):
+        # Frames still being read for a picker have nowhere to go any more.
+        for card in self._cards.values():
+            getattr(card, 'shutdown', lambda: None)()
+        super().done(result)

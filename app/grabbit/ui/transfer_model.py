@@ -41,8 +41,10 @@ def task_icon(task):
     if task.kind == KIND_IMAGE:
         return icons.icon('image', color, 18)
     if task.kind == KIND_MEDIA:
-        quality = (task.media or {}).get('quality', '')
-        return icons.icon('music' if str(quality).startswith('audio') else 'video', color, 18)
+        quality = str((task.media or {}).get('quality', ''))
+        if quality == 'frame':                  # one picture out of a video
+            return icons.icon('image', color, 18)
+        return icons.icon('music' if quality.startswith('audio') else 'video', color, 18)
     return icons.icon('file', color, 18)
 
 

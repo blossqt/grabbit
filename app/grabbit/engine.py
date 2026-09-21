@@ -432,8 +432,10 @@ class Engine(QObject):
         self.tasks_updated.emit([task.id])
 
     def add_media(self, item, probe_result, quality: str = '', container: str = '',
-                  save_dir: str = '', start: bool = True) -> Task:
-        """Queue a video/audio item for yt-dlp."""
+                  save_dir: str = '', start: bool = True, frame_at: float = 0.0,
+                  frame_format: str = 'png') -> Task:
+        """Queue a video/audio item for yt-dlp - or, with quality 'frame', the
+        one picture at frame_at seconds into it (grabbit.frames)."""
         save_dir = save_dir or self.settings.download_dir
         if self.settings.site_subfolders and probe_result.site:
             save_dir = os.path.join(save_dir, safe_filename(probe_result.site, 'site', 60))
@@ -452,6 +454,12 @@ class Engine(QObject):
             'entry_index': item.index,
             'duration': item.duration,
         }
+        if task.media['quality'] == 'frame':
+            from .frames import frame_filename
+            task.media['frame_at'] = max(0.0, float(frame_at or 0))
+            task.media['frame_format'] = frame_format or 'png'
+            task.name = frame_filename(task.name, task.media['frame_at'], task.media['frame_format'])
+            task.total = 0                  # a picture, not the video's size
         task.state = State.QUEUED if start else State.PAUSED
         self._register(task)
         if start:

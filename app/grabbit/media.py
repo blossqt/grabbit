@@ -122,6 +122,12 @@ def format_selection(quality: str, container: str) -> dict:
     params: dict = {}
     postprocessors: list[dict] = []
 
+    if quality == 'frame':
+        # One picture, read from the sharpest stream there is (frames.py).
+        from .frames import FULL_FORMAT
+        params['format'] = FULL_FORMAT
+        params['_postprocessors'] = postprocessors
+        return params
     if quality == 'gif':
         # No audio in a GIF, so skip downloading it. 720p is plenty of detail
         # for something that gets scaled down and reduced to 256 colours.
@@ -165,8 +171,8 @@ def download_params(settings, save_dir: str, quality: str | None = None,
     selection = format_selection(quality, container)
     postprocessors = selection.pop('_postprocessors')
     is_audio = quality.startswith('audio')
-    if quality == 'gif':
-        # Cover art, chapters and subtitles mean nothing in a GIF.
+    if quality in ('gif', 'frame'):
+        # Cover art, chapters and subtitles mean nothing in a GIF or a picture.
         return {'paths': {'home': save_dir},
                 'outtmpl': {'default': settings.filename_template},
                 'noplaylist': True, 'postprocessors': [], **selection}
@@ -749,6 +755,9 @@ class MediaJob(threading.Thread):
         with ydl:
             info = self._fetch_info(ydl)
             self.check_interrupts()
+            if self.media.get('quality') == 'frame':
+                self._save_frame(ydl, info)
+                return
             self._emit(self.task_id, 'state', {'state': 'downloading', 'note': ''})
             result = ydl.process_ie_result(info, download=True)
 
@@ -767,6 +776,51 @@ class MediaJob(threading.Thread):
 
         size = os.path.getsize(filepath) if filepath and os.path.exists(filepath) else 0
         self._emit(self.task_id, 'finished', {'filepath': filepath, 'size': size})
+
+    def _save_frame(self, ydl, info: dict) -> None:
+        """One frame, read from the stream at the moment that was chosen.
+
+        FFmpeg seeks in the stream itself, so this costs the frame rather than
+        the video. A stream it cannot seek in is downloaded instead, and the
+        frame read from the file.
+        """
+        import copy
+
+        from . import frames
+        from .util import unique_path
+
+        at = max(0.0, float(self.media.get('frame_at') or 0))
+        kind = self.media.get('frame_format') or 'png'
+        self._emit(self.task_id, 'state', {'state': 'downloading',
+                                           'note': f'Reading the frame at {frames.clock(at)}'})
+        processed = ydl.process_ie_result(copy.deepcopy(info), download=False)
+        title = processed.get('title') or info.get('title') or 'frame'
+        os.makedirs(self.save_dir, exist_ok=True)
+        target = unique_path(self.save_dir, frames.frame_filename(title, at, kind))
+        try:
+            stream = frames.stream_from_info(processed, ydl.cookiejar)
+            frames.save(stream.url, stream.headers, at, target)
+        except frames.FrameError as exc:
+            self.check_interrupts()
+            self._log(f'Could not read the frame from the stream ({exc}); '
+                      'downloading the video to read it from that instead.')
+            self._emit(self.task_id, 'state', {'state': 'downloading', 'note': ''})
+            result = ydl.process_ie_result(info, download=True)
+            video = (traverse_obj(result, ('requested_downloads', 0, 'filepath'))
+                     or result.get('filepath') or '')
+            if not video or not os.path.exists(video):
+                raise RuntimeError('The video could not be downloaded to read the frame from')
+            try:
+                self._emit(self.task_id, 'state', {'state': 'processing',
+                                                   'note': f'Reading the frame at {frames.clock(at)}'})
+                frames.save(video, None, at, target)
+            finally:
+                try:
+                    os.remove(video)          # only ever a means to the picture
+                except OSError:
+                    pass
+        self._log(f'Saved the frame at {frames.clock(at)}: {os.path.basename(target)}')
+        self._emit(self.task_id, 'finished', {'filepath': target, 'size': os.path.getsize(target)})
 
     def _fetch_info(self, ydl) -> dict:
         """Read the page again with the session that is about to download it.
