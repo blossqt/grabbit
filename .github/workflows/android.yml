@@ -52,6 +52,9 @@ jobs:
       # default spelled out, because the default alone left the key somewhere
       # the cache below never found.
       ANDROID_USER_HOME: /home/runner/.android
+      # Whether this repository holds the release signing key. Secrets cannot
+      # appear in a step's condition, but a job's environment can carry this.
+      HAS_RELEASE_KEY: ${{ secrets.ANDROID_KEYSTORE_B64 != '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -184,24 +187,32 @@ jobs:
             ~/android/arm64-sysroot
           key: ${{ env.NATIVES_KEY }}-${{ hashFiles('build/android/build_aria2.sh', 'build/android/build_tools.sh', 'build/patches/*.patch') }}
 
-      # Gradle invents a debug keystore when it cannot find one, and a runner
-      # starts without one every time - so each build would be signed with a
-      # different key, and Android refuses to install an APK over one signed
-      # with another. Keeping the first key means these APKs update in place
-      # like any other app. It is the ordinary debug key, with the password
-      # everyone's SDK uses; it guards nothing and is not a secret.
-      - name: Restore the debug signing key
+      # Android installs an APK over an earlier one only when both are signed
+      # with the same key, so every build is signed with the one release key
+      # (build/android/make_signing_key.py made it and stored it as a secret).
+      # Gradle signs debug builds with whatever sits at ANDROID_USER_HOME's
+      # debug.keystore, so that is where it goes.
+      - name: Install the release signing key
+        if: env.HAS_RELEASE_KEY == 'true'
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          mkdir -p "$ANDROID_USER_HOME"
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$ANDROID_USER_HOME/debug.keystore"
+
+      # A fork has no release key, and builds with a throwaway one instead -
+      # kept between its runs so at least its own builds update each other.
+      # The release key itself is never cached: a cache can be read by more
+      # than this workflow, and a secret cannot.
+      - name: Restore a throwaway signing key
+        if: env.HAS_RELEASE_KEY != 'true'
         id: debugkey
         uses: actions/cache/restore@v4
         with:
           path: ~/.android/debug.keystore
           key: ${{ env.DEBUGKEY_KEY }}
 
-      # Leaving Gradle to make the key did not work: it never appeared where
-      # the cache looks, and a cache save that finds nothing only warns, so
-      # the step went green having kept nothing. Make it here instead, in the
-      # standard debug form, where ANDROID_USER_HOME tells Gradle to look.
-      - name: Make the debug signing key if there is none
+      - name: Make the signing key if there is none
         id: keystore
         run: |
           mkdir -p "$ANDROID_USER_HOME"
@@ -213,11 +224,11 @@ jobs:
           fi
           sha=$(keytool -list -v -keystore "$ANDROID_USER_HOME/debug.keystore" -storepass android \
                 | sed -n 's/^[[:space:]]*SHA256:[[:space:]]*//p' | head -1 | tr -d ':' | tr 'A-F' 'a-f')
-          echo "debug key SHA-256: $sha"
+          echo "signing key SHA-256: $sha"
           echo "sha256=$sha" >> "$GITHUB_OUTPUT"
 
-      - name: Keep the debug signing key
-        if: steps.debugkey.outputs.cache-hit != 'true'
+      - name: Keep the throwaway signing key
+        if: env.HAS_RELEASE_KEY != 'true' && steps.debugkey.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: ~/.android/debug.keystore
@@ -262,8 +273,19 @@ jobs:
                    | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -1)
           echo "APK signed by SHA-256: $signer"
           if [ "$signer" != "${{ steps.keystore.outputs.sha256 }}" ]; then
-            echo "::error::the APK is not signed with the kept debug key, so it will not install over the last one"
+            echo "::error::the APK is not signed with the key installed for it, so it will not install over the last one"
             exit 1
+          fi
+          # And that key must be the one the repository pins. A secret that
+          # has been replaced would otherwise produce APKs that build and
+          # install cleanly - on a phone that never had Grabbit.
+          pinned=$(tr -d '[:space:]' < build/android/signing-sha256.txt)
+          if [ "$HAS_RELEASE_KEY" = 'true' ] && [ "$signer" != "$pinned" ]; then
+            echo "::error::the ANDROID_KEYSTORE_B64 secret is not the key build/android/signing-sha256.txt pins"
+            exit 1
+          fi
+          if [ "$signer" != "$pinned" ]; then
+            echo "::warning::signed with a throwaway key: this APK cannot be released or installed over Grabbit"
           fi
           version=$(sed -n "s/^APP_VERSION = '\(.*\)'/\1/p" app/grabbit/__init__.py)
           final="dist/android/Grabbit-${version}-arm64-${GITHUB_SHA::7}.apk"
