@@ -129,6 +129,39 @@ and later keep apps out of the shared Downloads folder without an explicit
 grant, so Grabbit asks once and otherwise saves into its own folder — still
 reachable over USB, just not listed in the Downloads app.
 
+## Updates and releases
+
+Both apps ask GitHub for the latest release a minute after they start and twice
+a day after that; the phone also asks when it comes back from a long pause. When
+it is newer than the copy that is running, the desktop shows a banner that
+downloads the new zip, and the phone one that downloads the new APK — which
+installs over the old app and keeps everything in it. **Help › Check for
+updates** asks straight away; on the phone, touch the version line at the
+bottom. **Settings › Interface** turns the automatic checks off.
+
+To publish a release:
+
+    powershell -ExecutionPolicy Bypass -File build\release.ps1 --version 1.3.0 --notes "What's new"
+
+It makes sure the work is committed and pushed, runs the checks, builds the
+Windows zip, takes the APK for the same commit from the Android workflow
+(starting a build if there is none), refuses an APK signed with anything but
+the release key, and asks before publishing. `--dry-run` does everything short
+of publishing; `--no-build` reuses the Windows build already in `dist\Grabbit`.
+
+Every APK is signed with one key, because Android only installs an update that
+is signed like the app it replaces. `build/android/make_signing_key.py` made it
+once: it lives in the repository's `ANDROID_KEYSTORE_B64` secret and in
+`~\.grabbit\android\release.keystore`, and its public fingerprint is pinned in
+`build/android/signing-sha256.txt`, which every build and every release is held
+to. **Back the keystore up** — without it no installed copy can be updated
+again. If the secret is ever lost, `make_signing_key.py --upload` puts it back.
+
+The update checker has its own checks, against a stand-in for GitHub and then
+the real thing:
+
+    %LOCALAPPDATA%\GrabbitBuild\venv\Scripts\python.exe build\update_check.py
+
 ## Layout
 
     app/grabbit/        the application
@@ -145,13 +178,14 @@ reachable over USB, just not listed in the Downloads app.
       player.py         finds and launches your video player
       associations.py   magnet / .torrent registration (per-user, no admin)
       speeds.py         the speed history both graphs draw
+      updates.py        whether a newer release is out (both apps ask it)
       ui/               Qt interface (speedgraph.py is the graph pane)
     android/            the phone build
       main.py           Kivy interface
       grabbit_mobile/   the same engine without Qt, plus Android's storage rules
         ui/             the desktop layout, folded into one column
     aria2/              aria2's source, fetched by bootstrap.ps1 (not in git)
-    build/              build scripts, patches, self-test
+    build/              build scripts, patches, self-test, release.ps1
       android/          cross-compilers for arm64 and the APK build
     vendor/aria2c.exe   the compiled engine
     dist/Grabbit/       the finished app
