@@ -62,6 +62,43 @@ def can_resolve_names() -> bool:
         return False
 
 
+PNG_MAGIC = bytes([0x89]) + b'PNG'
+JPEG_MAGIC = bytes([0xFF, 0xD8, 0xFF])
+
+
+def check_frames():
+    """One frame of a video, as the page's Image choice saves it - with the
+    phone's own FFmpeg, from the test video device_test.ps1 puts beside this
+    (a network one cannot be reached from here; see can_resolve_names)."""
+    from grabbit import frames
+    video = os.path.join(APP, 'frame-test.mp4')
+    if not os.path.exists(video):
+        print('  (no frame-test.mp4 beside this, so frames are not checked)')
+        return
+    print('\n-- one frame of a video --', flush=True)
+    stream = frames.Stream(url=video)
+    frames._measure(stream)
+    report('FFprobe measures the video', abs(stream.duration - 20) < 0.5,
+           f'{stream.duration:.1f}s, {stream.width}x{stream.height}, {stream.fps:.0f} fps')
+    try:
+        shown = frames.preview(stream, 12.0, 640)
+        report('a frame to look at comes out as a JPEG', shown[:3] == JPEG_MAGIC,
+               f'{len(shown) // 1024} KB')
+    except frames.FrameError as exc:
+        report('a frame to look at comes out as a JPEG', False, str(exc))
+    for kind, magic in (('png', PNG_MAGIC), ('jpg', JPEG_MAGIC)):
+        target = os.path.join(str(paths.downloads_dir()), f'frame-test.{kind}')
+        try:
+            frames.save(video, None, 12.0, target)
+            with open(target, 'rb') as handle:
+                ok = handle.read(4).startswith(magic)
+            report(f'and one to keep, as {kind.upper()}', ok,
+                   f'{os.path.getsize(target) // 1024} KB')
+            os.remove(target)
+        except (frames.FrameError, OSError) as exc:
+            report(f'and one to keep, as {kind.upper()}', False, str(exc))
+
+
 def main():
     tools = unpack_tools()
     report('the bundled tools are where the app can run them', len(tools) == 4,
@@ -80,6 +117,8 @@ def main():
            f'version {engine.process.version}' if engine.process else 'no process')
     if not started:
         return 1
+
+    check_frames()
 
     if not can_resolve_names():
         engine.shutdown()

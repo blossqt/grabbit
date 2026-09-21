@@ -209,4 +209,10 @@ def main():
 
 
 if __name__ == '__main__':
+    if '--make-video' in sys.argv:
+        # device_test.ps1 wants the video alone, to read frames from on a phone.
+        folder = Path(sys.argv[sys.argv.index('--make-video') + 1])
+        folder.mkdir(parents=True, exist_ok=True)
+        print(make_video(folder))
+        sys.exit(0)
     sys.exit(main())

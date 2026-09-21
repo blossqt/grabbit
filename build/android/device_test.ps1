@@ -75,6 +75,14 @@ if (-not (Test-Unpacked)) {
 # adb push cannot reach an app's private folder, and the app cannot read
 # /data/local/tmp. So the file is pushed as the shell user and poured into the
 # sandbox through a pipe: cat reads it, run-as writes it.
+# A short video to read frames from, made here: the phone has FFmpeg but
+# nothing to feed it without the network.
+$python = "$env:LOCALAPPDATA\GrabbitBuild\venv\Scripts\python.exe"
+$frames = Join-Path $env:TEMP 'grabbit-frame-test'
+& $python (Join-Path $PSScriptRoot '..\frames_check.py') --make-video $frames
+& $adb push "$frames\climb.mp4" /data/local/tmp/frame-test.mp4 2>&1 | Out-Null
+& $adb shell "cat /data/local/tmp/frame-test.mp4 | run-as $package sh -c 'cat > files/app/frame-test.mp4'; rm -f /data/local/tmp/frame-test.mp4"
+
 & $adb push $Script /data/local/tmp/device_engine_test.py 2>&1 | Select-String 'pushed' | ForEach-Object { "  $_" }
 & $adb shell "cat /data/local/tmp/device_engine_test.py | run-as $package sh -c 'cat > files/app/device_engine_test.py'"
 & $adb shell "rm -f /data/local/tmp/device_engine_test.py"

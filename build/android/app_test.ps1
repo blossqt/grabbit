@@ -1,6 +1,7 @@
 <#
-    Drives the installed app the way a person would - by sharing links to it -
-    and reports what ends up in the downloads folder.
+    Drives the installed app the way a person would - by sharing links to it
+    and touching Download on the page that asks what to make of each - and
+    reports what ends up in the downloads folder.
 
         powershell -File build\android\app_test.ps1
 
@@ -37,51 +38,54 @@ function Share($url) {
     & $adb shell "am start -a android.intent.action.SEND -t text/plain --es android.intent.extra.TEXT '$url' -n $activity" | Out-Null
 }
 
-function Get-ChipRow {
-    # Which screen row the format chips are on. This used to be a number, and
-    # the number was right until the interface started padding itself down by
-    # however far the camera cutout reaches - which differs by handset. So
-    # look: the chips are the topmost band of the selected-chip colour, with
-    # the filter chips making a second band below them.
-    $probe = Join-Path $env:TEMP 'grabbit-chip-probe.png'
-    & $adb shell "screencap -p /sdcard/chip-probe.png" | Out-Null
-    & $adb pull /sdcard/chip-probe.png $probe 2>&1 | Out-Null
-    $row = & $python -c "from PIL import Image
-im = Image.open(r'$probe').convert('RGB')
-w, h = im.size
-start = None
-for y in range(h):
-    wide = sum(1 for x in range(0, w, 2) if im.getpixel((x, y)) == (42, 44, 49)) > 20
-    if wide and start is None:
-        start = y
-    elif not wide and start is not None:
-        print((start + y - 1) // 2)
-        break
-else:
-    print(-1)"
-    return [int]$row
+function Get-Screen {
+    # The display's size and density, as Android reports them - an override
+    # (set in developer options) wins, and comes last.
+    $size = (& $adb shell "wm size") | Where-Object { $_ -match '\d+x\d+' } | Select-Object -Last 1
+    $density = (& $adb shell "wm density") | Where-Object { $_ -match '\d' } | Select-Object -Last 1
+    $w, $h = ($size -replace '.*?(\d+)x(\d+).*', '$1 $2') -split ' '
+    return @{ Width = [int]$w; Height = [int]$h; Dp = [int]($density -replace '.*?(\d+)\s*$', '$1') / 160.0 }
 }
 
-function Select-Format($x, $low, $high) {
-    # Tap the format chip and check it actually took. While yt-dlp is
-    # extracting, the interface thread can be starved for a few seconds and a
-    # tap arrives late - after the link has already been shared with the old
-    # format still selected, which used to look like a broken download.
-    $probe = Join-Path $env:TEMP 'grabbit-chip-probe.png'
-    $row = Get-ChipRow
-    if ($row -lt 0) { return $false }
-    for ($attempt = 1; $attempt -le 8; $attempt++) {
-        & $adb shell "input tap $x $row" | Out-Null
-        Start-Sleep -Seconds 6
-        & $adb shell "screencap -p /sdcard/chip-probe.png" | Out-Null
-        & $adb pull /sdcard/chip-probe.png $probe 2>&1 | Out-Null
-        $centre = & $python -c "from PIL import Image
-im = Image.open(r'$probe').convert('RGB')
-run = [x for x in range(im.size[0]) if im.getpixel((x, $row)) == (42, 44, 49)]
-print(sum(run) // len(run) if run else -1)"
-        if ([int]$centre -ge $low -and [int]$centre -le $high) { return $true }
+function Confirm-Page($seconds) {
+    # Sharing a link opens the page that asks what to make of it. Its Download
+    # button sits at the bottom right, and turns blue once the link has been
+    # read - so wait for the blue, then tap it.
+    $screen = Get-Screen
+    $x = [int]($screen.Width * 0.75)
+    $y = [int]($screen.Height - (14 + 24) * $screen.Dp)
+    $probe = Join-Path $env:TEMP 'grabbit-page-probe.png'
+    $deadline = (Get-Date).AddSeconds($seconds)
+    while ((Get-Date) -lt $deadline) {
+        & $adb shell "screencap -p /sdcard/page-probe.png" | Out-Null
+        & $adb pull /sdcard/page-probe.png $probe 2>&1 | Out-Null
+        $blue = & $python -c "from PIL import Image
+r, g, b = Image.open(r'$probe').convert('RGB').getpixel(($x, $y))
+print(1 if b > 200 and r < 120 else 0)"
+        if ([int]$blue -eq 1) {
+            & $adb shell "input tap $x $y" | Out-Null
+            return $true
+        }
+        Start-Sleep -Seconds 2
     }
     return $false
+}
+
+function Set-Remembered($quality) {
+    # The page opens on the last choice made in it, which the app keeps in its
+    # settings: write that choice in while the app is stopped, and the page
+    # comes up with it already chosen.
+    & $adb shell "am force-stop $package" | Out-Null
+    $file = 'files/app/grabbit/settings.json'
+    $json = (& $adb exec-out "run-as $package cat $file") -join "`n"
+    $local = Join-Path $env:TEMP 'grabbit-settings.json'
+    $json | & $python -c "import json, sys
+text = sys.stdin.read().strip()
+data = json.loads(text) if text.startswith('{') else {}
+data['video_quality'] = '$quality'
+open(r'$local', 'w', encoding='utf-8').write(json.dumps(data, indent=2))"
+    & $adb push $local /data/local/tmp/grabbit-settings.json 2>&1 | Out-Null
+    & $adb shell "cat /data/local/tmp/grabbit-settings.json | run-as $package sh -c 'cat > $file'; rm -f /data/local/tmp/grabbit-settings.json"
 }
 
 function Sizes {
@@ -126,6 +130,8 @@ if ((& $adb shell "dumpsys window | grep -c mDreamingLockscreen=true").Trim() -n
 if (-not $KeepFiles) { & $adb shell "rm -rf $folder" | Out-Null }
 
 "`n=== starting the app ==="
+# A video comes out as a video unless the page was last left on something else.
+Set-Remembered 'best'
 & $adb shell "am force-stop $package" | Out-Null
 & $adb logcat -c
 & $adb shell "input keyevent KEYCODE_WAKEUP" | Out-Null
@@ -142,25 +148,26 @@ foreach ($case in @(
     "`n=== $($case.Name) ==="
     $before = @(Saved)
     Share $case.Url
+    if (-not (Confirm-Page 90)) {
+        Report $case.Name $false 'the page never offered Download'
+        continue
+    }
     $new = Wait-ForFile $before $case.Match $Wait
     Report $case.Name ($new.Count -gt 0) ($new -join ', ')
 }
 
 "`n=== the same video as a GIF, and as an MP3 ==="
-# The format buttons sit under the link box: Video, MP3, GIF.
-$width = [int]((& $adb shell "wm size") -replace '.*?(\d+)x\d+.*', '$1')
 foreach ($format in @(
-    @{ Name = 'MP3'; X = [int]($width * 0.5); Low = $width * 0.35; High = $width * 0.65; Match = '\.mp3$' },
-    @{ Name = 'GIF'; X = [int]($width * 0.82); Low = $width * 0.68; High = $width * 0.99; Match = '\.gif$' }
+    @{ Name = 'MP3'; Quality = 'audio_mp3'; Match = '\.mp3$' },
+    @{ Name = 'GIF'; Quality = 'gif'; Match = '\.gif$' }
 )) {
     $before = @(Saved)
-    & $adb shell "am start -n $activity" | Out-Null
-    Start-Sleep -Seconds 2
-    if (-not (Select-Format $format.X $format.Low $format.High)) {
-        Report "$($format.Name) from the same link" $false 'the format chip never took the tap'
+    Set-Remembered $format.Quality
+    Share 'https://www.youtube.com/watch?v=jNQXAC9IVRw'
+    if (-not (Confirm-Page 120)) {
+        Report "$($format.Name) from the same link" $false 'the page never offered Download'
         continue
     }
-    Share 'https://www.youtube.com/watch?v=jNQXAC9IVRw'
     # These two download and then re-encode, so they get considerably longer.
     $new = Wait-ForFile $before $format.Match ($Wait + 180)
     Report "$($format.Name) from the same link" ($new.Count -gt 0) ($new -join ', ')
