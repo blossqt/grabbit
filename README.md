@@ -28,7 +28,7 @@ that data in a `data\` folder beside it instead.
 
 | You paste | What happens |
 |---|---|
-| YouTube, TikTok, Twitch, Vimeo… (the ~1,700 sites yt-dlp reads) | Preview card with quality and container pickers; video and audio are fetched separately and merged |
+| YouTube, TikTok, Twitch, Vimeo… (the ~1,700 sites yt-dlp reads) | Preview card with quality and container pickers; video and audio are fetched separately and merged. Or keep one frame as a picture, its moment picked with a slider |
 | Instagram post or carousel | Grid of every slide — click to include or exclude, double-click for a full-size preview |
 | TikTok photo post | Same grid, plus the post's soundtrack as an optional item |
 | YouTube playlist / channel | Every entry as a tickable thumbnail |
@@ -39,6 +39,16 @@ that data in a `data\` folder beside it instead.
 | `.metalink` / `.meta4` | Every file, downloaded from all its mirrors at once and checked against its checksum |
 | Direct file link | Downloads it with up to 16 connections |
 | Anything else | Says so, and offers to save the page as a file |
+
+## One frame as a picture
+
+A video's card offers **Still image (one frame)**. A slider runs the length of
+the video with the frame under it shown above, and ‹ › step one frame either
+way; the frame is saved as a PNG or a JPG at the video's full resolution.
+Nothing is downloaded to find it: FFmpeg seeks straight into the stream with
+range requests, so looking at a frame an hour in costs a few hundred kilobytes
+(`frames.py`). A stream that cannot be seeked in is downloaded, and the frame
+read from that instead.
 
 ## Watching before you download
 
@@ -82,11 +92,19 @@ with invented downloads, in a couple of seconds:
 
     %LOCALAPPDATA%\GrabbitBuild\venv\Scripts\python.exe build\ui_check.py
 
+Reading frames out of a video served over HTTP, the way a site serves one:
+
+    %LOCALAPPDATA%\GrabbitBuild\venv\Scripts\python.exe build\frames_check.py
+
 ## The Android build
 
 The APK carries the same engine — aria2, yt-dlp, FFmpeg — cross-compiled for
 arm64, with a Kivy interface instead of Qt and QuickJS in place of Deno, which
-has no Android target. Building it needs WSL (Ubuntu), a JDK, and roughly 15 GB:
+has no Android target. Pasting or sharing a link opens a page once the link has
+been read, with the choices the desktop's card offers: quality and file type,
+the sound alone, a GIF, or one frame picked with a slider. The link box itself
+is Android's own text field, so holding it gives Android's own copy and paste
+menu. Building it needs WSL (Ubuntu), a JDK, and roughly 15 GB:
 
     bash build/android/fetch_sdk.sh        # NDK, SDK command-line tools, adb
     bash build/android/build_aria2.sh      # aria2 + OpenSSL, zlib, expat, c-ares
@@ -179,6 +197,7 @@ the real thing:
       associations.py   magnet / .torrent registration (per-user, no admin)
       speeds.py         the speed history both graphs draw
       updates.py        whether a newer release is out (both apps ask it)
+      frames.py         one frame of a video, read without downloading the video
       ui/               Qt interface (speedgraph.py is the graph pane)
     android/            the phone build
       main.py           Kivy interface
