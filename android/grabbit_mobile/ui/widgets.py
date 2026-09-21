@@ -40,6 +40,10 @@ class Card(BoxLayout):
         self._line.rounded_rectangle = (self.x, self.y, self.width, self.height, self._radius)
 
 
+class TapLabel(ButtonBehavior, Label):
+    """Text that does something when touched, and looks no different."""
+
+
 class Chip(ButtonBehavior, Label):
     """One filter, on or off. The sidebar's rows, made to fit sideways."""
 

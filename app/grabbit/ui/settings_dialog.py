@@ -255,6 +255,9 @@ class SettingsDialog(QDialog):
         self.confirm_remove = QCheckBox('Ask before removing downloads')
         self.confirm_remove.setChecked(settings.confirm_remove)
         form.addRow('', self.confirm_remove)
+        self.check_for_updates = QCheckBox('Tell me when a new version of Grabbit is out')
+        self.check_for_updates.setChecked(settings.check_for_updates)
+        form.addRow('', self.check_for_updates)
 
         # --------------------------------------------------------- advanced
         form = _page(tabs, 'Advanced')
@@ -358,6 +361,7 @@ class SettingsDialog(QDialog):
         s.close_to_tray = self.close_to_tray.isChecked()
         s.notify_on_complete = self.notify.isChecked()
         s.confirm_remove = self.confirm_remove.isChecked()
+        s.check_for_updates = self.check_for_updates.isChecked()
 
         s.proxy = self.proxy.text().strip()
         s.user_agent = self.user_agent.text().strip()

@@ -174,6 +174,32 @@ def open_all_files_settings() -> bool:
         return False
 
 
+def open_url(url: str) -> bool:
+    """Hand a link to whatever the phone opens links with.
+
+    For an update that is the browser, which downloads the APK and offers to
+    open it - and Android installs it over this copy, keeping its downloads
+    and settings, because both are signed with the same key. Off a phone, the
+    desktop's browser does the same job for the preview.
+    """
+    try:
+        from jnius import autoclass
+        activity = autoclass('org.kivy.android.PythonActivity').mActivity
+        Intent = autoclass('android.content.Intent')
+        Uri = autoclass('android.net.Uri')
+        intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        activity.startActivity(intent)
+        return True
+    except ImportError:
+        pass
+    except Exception:
+        log.exception('could not open %s', url)
+        return False
+    import webbrowser
+    return webbrowser.open(url)
+
+
 def safe_insets() -> tuple:
     """How far the system's own furniture reaches in, in pixels.
 

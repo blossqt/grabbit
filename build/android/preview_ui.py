@@ -6,6 +6,7 @@ of made-up tasks is enough to see every state at once.
 
     %LOCALAPPDATA%\\GrabbitBuild\\venv\\Scripts\\python.exe build\\android\\preview_ui.py
     ... --shot out.png     render once, save it, and quit
+    ... --update           with the banner a newer release would show
 """
 
 import math
@@ -178,6 +179,29 @@ def check(app):
         results.append((name, ok))
         print(f'  [{"PASS" if ok else "FAIL"}] {name}' + (f' - {detail}' if detail else ''))
 
+    # Updates first, so every check after this one also shows that a banner
+    # which has come and gone leaves nothing behind to catch taps.
+    from grabbit import APP_VERSION, updates
+    app.refresh()
+    report('the footer carries this version', f'Grabbit {APP_VERSION}' in app.footer.text,
+           app.footer.text)
+    newer = updates.Check(APP_VERSION, updates.Release(
+        '9.0.0', 'v9.0.0', 'Grabbit 9.0.0', '', 'https://example.invalid/v9.0.0',
+        assets=[updates.Asset('Grabbit-9.0.0-arm64.apk', 'https://example.invalid/apk', 1)]))
+    newer.asset = newer.release.asset_for('android')
+    app._on_update_checked(newer, False)
+    settle()
+    report('a newer Grabbit shows the update banner',
+           app.update_banner.parent is app.update_slot and '9.0.0' in app.update_label.text,
+           app.update_label.text)
+    tap(app._format_chips['audio_mp3'])
+    report('the controls below it still take taps', app.format == 'audio_mp3', repr(app.format))
+    tap(app.update_later)
+    settle()
+    report('Later takes it away entirely',
+           not app.update_slot.children and app.update_slot.height == 0)
+    tap(app._format_chips[''])
+
     tap(app._format_chips['gif'])
     report('the format chips choose a format', app.format == 'gif', repr(app.format))
     tap(app._format_chips[''])
@@ -298,6 +322,13 @@ def main():
             app.graph.push_tasks(app.engine.store)
         app.select_task(list(app.engine.store)[0].id)
         app.refresh()
+        if '--update' in sys.argv:
+            from grabbit import APP_VERSION, updates
+            sample = updates.Check(APP_VERSION, updates.Release(
+                '1.3.0', 'v1.3.0', 'Grabbit 1.3.0', '', updates.RELEASES_PAGE,
+                assets=[updates.Asset('Grabbit-1.3.0-arm64.apk', updates.RELEASES_PAGE)]))
+            sample.asset = sample.release.asset_for('android')
+            app.show_update(sample)
         if '--check' in sys.argv:
             code = check(app)
             app.stop()

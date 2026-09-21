@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import threading
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'shared'))
 
@@ -23,6 +24,7 @@ from kivy.uix.popup import Popup                            # noqa: E402
 from kivy.uix.scrollview import ScrollView                  # noqa: E402
 from kivy.uix.textinput import TextInput                    # noqa: E402
 
+from grabbit import APP_VERSION, updates                    # noqa: E402
 from grabbit.settings import Settings                       # noqa: E402
 from grabbit.tasks import (KIND_IMAGE, KIND_MEDIA, RUNNING_STATES,  # noqa: E402
                            State)
@@ -33,7 +35,7 @@ from grabbit_mobile.ui import theme                         # noqa: E402
 from grabbit_mobile.ui.details import DetailsSheet          # noqa: E402
 from grabbit_mobile.ui.graph import SpeedGraph              # noqa: E402
 from grabbit_mobile.ui.rows import TaskRow                  # noqa: E402
-from grabbit_mobile.ui.widgets import Card, Chip, FlatButton  # noqa: E402
+from grabbit_mobile.ui.widgets import Card, Chip, FlatButton, TapLabel  # noqa: E402
 
 # Shared text is rarely just a link - "look at this <url> 😂" is the normal
 # shape of it, so pick the link out rather than refusing the message.
@@ -138,6 +140,16 @@ class GrabbitApp(App):
         root = BoxLayout(orientation='vertical', padding=dp(8), spacing=dp(6))
         self.root_box = root
         root.add_widget(self._build_top_bar())
+        # A newer Grabbit, when a check finds one. Like the graph below, it
+        # lives in a slot that is emptied rather than shrunk to nothing: a
+        # zero-height layout still lays out its children, and they go on
+        # taking touches meant for whatever is drawn where they are.
+        self._update_answer = None
+        self._update_checking = False
+        self._last_update_check = 0.0
+        self.update_banner = self._build_update_banner()
+        self.update_slot = BoxLayout(size_hint_y=None, height=0)
+        root.add_widget(self.update_slot)
         root.add_widget(self._build_add_row())
         root.add_widget(self._build_formats())
 
@@ -170,8 +182,13 @@ class GrabbitApp(App):
         self.scroll.add_widget(self.list)
         root.add_widget(self.scroll)
 
-        self.footer = Label(text='', color=theme.DIM, font_size=dp(11),
-                            size_hint_y=None, height=dp(20))
+        # It carries this copy's version, and touching it asks whether there
+        # is a newer one - the phone's Help › Check for updates.
+        self.footer = TapLabel(text='', color=theme.DIM, font_size=dp(11),
+                               size_hint_y=None, height=dp(20), shorten=True,
+                               halign='center', valign='middle')
+        self.footer.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
+        self.footer.bind(on_release=lambda *_: self.check_for_updates(manual=True))
         root.add_widget(self.footer)
 
         self.details = DetailsSheet(self.engine)
@@ -183,6 +200,9 @@ class GrabbitApp(App):
         Clock.schedule_once(lambda *_: self._apply_insets(), 1.5)
         Clock.schedule_once(lambda *_: self._start_engine(), 0.4)
         Clock.schedule_interval(lambda *_: self.refresh(), 1.0)
+        # The first check follows the engine starting (see _start_engine_worker);
+        # after that twice a day while open, and on coming back after longer.
+        Clock.schedule_interval(lambda *_: self.check_for_updates(), updates.CHECK_INTERVAL)
         return root
 
     # ----------------------------------------------------------------- parts
@@ -201,6 +221,23 @@ class GrabbitApp(App):
         bar.add_widget(self.speed_label)
         bar.add_widget(self.graph_chip)
         return bar
+
+    def _build_update_banner(self):
+        """The desktop's update banner, in one row."""
+        banner = Card(size_hint_y=None, height=dp(40), spacing=dp(6),
+                      padding=[dp(10), dp(4), dp(4), dp(4)])
+        self.update_label = Label(text='', color=theme.TEXT, font_size=dp(13), halign='left',
+                                  valign='middle', shorten=True, shorten_from='right')
+        self.update_label.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
+        get = FlatButton(text='Get it', size_hint_x=None, width=dp(68), font_size=dp(13),
+                         color=(1, 1, 1, 1), fill=theme.BLUE)
+        get.bind(on_release=lambda *_: self._get_update())
+        self.update_later = FlatButton(text='Later', size_hint_x=None, width=dp(60),
+                                       font_size=dp(13), color=theme.DIM)
+        self.update_later.bind(on_release=lambda *_: self.show_update(None))
+        for widget in (self.update_label, get, self.update_later):
+            banner.add_widget(widget)
+        return banner
 
     def _build_add_row(self):
         row = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
@@ -281,6 +318,8 @@ class GrabbitApp(App):
                 self.engine.add_link(url, wanted)
             self._pending.clear()
             Clock.schedule_once(lambda *_: self._maybe_ask_for_storage(), 0.5)
+            # Late enough not to compete with a link that was shared to open us.
+            Clock.schedule_once(lambda *_: self.check_for_updates(), 10)
         self._schedule_refresh()
 
     @staticmethod
@@ -432,6 +471,70 @@ class GrabbitApp(App):
         if self.graph_shown:
             self.graph.refresh()
 
+    # -------------------------------------------------------------- updates
+    def show_update(self, answer):
+        """Show the banner for a check that found a newer Grabbit, or clear it."""
+        self._update_answer = answer if answer is not None and answer.available else None
+        self.update_slot.clear_widgets()
+        if self._update_answer is None:
+            self.update_slot.height = 0
+            return
+        self.update_label.text = f'Grabbit {answer.latest} is out - you have {APP_VERSION}'
+        self.update_slot.add_widget(self.update_banner)
+        self.update_slot.height = self.update_banner.height
+
+    def check_for_updates(self, manual: bool = False):
+        """Ask GitHub whether a newer Grabbit is out, off the interface thread.
+
+        Unprompted checks respect the setting and say nothing unless there is
+        something to offer; one asked for from the footer always answers.
+        """
+        if not manual and not getattr(self.settings, 'check_for_updates', True):
+            return
+        if self._update_checking:
+            return
+        self._update_checking = True
+        self._last_update_check = time.monotonic()
+        if manual:
+            self._schedule_message('info', 'Checking for updates…')
+
+        def ask():
+            answer = updates.check('android')
+            Clock.schedule_once(lambda *_: self._on_update_checked(answer, manual), 0)
+
+        threading.Thread(target=ask, name='grabbit-update-check', daemon=True).start()
+
+    def _on_update_checked(self, answer, manual: bool):
+        self._update_checking = False
+        if answer.available:
+            self.show_update(answer)
+            if manual:
+                self._schedule_message('info', f'Grabbit {answer.latest} is out.')
+        elif manual:
+            self._schedule_message('error' if answer.error else 'info',
+                                   answer.error or f'This is the newest version: Grabbit {APP_VERSION}.')
+
+    def _get_update(self):
+        """Hand the APK's link to the browser, which downloads it; opening the
+        download installs it over this copy, keeping everything in it."""
+        answer = self._update_answer
+        if answer is None or answer.asset is None:
+            return
+        from grabbit_mobile.bootstrap import open_url
+        if open_url(answer.asset.url):
+            self._schedule_message('info', f'Downloading {answer.asset.name} - '
+                                   'open it when it finishes to install')
+            self.show_update(None)
+        else:
+            self._schedule_message('error', 'Could not open the download link.')
+
+    def on_resume(self):
+        # A phone keeps an app paused for days; the clock above does not run
+        # while it is, so catch up on the way back.
+        if time.monotonic() - self._last_update_check > updates.CHECK_INTERVAL:
+            self.check_for_updates()
+        return True
+
     def _resize_graph(self, delta):
         """Drag the handle under the graph to give it more or less room."""
         if not self.graph_shown:
@@ -528,11 +631,13 @@ class GrabbitApp(App):
         self.speed_label.text = f'↓ {down}   ↑ {up}'
         total = len(list(self.engine.store))
         active = sum(1 for t in self.engine.store if t.state in RUNNING_STATES)
-        shown = '' if len(tasks) == total else f'{len(tasks)} shown   ·   '
+        shown = '' if len(tasks) == total else f'{len(tasks)} shown  ·  '
         process = getattr(self.engine, 'process', None)
-        engine = (f'aria2 {process.version} · ready' if self.engine.running and process
+        engine = (f'aria2 {process.version}' if self.engine.running and process
                   else 'engine stopped')
-        self.footer.text = f'{engine}   ·   {shown}{total} download(s), {active} active'
+        # The version comes first: touching this line checks for a newer one.
+        self.footer.text = (f'Grabbit {APP_VERSION}  ·  {engine}  ·  '
+                            f'{shown}{total} download(s), {active} active')
 
         self.graph.push(stats.get('download_speed') or 0, stats.get('upload_speed') or 0)
         self.graph.push_tasks(self.engine.store)

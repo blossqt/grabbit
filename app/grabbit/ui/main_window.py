@@ -2,16 +2,17 @@
 
 import logging
 import os
+import threading
 
-from PySide6.QtCore import QByteArray, QPoint, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QGuiApplication, QKeySequence
+from PySide6.QtCore import QByteArray, QPoint, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QDialog, QFileDialog,
                                QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
                                QPushButton, QSplitter, QSystemTrayIcon, QToolBar, QTreeView,
                                QVBoxLayout, QWidget)
 
-from .. import APP_NAME, APP_VERSION
+from .. import APP_NAME, APP_VERSION, updates
 from ..paths import data_dir
 from ..tasks import KIND_MEDIA, RUNNING_STATES, State
 from ..torrentmeta import parse_torrent
@@ -49,6 +50,9 @@ KIND_FILTERS = [
 
 class MainWindow(QMainWindow):
     links_dropped = Signal(list)
+    # An update check's answer, delivered back on the interface thread:
+    # (updates.Check, whether someone asked for it).
+    update_checked = Signal(object, bool)
 
     def __init__(self, engine, settings):
         super().__init__()
@@ -73,6 +77,17 @@ class MainWindow(QMainWindow):
         self._ui_timer.setInterval(1000)
         self._ui_timer.timeout.connect(self._tick)
         self._ui_timer.start()
+
+        # Updates: a minute after starting, then twice a day.
+        self._update_answer = None          # the last check that found one
+        self._update_announced = ''         # the version the tray last mentioned
+        self._update_checking = False
+        self.update_checked.connect(self._on_update_checked)
+        QTimer.singleShot(updates.FIRST_CHECK_DELAY * 1000, lambda: self.check_for_updates(False))
+        self._update_timer = QTimer(self)
+        self._update_timer.setInterval(updates.CHECK_INTERVAL * 1000)
+        self._update_timer.timeout.connect(lambda: self.check_for_updates(False))
+        self._update_timer.start()
 
         QGuiApplication.clipboard().dataChanged.connect(self._on_clipboard)
         self._update_actions()
@@ -173,6 +188,9 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(open_data)
 
         help_menu = self.menuBar().addMenu('&Help')
+        self.action_check_updates = QAction('Check for updates…', self)
+        self.action_check_updates.triggered.connect(lambda: self.check_for_updates(True))
+        help_menu.addAction(self.action_check_updates)
         about = QAction(f'About {APP_NAME}', self)
         about.triggered.connect(self.show_about)
         help_menu.addAction(about)
@@ -210,6 +228,27 @@ class MainWindow(QMainWindow):
         banner_layout.addWidget(banner_dismiss)
         self.banner.hide()
         right_layout.addWidget(self.banner)
+
+        # A newer Grabbit, when a check finds one. The same shape as the
+        # clipboard banner above, so it reads as part of the window.
+        self.update_banner = QWidget()
+        self.update_banner.setObjectName('Banner')
+        update_layout = QHBoxLayout(self.update_banner)
+        update_layout.setContentsMargins(10, 6, 8, 6)
+        update_layout.addWidget(QLabel(pixmap=icons.icon('refresh', icons.theme_color('accent'), 18).pixmap(18, 18)))
+        self.update_label = QLabel()
+        self.update_label.setTextFormat(Qt.PlainText)
+        update_layout.addWidget(self.update_label, 1)
+        update_get = QPushButton('Download')
+        update_get.clicked.connect(self._download_update)
+        update_notes = QPushButton('What’s new')
+        update_notes.clicked.connect(self._open_release_page)
+        update_later = QPushButton('Later')
+        update_later.clicked.connect(lambda: self.update_banner.hide())
+        for button in (update_get, update_notes, update_later):
+            update_layout.addWidget(button)
+        self.update_banner.hide()
+        right_layout.addWidget(self.update_banner)
 
         self.model = TransferModel(self.engine, self)
         self.proxy = TransferFilter(self)
@@ -524,6 +563,66 @@ class MainWindow(QMainWindow):
             f'<b>Site support:</b> yt-dlp {ytdlp_version}<br>'
             f'<b>Media tools:</b> FFmpeg, Deno</p>'
             f'<p style="color:gray">aria2 is GPLv2+; yt-dlp is Unlicense; FFmpeg here is a GPL build.</p>')
+
+    # --------------------------------------------------------------- updates
+    def check_for_updates(self, manual: bool = True):
+        """Ask GitHub whether a newer Grabbit is out, off the interface thread.
+
+        The automatic checks respect the setting and say nothing unless there
+        is something to offer; asking from the Help menu always answers.
+        """
+        if not manual and not self.settings.check_for_updates:
+            return
+        if self._update_checking:
+            return
+        self._update_checking = True
+        if manual:
+            self.statusBar().showMessage('Checking for updates…')
+
+        def ask():
+            self.update_checked.emit(updates.check('windows'), manual)
+
+        threading.Thread(target=ask, name='grabbit-update-check', daemon=True).start()
+
+    def _on_update_checked(self, answer, manual: bool):
+        self._update_checking = False
+        if manual:
+            self.statusBar().clearMessage()
+        if answer.available:
+            self._update_answer = answer
+            self.update_label.setText(f'{APP_NAME} {answer.latest} is out - you have {APP_VERSION}.')
+            self.update_banner.show()
+            # Unprompted, and with the window out of sight, the banner would go
+            # unseen - so say it once in the notification area as well.
+            hidden = not self.isVisible() or self.isMinimized()
+            if not manual and hidden and answer.latest != self._update_announced:
+                self._update_announced = answer.latest
+                self.tray.showMessage(f'{APP_NAME} {answer.latest} is out',
+                                      'Open Grabbit to download it.', icons.app_icon(), 8000)
+            return
+        if not manual:
+            return      # up to date, or offline: nothing worth interrupting for
+        if answer.error:
+            QMessageBox.warning(self, 'Check for updates',
+                                f'Couldn’t check for updates.\n\n{answer.error}')
+        else:
+            QMessageBox.information(self, 'Check for updates',
+                                    f'This is the newest version: {APP_NAME} {APP_VERSION}.')
+
+    def _download_update(self):
+        """Fetch the new zip in the browser. Grabbit runs from a folder of
+        files it cannot replace while it is using them, so installing stays a
+        matter of unzipping the new one."""
+        answer = self._update_answer
+        if answer is None or answer.asset is None:
+            return
+        QDesktopServices.openUrl(QUrl(answer.asset.url))
+        self.update_banner.hide()
+        self.statusBar().showMessage(f'Downloading {answer.asset.name} in your browser…', 8000)
+
+    def _open_release_page(self):
+        answer = self._update_answer
+        QDesktopServices.openUrl(QUrl(answer.release.page if answer else updates.RELEASES_PAGE))
 
     def _ask_limit(self, which: str):
         current = (self.settings.download_limit_kib if which == 'download'

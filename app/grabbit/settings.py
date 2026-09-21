@@ -100,6 +100,9 @@ class Settings:
     close_to_tray: bool = False
     notify_on_complete: bool = True
     confirm_remove: bool = True
+    # Ask GitHub now and then whether a newer Grabbit is out (grabbit.updates).
+    # Only the automatic checks; asking by hand works either way.
+    check_for_updates: bool = True
     theme: str = 'system'
     recent_dirs: list = field(default_factory=list)
     window_geometry: str = ''

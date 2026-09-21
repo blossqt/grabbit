@@ -126,6 +126,29 @@ def main():
     window._tick()
     report('the once-a-second refresh runs', True, window.count_label.text().strip())
 
+    # Updates, fed answers directly: build/update_check.py covers asking GitHub.
+    from grabbit import updates
+    help_menu = next(a.menu() for a in window.menuBar().actions() if a.text() == '&Help')
+    report('the Help menu can check for updates',
+           window.action_check_updates in help_menu.actions())
+
+    newer = updates.Check('1.2.0', updates.Release(
+        '9.0.0', 'v9.0.0', 'Grabbit 9.0.0', 'Notes.', 'https://example.invalid/v9.0.0',
+        assets=[updates.Asset('Grabbit-9.0.0-win64.zip', 'https://example.invalid/zip', 1)]))
+    newer.asset = newer.release.asset_for('windows')
+    window._on_update_checked(updates.Check('1.2.0', error='offline'), False)
+    report('an automatic check with nothing to offer stays quiet',
+           window.update_banner.isHidden())
+    window._on_update_checked(newer, False)
+    report('an automatic check that finds one shows the banner',
+           window.update_banner.isVisibleTo(window) and '9.0.0' in window.update_label.text(),
+           window.update_label.text())
+
+    window.settings.check_for_updates = False
+    window.check_for_updates(False)
+    report('the setting turns the automatic checks off', not window._update_checking)
+    window.settings.check_for_updates = True
+
     # The icon is baked into the exe at build time, when the palette is just
     # Windows' accent of the day, so it must not take its colour from there.
     # 1.2.0 was built under a gold accent and shipped a gold icon: recreate that
