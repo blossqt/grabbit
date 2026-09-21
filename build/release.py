@@ -194,7 +194,7 @@ def exe_version(exe: Path) -> str:
     return result.stdout.strip()
 
 
-def build_windows(version: str, build: bool) -> Path:
+def build_windows(version: str, head: str, build: bool) -> Path:
     if build:
         say('building the Windows app (a few minutes)')
         run('powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
@@ -207,6 +207,14 @@ def build_windows(version: str, build: bool) -> Path:
     if found != f'{version}.0':
         fail(f'{exe.name} says it is {found or "no version"}, not {version} - '
              + ('the build did not pick up the new number' if build else 'run without --no-build'))
+    # The version number alone cannot tell a build of this commit from an
+    # older one that carries the same number, so build_app.ps1 records which
+    # commit it built.
+    stamp = folder / 'build-commit.txt'
+    built = stamp.read_text(encoding='ascii').strip() if stamp.exists() else ''
+    if built != head:
+        fail(f'dist\\Grabbit was built from {built[:12] or "an unrecorded commit"}, '
+             f'not {head[:12]} - run without --no-build')
 
     say('zipping it')
     archive = DIST / f'Grabbit-{version}-win64.zip'
@@ -260,10 +268,28 @@ def apk_signer_sha256(path: Path) -> str:
     raise ValueError('it is not signed with scheme v2 or v3')
 
 
-def workflow_runs(sha: str) -> list:
+# What the Android workflow builds from: its push paths. A commit that changes
+# none of these builds exactly the APK the commit before it did.
+ANDROID_INPUTS = ('android', 'app/grabbit', 'build/android', '.github/workflows/android.yml')
+
+
+def recent_runs() -> list:
+    """The Android workflow's recent runs, newest first."""
     result = gh('run', 'list', '--repo', REPO, '--workflow', WORKFLOW, '--limit', '40',
                 '--json', 'databaseId,headSha,status,conclusion,createdAt')
-    return [r for r in json.loads(result.stdout) if r['headSha'] == sha]
+    return json.loads(result.stdout)
+
+
+def workflow_runs(sha: str) -> list:
+    return [r for r in recent_runs() if r['headSha'] == sha]
+
+
+def same_apk_inputs(built: str, head: str) -> bool:
+    """Whether building `head` would compile exactly what `built` did."""
+    if run('git', 'merge-base', '--is-ancestor', built, head, check=False).returncode != 0:
+        return False
+    return run('git', 'diff', '--quiet', built, head, '--', *ANDROID_INPUTS,
+               check=False).returncode == 0
 
 
 def wait_for(run_id: int) -> None:
@@ -292,6 +318,14 @@ def android_build(sha: str, dry_run: bool) -> int:
         say('the Android build for this commit is still running - waiting for it')
         wait_for(going[0]['databaseId'])
         return going[0]['databaseId']
+    # A commit that touched nothing the APK is made from - the README, this
+    # script - starts no Android build of its own, and needs none.
+    for earlier in recent_runs():
+        if (earlier['status'] == 'completed' and earlier['conclusion'] == 'success'
+                and same_apk_inputs(earlier['headSha'], sha)):
+            say(f'reusing the APK built from {earlier["headSha"][:7]}: nothing it is made '
+                'from has changed since')
+            return earlier['databaseId']
     if dry_run:
         fail('no Android build exists for this commit yet, and a dry run starts nothing: '
              f'run it for real, or start one with gh workflow run {WORKFLOW}')
@@ -406,7 +440,7 @@ def main() -> int:
         # build could carry it yet.
         say(f'dry run: would build the Windows app and the APK as {version}')
     else:
-        archive = build_windows(version, build=not args.no_build)
+        archive = build_windows(version, head, build=not args.no_build)
         apk = fetch_apk(version, head, args.dry_run)
         files = [archive, write_checksum(archive), apk, write_checksum(apk)]
     if args.notes_file:

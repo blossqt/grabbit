@@ -49,5 +49,18 @@ if (Test-Path (Join-Path $Comp 'gallery-dl\gallery-dl.exe')) {
 
 Copy-Item (Join-Path $Root 'README.md') $Dist -Force -ErrorAction SilentlyContinue
 
+# Which commit this is, so release.py can tell a build of the current code from
+# an older one carrying the same version number. Changes not yet committed mark
+# it as such: a release is only ever made from a commit anyone can check out.
+$Stamp = Join-Path $Dist 'build-commit.txt'
+$Commit = (& git -C $Root rev-parse HEAD 2>$null)
+if ($Commit) {
+    $Dirty = (& git -C $Root status --porcelain 2>$null)
+    if ($Dirty) { $Commit = "$Commit-dirty" }
+    Set-Content -Path $Stamp -Value $Commit -Encoding ascii
+} else {
+    Remove-Item $Stamp -ErrorAction SilentlyContinue
+}
+
 $size = (Get-ChildItem $Dist -Recurse -File | Measure-Object Length -Sum).Sum
 Write-Host ('>> done: {0}  ({1:N0} MB)' -f (Join-Path $Dist 'Grabbit.exe'), ($size / 1MB))
