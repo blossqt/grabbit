@@ -455,6 +455,7 @@ class MobileEngine:
             task.total = task.done = size or task.total
             task.completed_at = time.time()
             task.down_speed = 0
+            task.progress_note = ''       # "Merging…" and the like are over
             self._finish_media(task_id)
         elif event == 'error':
             task.state = State.ERROR

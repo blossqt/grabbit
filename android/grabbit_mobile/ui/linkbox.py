@@ -9,8 +9,11 @@ than an imitation of it.
 
 Android draws its views above the surface Kivy draws on, so the field is
 hidden while anything opens over the main screen (a page, a sheet, a dialog),
-and shown again once it closes. Off a phone - the desktop preview - a Kivy
-TextInput stands in, so the layout and the checks run the same way there.
+and shown again once it closes. And the keyboard's focus goes back to Kivy's
+surface whenever the field is done with: a Back press that reached Android
+while the field held focus would close the whole app, not the page open in it.
+Off a phone - the desktop preview - a Kivy TextInput stands in, so the layout
+and the checks run the same way there.
 """
 
 import logging
@@ -93,6 +96,13 @@ class LinkBox(BoxLayout):
             self.stand_in.focus = False
 
 
+def _chars(autoclass, text: str):
+    """Text as Android's views take it. pyjnius turns a Python str into a
+    Java String, but not into the CharSequence setText and setHint ask for."""
+    from jnius import cast
+    return cast('java.lang.CharSequence', autoclass('java.lang.String')(text))
+
+
 class _NativeField:
     """The EditText itself, and keeping it where the layout wants it."""
 
@@ -131,8 +141,27 @@ class _NativeField:
                     Clock.schedule_once(lambda _: box.dispatch('on_submit'))
                 return True
 
+        field = self
+
+        class Keys(PythonJavaClass):
+            __javainterfaces__ = ['android/view/View$OnKeyListener']
+
+            @java_method('(Landroid/view/View;ILandroid/view/KeyEvent;)Z')
+            def onKey(self, view, code, event):
+                # Back with no keyboard left to close is Kivy's to handle, as
+                # it is when the box is not in use - never Android's, which
+                # would finish the activity.
+                if code != 4:                                  # KEYCODE_BACK
+                    return False
+                surface = field._surface()
+                view.clearFocus()
+                if surface is not None:
+                    surface.requestFocus()
+                    surface.dispatchKeyEvent(event)
+                return True
+
         # Held here: a listener Java still calls must not be collected.
-        self._watcher, self._actions = Watcher(), Actions()
+        self._watcher, self._actions, self._keys = Watcher(), Actions(), Keys()
         self._create()
         self._place_later = Clock.create_trigger(lambda _: self._place(), 0)
         box.bind(pos=self._place_later, size=self._place_later)
@@ -157,7 +186,7 @@ class _NativeField:
                     activity, autoclass('android.R$style').Theme_DeviceDefault)
                 edit = autoclass('android.widget.EditText')(themed)
                 edit.setSingleLine(True)
-                edit.setHint(box.hint)
+                edit.setHint(_chars(autoclass, box.hint))
                 edit.setTextColor(Color.parseColor(theme.PALETTE['text']))
                 edit.setHintTextColor(Color.parseColor(theme.PALETTE['dim']))
                 edit.setBackgroundColor(Color.TRANSPARENT)      # Kivy draws the box
@@ -168,6 +197,7 @@ class _NativeField:
                 edit.setImeOptions(EditorInfo.IME_ACTION_GO | EditorInfo.IME_FLAG_NO_EXTRACT_UI)
                 edit.addTextChangedListener(self._watcher)
                 edit.setOnEditorActionListener(self._actions)
+                edit.setOnKeyListener(self._keys)
                 Activity.getLayout().addView(edit, self._params())
                 self.view = edit
             except Exception:
@@ -215,20 +245,31 @@ class _NativeField:
 
         @self._ui
         def show():
-            if covered:
-                self._drop_keyboard(view)
             view.setVisibility(View.GONE if covered else View.VISIBLE)
+            if covered:
+                # Hidden first, so the focus it gives up cannot land back on it.
+                self._drop_keyboard(view)
         show()
 
+    def _surface(self):
+        """The view SDL draws Kivy on, which should hold focus by default."""
+        try:
+            return self._autoclass('org.kivy.android.PythonActivity').getSurface()
+        except Exception:
+            return None
+
     def _drop_keyboard(self, view):
-        """On Android's thread: no focus, no keyboard."""
+        """On Android's thread: no keyboard, and focus back with Kivy."""
         try:
             from jnius import cast
-            view.clearFocus()
             service = self._autoclass('org.kivy.android.PythonActivity').mActivity \
                 .getSystemService('input_method')
             cast('android.view.inputmethod.InputMethodManager', service) \
                 .hideSoftInputFromWindow(view.getWindowToken(), 0)
+            view.clearFocus()
+            surface = self._surface()
+            if surface is not None:
+                surface.requestFocus()
         except Exception:
             log.exception('could not put the keyboard away')
 
@@ -237,9 +278,11 @@ class _NativeField:
         if view is None:
             return
 
+        text = _chars(self._autoclass, value)
+
         @self._ui
         def write():
-            view.setText(value)
+            view.setText(text)
         write()
 
     def unfocus(self):
