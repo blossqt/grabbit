@@ -185,10 +185,8 @@ def check(app):
     app.refresh()
     report('the footer carries this version', f'Grabbit {APP_VERSION}' in app.footer.text,
            app.footer.text)
-    newer = updates.Check(APP_VERSION, updates.Release(
-        '9.0.0', 'v9.0.0', 'Grabbit 9.0.0', '', 'https://example.invalid/v9.0.0',
-        assets=[updates.Asset('Grabbit-9.0.0-arm64.apk', 'https://example.invalid/apk', 1)]))
-    newer.asset = newer.release.asset_for('android')
+    apk = updates.Asset('Grabbit-9.0.0-arm64.apk', 1, '0' * 64, 'https://example.invalid/apk')
+    newer = updates.Check(APP_VERSION, updates.Release('9.0.0', 'now', '', None, apk), apk)
     app._on_update_checked(newer, False)
     settle()
     report('a newer Grabbit shows the update banner',
@@ -324,10 +322,8 @@ def main():
         app.refresh()
         if '--update' in sys.argv:
             from grabbit import APP_VERSION, updates
-            sample = updates.Check(APP_VERSION, updates.Release(
-                '1.3.0', 'v1.3.0', 'Grabbit 1.3.0', '', updates.RELEASES_PAGE,
-                assets=[updates.Asset('Grabbit-1.3.0-arm64.apk', updates.RELEASES_PAGE)]))
-            sample.asset = sample.release.asset_for('android')
+            apk = updates.Asset('Grabbit-1.3.0-arm64.apk', 1, '0' * 64, updates.RELEASES_PAGE)
+            sample = updates.Check(APP_VERSION, updates.Release('1.3.0', 'now', '', None, apk), apk)
             app.show_update(sample)
         if '--check' in sys.argv:
             code = check(app)
