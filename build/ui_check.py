@@ -126,23 +126,46 @@ def main():
     window._tick()
     report('the once-a-second refresh runs', True, window.count_label.text().strip())
 
-    # Updates, fed answers directly: build/update_check.py covers asking GitHub.
-    from grabbit import updates
-    help_menu = next(a.menu() for a in window.menuBar().actions() if a.text() == '&Help')
-    report('the Help menu can check for updates',
-           window.action_check_updates in help_menu.actions())
+    # Updates, fed answers directly: build/update_check.py covers asking GitHub
+    # and build/selfupdate_check.py the installing.
+    from PySide6.QtCore import QTimer
+    from grabbit import selfupdate, updates
+    menus = {a.text(): a.menu() for a in window.menuBar().actions()}
+    report('File and Help can both check for updates',
+           window.action_check_updates in menus['&File'].actions()
+           and window.action_check_updates in menus['&Help'].actions())
 
-    newer = updates.Check('1.2.0', updates.Release(
-        '9.0.0', 'v9.0.0', 'Grabbit 9.0.0', 'Notes.', 'https://example.invalid/v9.0.0',
-        assets=[updates.Asset('Grabbit-9.0.0-win64.zip', 'https://example.invalid/zip', 1)]))
-    newer.asset = newer.release.asset_for('windows')
+    zip_asset = updates.Asset('Grabbit-9.0.0-win64.zip', 1, '0' * 64, 'https://example.invalid/zip')
+    newer = updates.Check('1.2.0', updates.Release('9.0.0', 'now', 'What changed.', zip_asset, None),
+                          zip_asset)
     window._on_update_checked(updates.Check('1.2.0', error='offline'), False)
     report('an automatic check with nothing to offer stays quiet',
            window.update_banner.isHidden())
+
+    # The question is modal, so answer it the way a person would.
+    asked = []
+
+    def answer_later():
+        box = window._update_question
+        if box is None:
+            QTimer.singleShot(50, answer_later)
+            return
+        asked.append(box.text())
+        next(b for b in box.buttons() if b.text() == 'Later').click()
+
+    QTimer.singleShot(50, answer_later)
     window._on_update_checked(newer, False)
-    report('an automatic check that finds one shows the banner',
+    report('a check that finds one asks before updating', asked and '9.0.0' in asked[0],
+           asked[0] if asked else 'never asked')
+    report('and leaves the banner up after "Later"',
            window.update_banner.isVisibleTo(window) and '9.0.0' in window.update_label.text(),
            window.update_label.text())
+    asked.clear()
+    window._on_update_checked(newer, False)
+    report('"Later" is not asked again this session', not asked)
+
+    report('running from source says it cannot replace itself',
+           'source' in (selfupdate.blocker() or ''), selfupdate.blocker())
 
     window.settings.check_for_updates = False
     window.check_for_updates(False)

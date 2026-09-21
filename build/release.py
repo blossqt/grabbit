@@ -50,13 +50,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'app'))
 
-from grabbit import updates    # noqa: E402
+from grabbit import ed25519, updates    # noqa: E402
 
 REPO = updates.REPO
 WORKFLOW = 'android.yml'
 DIST = ROOT / 'dist'
 PIN = ROOT / 'build' / 'android' / 'signing-sha256.txt'
 PYTHON = Path(sys.executable)
+
+# The key each release's manifest is signed with, and where the apps keep its
+# public half. Homework Hub keeps its own at ~/.homework-hub/release.
+UPDATE_KEY = Path.home() / '.grabbit' / 'release' / 'update-signing.key'
+RELEASE_KEY_MODULE = ROOT / 'app' / 'grabbit' / 'release_key.py'
 
 
 def say(message: str) -> None:
@@ -160,6 +165,79 @@ def tag_exists(tag: str) -> bool:
         run('git', 'ls-remote', '--tags', 'origin', f'refs/tags/{tag}').stdout.strip())
 
 
+# ------------------------------------------------------------ update signing
+
+def recorded_public_key() -> str:
+    """The public key the apps carry - read from the file, not imported, so a
+    key made a moment ago is the one seen."""
+    if not RELEASE_KEY_MODULE.exists():
+        return ''
+    match = re.search(r"^PUBLIC_KEY = '([0-9a-f]*)'", RELEASE_KEY_MODULE.read_text(encoding='utf-8'), re.M)
+    return match.group(1) if match else ''
+
+
+def load_update_key() -> str:
+    """The signing secret, checked against the public key every build carries."""
+    recorded = recorded_public_key()
+    if not UPDATE_KEY.exists():
+        if recorded:
+            fail(f'the update-signing key is missing: {UPDATE_KEY}\n\nEvery copy of Grabbit '
+                 'only installs updates signed with it. Restore it from your backup.')
+        fail('there is no update-signing key yet: run release.ps1 --make-update-key once, '
+             'then commit app/grabbit/release_key.py')
+    secret = UPDATE_KEY.read_text(encoding='ascii').strip().lower()
+    if not re.fullmatch(r'[0-9a-f]{64}', secret):
+        fail(f'{UPDATE_KEY} is not a signing key')
+    if ed25519.public_key(bytes.fromhex(secret)).hex() != recorded:
+        fail(f'{UPDATE_KEY} does not match the public key in app/grabbit/release_key.py. '
+             'Copies out there only accept updates signed with the matching key: restore '
+             'it from your backup.')
+    return secret
+
+
+def make_update_key() -> int:
+    if UPDATE_KEY.exists() or recorded_public_key():
+        fail('an update-signing key already exists. Replacing it would leave every '
+             'installed copy refusing all later updates.')
+    secret = ed25519.generate_secret().hex()
+    public = ed25519.public_key(bytes.fromhex(secret)).hex()
+    UPDATE_KEY.parent.mkdir(parents=True, exist_ok=True)
+    UPDATE_KEY.write_text(secret + '\n', encoding='ascii')
+    RELEASE_KEY_MODULE.write_bytes((
+        '"""The public half of the key Grabbit\'s releases are signed with.\n\n'
+        'Written once by build/release.py --make-update-key. The private half stays on\n'
+        'the machine that publishes, at ~/.grabbit/release/update-signing.key, and every\n'
+        'copy of Grabbit installs only updates whose manifest it signed (updates.py).\n'
+        'Changing this line strands every installed copy: they would refuse all later\n'
+        'updates.\n"""\n\n'
+        f"PUBLIC_KEY = '{public}'\n").encode('ascii'))
+    print(f'made {UPDATE_KEY}')
+    print(f'wrote {RELEASE_KEY_MODULE.relative_to(ROOT)} - commit it; every build must carry it')
+    print(f'\nBACK IT UP, with ~/.grabbit/android/release.keystore. Without them no installed '
+          'copy of Grabbit can be updated again.')
+    return 0
+
+
+def sign_release(version: str, notes: str, archive: Path, apk: Path, secret: str) -> list:
+    """Write latest.json and its signature, and prove the apps will believe them."""
+    published = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+    manifest = updates.build_manifest(version, notes=notes, published_at=published,
+                                      desktop=archive, android=apk)
+    signature = updates.sign_manifest(manifest, secret)
+    try:
+        release = updates.verify_and_parse(manifest, signature, key=recorded_public_key())
+    except updates.UpdateError as error:
+        fail(f'the signed manifest does not verify: {error}')
+    if release.version != version or release.desktop is None or release.android is None:
+        fail('the signed manifest does not describe this release')
+    manifest_path = DIST / updates.MANIFEST_NAME
+    signature_path = DIST / updates.SIGNATURE_NAME
+    manifest_path.write_bytes(manifest)
+    signature_path.write_bytes(signature.encode('ascii') + b'\n')
+    print(f'   {manifest_path.name} signed; the apps\' own check accepts it')
+    return [manifest_path, signature_path]
+
+
 # -------------------------------------------------------------------- state
 
 def require_clean_and_pushed() -> str:
@@ -215,6 +293,29 @@ def build_windows(version: str, head: str, build: bool) -> Path:
     if built != head:
         fail(f'dist\\Grabbit was built from {built[:12] or "an unrecorded commit"}, '
              f'not {head[:12]} - run without --no-build')
+
+    # Everything it hands work to. build_app.ps1 only warns when one is missing,
+    # which is fine for a quick build and not for one going to everyone.
+    missing = [tool for tool in ('aria2c.exe', 'ffmpeg/ffmpeg.exe', 'ffmpeg/ffprobe.exe',
+                                 'deno/deno.exe', 'gallery-dl.exe')
+               if not (folder / 'tools' / tool).is_file()]
+    if missing:
+        fail('the build is missing ' + ', '.join(missing) + ' - see the warnings from build_app.ps1')
+    # And that it starts: the same --self-test the updater will ask of it on
+    # every machine it reaches, asked here first.
+    answer = Path(tempfile.gettempdir()) / f'grabbit-release-self-test-{os.getpid()}.txt'
+    answer.unlink(missing_ok=True)
+    try:
+        subprocess.run([str(exe), '--self-test', str(answer)], timeout=120)
+        said = answer.read_text(encoding='utf-8').strip() if answer.exists() else ''
+    except subprocess.TimeoutExpired:
+        said = ''
+    finally:
+        answer.unlink(missing_ok=True)
+    if said != version:
+        fail(f'{exe.name} does not start (--self-test answered {said or "nothing"}), '
+             'so it cannot be released')
+    print(f'   {exe.name} starts, and says it is {said}')
 
     say('zipping it')
     archive = DIST / f'Grabbit-{version}-win64.zip'
@@ -399,7 +500,12 @@ def main() -> int:
     parser.add_argument('--dry-run', action='store_true',
                         help='do everything except changing anything on GitHub or in git')
     parser.add_argument('--yes', action='store_true', help='publish without asking first')
+    parser.add_argument('--make-update-key', action='store_true',
+                        help='make the key releases are signed with - once, ever')
     args = parser.parse_args()
+
+    if args.make_update_key:
+        return make_update_key()
 
     global GH
     GH = find_gh()
@@ -412,6 +518,8 @@ def main() -> int:
         if not updates.is_newer(args.version, version) and args.version != version:
             fail(f'{args.version} is not newer than {version}')
     head = require_clean_and_pushed()
+    # Before anything slow: a release that cannot be signed is not worth building.
+    secret = load_update_key()
 
     if args.version and args.version != version:
         version = args.version
@@ -433,6 +541,13 @@ def main() -> int:
     if previous and not updates.is_newer(version, previous):
         fail(f'{version} is not newer than {previous}, so no copy of Grabbit would offer it')
 
+    # The notes go into the signed manifest - the apps show them when they ask
+    # whether to update - so they are settled before anything is signed.
+    if args.notes_file:
+        notes = args.notes_file.read_text(encoding='utf-8')
+    else:
+        notes = args.notes or default_notes(previous)
+
     run_checks()
     files = []
     if version != project_version():
@@ -442,11 +557,9 @@ def main() -> int:
     else:
         archive = build_windows(version, head, build=not args.no_build)
         apk = fetch_apk(version, head, args.dry_run)
-        files = [archive, write_checksum(archive), apk, write_checksum(apk)]
-    if args.notes_file:
-        notes = args.notes_file.read_text(encoding='utf-8')
-    else:
-        notes = args.notes or default_notes(previous)
+        say('signing the release')
+        files = [archive, write_checksum(archive), apk, write_checksum(apk),
+                 *sign_release(version, notes, archive, apk, secret)]
 
     say('ready to publish')
     print(f'   tag      {tag} on {head[:7]}')
@@ -470,12 +583,13 @@ def main() -> int:
     finally:
         os.unlink(handle.name)
 
-    # The apps ask exactly this, so ask it too.
+    # The apps ask exactly this - fetch the manifest, check its signature - so
+    # ask it too.
     answer = updates.check('windows', current='0.0.0')
     if answer.latest == version:
         say(f'published - every copy older than {version} will now offer it')
     else:
-        say(f'published, but GitHub still reports {answer.latest or answer.error} as latest')
+        say(f'published, but the apps would see: {answer.latest or answer.error}')
     print(f'   https://github.com/{REPO}/releases/tag/{tag}')
     return 0
 

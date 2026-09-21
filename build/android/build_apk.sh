@@ -96,7 +96,8 @@ rm -rf "$APPDIR/shared/grabbit/ui" \
        "$APPDIR/shared/grabbit/app.py" \
        "$APPDIR/shared/grabbit/engine.py" \
        "$APPDIR/shared/grabbit/associations.py" \
-       "$APPDIR/shared/grabbit/player.py"
+       "$APPDIR/shared/grabbit/player.py" \
+       "$APPDIR/shared/grabbit/selfupdate.py"
 find "$APPDIR" -name '__pycache__' -type d -prune -exec rm -rf {} +
 find "$APPDIR" -name '*.pyc' -delete
 python - "$APPDIR" <<'PY'

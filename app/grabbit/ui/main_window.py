@@ -9,10 +9,10 @@ from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QKeySequen
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QDialog, QFileDialog,
                                QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
-                               QPushButton, QSplitter, QSystemTrayIcon, QToolBar, QTreeView,
-                               QVBoxLayout, QWidget)
+                               QProgressDialog, QPushButton, QSplitter, QSystemTrayIcon,
+                               QToolBar, QTreeView, QVBoxLayout, QWidget)
 
-from .. import APP_NAME, APP_VERSION, updates
+from .. import APP_NAME, APP_VERSION, selfupdate, updates
 from ..paths import data_dir
 from ..tasks import KIND_MEDIA, RUNNING_STATES, State
 from ..torrentmeta import parse_torrent
@@ -53,6 +53,11 @@ class MainWindow(QMainWindow):
     # An update check's answer, delivered back on the interface thread:
     # (updates.Check, whether someone asked for it).
     update_checked = Signal(object, bool)
+    # Installing one, from its worker thread: (what it is doing, done, total),
+    # then either the unpacked folder or why it stopped.
+    update_progress = Signal(str, int, int)
+    update_staged = Signal(object)
+    update_stopped = Signal(str)
 
     def __init__(self, engine, settings):
         super().__init__()
@@ -78,16 +83,28 @@ class MainWindow(QMainWindow):
         self._ui_timer.timeout.connect(self._tick)
         self._ui_timer.start()
 
-        # Updates: a minute after starting, then twice a day.
+        # Updates: as soon as the window is up, then twice a day.
         self._update_answer = None          # the last check that found one
         self._update_announced = ''         # the version the tray last mentioned
+        self._update_declined = set()       # "Later", for this session
         self._update_checking = False
+        self._installing = False
+        self._install_without_asking = False
+        self._update_dialog = None
+        self._update_question = None
+        self._update_cancel = threading.Event()
         self.update_checked.connect(self._on_update_checked)
+        self.update_progress.connect(self._on_update_progress)
+        self.update_staged.connect(self._on_update_staged)
+        self.update_stopped.connect(self._on_update_stopped)
         QTimer.singleShot(updates.FIRST_CHECK_DELAY * 1000, lambda: self.check_for_updates(False))
         self._update_timer = QTimer(self)
         self._update_timer.setInterval(updates.CHECK_INTERVAL * 1000)
         self._update_timer.timeout.connect(lambda: self.check_for_updates(False))
         self._update_timer.start()
+        # What an earlier update left behind, once any swap still finishing
+        # after a restart is surely done.
+        QTimer.singleShot(120_000, self._clean_up_after_updates)
 
         QGuiApplication.clipboard().dataChanged.connect(self._on_clipboard)
         self._update_actions()
@@ -151,9 +168,16 @@ class MainWindow(QMainWindow):
         self._build_menus()
 
     def _build_menus(self):
+        # One action, in both File and Help: File is where people look for
+        # it here, and Help is where most Windows programs keep it.
+        self.action_check_updates = QAction('Check for &updates…', self)
+        self.action_check_updates.triggered.connect(lambda: self.check_for_updates(True))
+
         file_menu = self.menuBar().addMenu('&File')
         file_menu.addAction(self.action_add)
         file_menu.addAction(self.action_add_file)
+        file_menu.addSeparator()
+        file_menu.addAction(self.action_check_updates)
         file_menu.addSeparator()
         quit_action = QAction('E&xit', self)
         quit_action.setShortcut(QKeySequence('Ctrl+Q'))
@@ -188,8 +212,6 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(open_data)
 
         help_menu = self.menuBar().addMenu('&Help')
-        self.action_check_updates = QAction('Check for updates…', self)
-        self.action_check_updates.triggered.connect(lambda: self.check_for_updates(True))
         help_menu.addAction(self.action_check_updates)
         about = QAction(f'About {APP_NAME}', self)
         about.triggered.connect(self.show_about)
@@ -239,8 +261,8 @@ class MainWindow(QMainWindow):
         self.update_label = QLabel()
         self.update_label.setTextFormat(Qt.PlainText)
         update_layout.addWidget(self.update_label, 1)
-        update_get = QPushButton('Download')
-        update_get.clicked.connect(self._download_update)
+        update_get = QPushButton('Update now')
+        update_get.clicked.connect(self.install_update)
         update_notes = QPushButton('What’s new')
         update_notes.clicked.connect(self._open_release_page)
         update_later = QPushButton('Later')
@@ -548,6 +570,8 @@ class MainWindow(QMainWindow):
                 self, APP_NAME,
                 'Some of those settings (BitTorrent, proxy or advanced options) apply the next '
                 'time Grabbit starts.')
+        if dialog.check_now_requested:
+            self.check_for_updates(True)
 
     def show_about(self):
         aria2 = self.engine.aria2_version() or 'not running'
@@ -565,15 +589,31 @@ class MainWindow(QMainWindow):
             f'<p style="color:gray">aria2 is GPLv2+; yt-dlp is Unlicense; FFmpeg here is a GPL build.</p>')
 
     # --------------------------------------------------------------- updates
-    def check_for_updates(self, manual: bool = True):
-        """Ask GitHub whether a newer Grabbit is out, off the interface thread.
+    def after_start(self, updated: str = '', update_marker: str = '', update_failed: str = '',
+                    install_update: bool = False):
+        """What the updater asked for when it started this copy (app.py)."""
+        if update_marker:
+            # The window is up: tell the updater waiting outside that the new
+            # version works, so it can clear the old one away.
+            selfupdate.record_started(update_marker)
+        if updated:
+            self.statusBar().showMessage(f'Updated to {APP_NAME} {updated}.', 15000)
+        if update_failed:
+            QTimer.singleShot(300, lambda: self._show_update_failed(update_failed))
+        if install_update:
+            # Started with --install-update: running it was the permission.
+            self._install_without_asking = True
+            QTimer.singleShot(0, lambda: self.check_for_updates(False, force=True))
+
+    def check_for_updates(self, manual: bool = True, force: bool = False):
+        """Ask whether a newer Grabbit is out, off the interface thread.
 
         The automatic checks respect the setting and say nothing unless there
-        is something to offer; asking from the Help menu always answers.
+        is something to offer; asking from a menu always answers.
         """
-        if not manual and not self.settings.check_for_updates:
+        if not manual and not force and not self.settings.check_for_updates:
             return
-        if self._update_checking:
+        if self._update_checking or self._installing:
             return
         self._update_checking = True
         if manual:
@@ -590,15 +630,17 @@ class MainWindow(QMainWindow):
             self.statusBar().clearMessage()
         if answer.available:
             self._update_answer = answer
-            self.update_label.setText(f'{APP_NAME} {answer.latest} is out - you have {APP_VERSION}.')
+            self.update_label.setText(f'{APP_NAME} {answer.latest} is out - you have {answer.current}.')
             self.update_banner.show()
-            # Unprompted, and with the window out of sight, the banner would go
-            # unseen - so say it once in the notification area as well.
-            hidden = not self.isVisible() or self.isMinimized()
-            if not manual and hidden and answer.latest != self._update_announced:
-                self._update_announced = answer.latest
-                self.tray.showMessage(f'{APP_NAME} {answer.latest} is out',
-                                      'Open Grabbit to download it.', icons.app_icon(), 8000)
+            if self._install_without_asking:
+                self._install_without_asking = False
+                self.install_update()
+            elif manual or answer.latest not in self._update_declined:
+                self._ask_to_update(answer)
+            return
+        if self._install_without_asking:
+            self._install_without_asking = False
+            log.info('asked to install an update, but %s', answer.error or 'this is the newest')
             return
         if not manual:
             return      # up to date, or offline: nothing worth interrupting for
@@ -609,16 +651,135 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, 'Check for updates',
                                     f'This is the newest version: {APP_NAME} {APP_VERSION}.')
 
-    def _download_update(self):
-        """Fetch the new zip in the browser. Grabbit runs from a folder of
-        files it cannot replace while it is using them, so installing stays a
-        matter of unzipping the new one."""
-        answer = self._update_answer
-        if answer is None or answer.asset is None:
+    def _ask_to_update(self, answer):
+        """Ask before installing - the permission is the point."""
+        if not self.isVisible() or self.isMinimized():
+            # Nobody is looking: say it once in the notification area, and
+            # leave the question on the banner for when the window is opened.
+            if answer.latest != self._update_announced:
+                self._update_announced = answer.latest
+                self.tray.showMessage(f'{APP_NAME} {answer.latest} is out',
+                                      'Open Grabbit to update.', icons.app_icon(), 8000)
             return
-        QDesktopServices.openUrl(QUrl(answer.asset.url))
+        blocked = selfupdate.blocker()
+        active = sum(1 for task in self.engine.store if task.state in RUNNING_STATES)
+        box = QMessageBox(self)
+        box.setWindowTitle('Update Grabbit')
+        box.setIcon(QMessageBox.Information)
+        box.setText(f'{APP_NAME} {answer.latest} is out - you have {answer.current}.')
+        if blocked:
+            box.setInformativeText(f'{blocked}\n\nYou can download the new version instead.')
+            accept = box.addButton('Download', QMessageBox.AcceptRole)
+        else:
+            carry_on = (f' The {active} download(s) under way will carry on where they left off.'
+                        if active else '')
+            box.setInformativeText(f'Grabbit will restart to finish updating.{carry_on}')
+            accept = box.addButton('Update now', QMessageBox.AcceptRole)
+        box.addButton('Later', QMessageBox.RejectRole)
+        box.setDefaultButton(accept)
+        if answer.release.notes:
+            box.setDetailedText(answer.release.notes)
+        self._update_question = box         # so ui_check.py can answer it
+        box.exec()
+        self._update_question = None
+        if box.clickedButton() is accept:
+            self.install_update()
+        else:
+            self._update_declined.add(answer.latest)
+
+    def install_update(self):
+        """Download, check and unpack the new version, then restart into it."""
+        answer = self._update_answer
+        if answer is None or answer.asset is None or self._installing:
+            return
+        blocked = selfupdate.blocker()
+        if blocked:
+            # Cannot replace itself from here (source, or a folder it may not
+            # write to): the zip, in the browser, is the next best thing.
+            QDesktopServices.openUrl(QUrl(answer.asset.url))
+            self.update_banner.hide()
+            self.statusBar().showMessage(f'Downloading {answer.asset.name} in your browser…', 8000)
+            return
+        self._installing = True
         self.update_banner.hide()
-        self.statusBar().showMessage(f'Downloading {answer.asset.name} in your browser…', 8000)
+        self._update_cancel = threading.Event()
+        dialog = QProgressDialog(f'Downloading {APP_NAME} {answer.latest}…', 'Cancel', 0, 100, self)
+        dialog.setWindowTitle('Updating Grabbit')
+        dialog.setWindowModality(Qt.WindowModal)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.canceled.connect(self._update_cancel.set)
+        dialog.show()
+        self._update_dialog = dialog
+        install, cancel = selfupdate.install_dir(), self._update_cancel
+
+        def work():
+            try:
+                archive = selfupdate.download(
+                    answer.asset, cancel=cancel,
+                    progress=lambda done, total: self.update_progress.emit('download', done, total))
+                staged = selfupdate.stage(
+                    archive, answer.latest, install,
+                    progress=lambda done, total: self.update_progress.emit('unpack', done, total))
+                self.update_staged.emit(staged)
+            except updates.UpdateError as error:
+                self.update_stopped.emit(str(error))
+            except Exception as error:          # reported, never fatal
+                log.exception('the update failed')
+                self.update_stopped.emit(f'The update failed: {error}')
+
+        threading.Thread(target=work, name='grabbit-update-install', daemon=True).start()
+
+    def _on_update_progress(self, phase: str, done: int, total: int):
+        dialog = self._update_dialog
+        if dialog is None:
+            return
+        if phase == 'download':
+            dialog.setLabelText(f'Downloading {APP_NAME} {self._update_answer.latest}… '
+                                f'{done / 1e6:.0f} of {total / 1e6:.0f} MB')
+        else:
+            # Past the point of cancelling: what is left is quick, and all of
+            # it happens beside the install rather than in it.
+            dialog.setCancelButton(None)
+            dialog.setLabelText('Unpacking and checking the new version…')
+        dialog.setValue(int(done * 100 / max(1, total)))
+
+    def _on_update_staged(self, staged):
+        answer = self._update_answer
+        if self._update_dialog is not None:
+            self._update_dialog.setLabelText('Restarting to finish the update…')
+            QApplication.processEvents()
+        try:
+            selfupdate.launch_helper(selfupdate.install_dir(), staged, answer.latest)
+        except OSError as error:
+            self._on_update_stopped(f'The installer could not be started: {error}')
+            return
+        log.info('restarting into %s', answer.latest)
+        self.quit_app()
+
+    def _on_update_stopped(self, message: str):
+        self._installing = False
+        if self._update_dialog is not None:
+            self._update_dialog.close()
+            self._update_dialog = None
+        if self._update_answer is not None:
+            self.update_banner.show()
+        if self._update_cancel.is_set():
+            self.statusBar().showMessage('Update cancelled.', 6000)
+            return
+        QMessageBox.warning(self, 'Update Grabbit', f'Grabbit couldn’t update.\n\n{message}')
+
+    def _show_update_failed(self, version: str):
+        QMessageBox.warning(
+            self, 'Update Grabbit',
+            f'{APP_NAME} {version} was installed but didn’t start, so {APP_NAME} {APP_VERSION} '
+            f'was put back.\n\nWhat happened is recorded in {selfupdate.log_path()}.')
+
+    def _clean_up_after_updates(self):
+        if not self._installing:
+            threading.Thread(target=selfupdate.cleanup, name='grabbit-update-cleanup',
+                             daemon=True).start()
 
     def _open_release_page(self):
         answer = self._update_answer

@@ -69,9 +69,50 @@ class SingleInstanceServer(QLocalServer):
         socket.waitForReadyRead(500)
 
 
+# Switches the updater passes (selfupdate.py), each followed by a value. Their
+# values are not links, so they are taken out before anything else sees them.
+VALUED_SWITCHES = ('--self-test', '--updated', '--update-marker', '--update-failed')
+
+
+def split_arguments(argv):
+    """(switches, links): {'--updated': '1.3.0', '--install-update': True}, [urls]."""
+    switches, links = {}, []
+    remaining = iter(argv[1:])
+    for argument in remaining:
+        if argument in VALUED_SWITCHES:
+            switches[argument] = next(remaining, '')
+        elif argument.startswith('-'):
+            switches[argument] = True
+        else:
+            links.append(argument)
+    return switches, links
+
+
+def self_test(answer: str) -> int:
+    """Start far enough to load everything, say which version this is, and stop.
+
+    The updater runs a new version this way before it lets it replace the old
+    one: Qt and its Windows plugin, the engine and the window's modules all
+    have to import, which is where a broken build fails. No window is shown,
+    and nothing is read or written but the answer.
+    """
+    try:
+        app = QApplication([sys.argv[0]])
+        from .engine import Engine                    # noqa: F401
+        from .ui.main_window import MainWindow        # noqa: F401
+        app.quit()
+        with open(answer, 'w', encoding='utf-8') as handle:
+            handle.write(APP_VERSION)
+        return 0
+    except Exception:
+        return 1
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv if argv is None else argv)
-    arguments = [a for a in argv[1:] if not a.startswith('-')]
+    switches, arguments = split_arguments(argv)
+    if '--self-test' in switches:
+        return self_test(switches['--self-test'])
 
     hide_child_consoles()
     setup_logging()
@@ -85,6 +126,12 @@ def main(argv=None) -> int:
 
     if send_to_running_instance(arguments):
         log.info('handed over to the running instance')
+        # Started by the updater while a copy of the new version was already
+        # open (someone clicked the shortcut mid-swap): that copy running is
+        # the proof the updater waits for.
+        if switches.get('--update-marker'):
+            from .selfupdate import record_started
+            record_started(switches['--update-marker'])
         return 0
 
     settings = Settings.load()
@@ -106,6 +153,10 @@ def main(argv=None) -> int:
     window.show()
     server = SingleInstanceServer(window)
     app.aboutToQuit.connect(server.close)
+    window.after_start(updated=switches.get('--updated') or '',
+                       update_marker=switches.get('--update-marker') or '',
+                       update_failed=switches.get('--update-failed') or '',
+                       install_update='--install-update' in switches)
 
     def follow_system_theme():
         if settings.theme == 'system':

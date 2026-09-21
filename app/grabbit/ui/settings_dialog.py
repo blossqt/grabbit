@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QPlainTextEdit, QPushButton, QSpinBox, QTabWidget, QVBoxLayout,
                                QWidget)
 
-from .. import associations
+from .. import APP_NAME, APP_VERSION, associations
 from ..paths import data_dir, find_tool
 from ..settings import COOKIE_BROWSERS, VIDEO_QUALITIES
 
@@ -255,9 +255,20 @@ class SettingsDialog(QDialog):
         self.confirm_remove = QCheckBox('Ask before removing downloads')
         self.confirm_remove.setChecked(settings.confirm_remove)
         form.addRow('', self.confirm_remove)
-        self.check_for_updates = QCheckBox('Tell me when a new version of Grabbit is out')
+        # Updates: whether to look at start, and a way to look now. "Check now"
+        # saves and closes first, so an update that restarts Grabbit cannot
+        # take anything typed here with it.
+        self.check_for_updates = QCheckBox('Check for updates when Grabbit starts')
         self.check_for_updates.setChecked(settings.check_for_updates)
         form.addRow('', self.check_for_updates)
+        self.check_now_requested = False
+        check_now = QPushButton('Check now')
+        check_now.clicked.connect(self._check_now)
+        version_row = QHBoxLayout()
+        version_row.addWidget(QLabel(f'You have {APP_NAME} {APP_VERSION}.'))
+        version_row.addStretch(1)
+        version_row.addWidget(check_now)
+        form.addRow('Updates', version_row)
 
         # --------------------------------------------------------- advanced
         form = _page(tabs, 'Advanced')
@@ -308,6 +319,10 @@ class SettingsDialog(QDialog):
                                               'Cookie files (*.txt);;All files (*)')
         if path:
             self.cookies_file.setText(path)
+
+    def _check_now(self):
+        self.check_now_requested = True
+        self._save()
 
     def _save(self):
         s = self.settings
