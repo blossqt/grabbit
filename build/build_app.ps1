@@ -49,6 +49,20 @@ if (Test-Path (Join-Path $Comp 'gallery-dl\gallery-dl.exe')) {
 
 Copy-Item (Join-Path $Root 'README.md') $Dist -Force -ErrorAction SilentlyContinue
 
+# Does it start? A build can come out of PyInstaller without complaint and
+# still be unable to open a window - missing Qt's platform plugin once did
+# exactly that. --self-test loads what a real start loads (app.py) and answers
+# with the version; it is also what the updater asks of a new version before
+# letting it replace an old one.
+$Answer = Join-Path $env:TEMP "grabbit-build-self-test-$PID.txt"
+Remove-Item $Answer -ErrorAction SilentlyContinue
+$Probe = Start-Process -FilePath (Join-Path $Dist 'Grabbit.exe') -ArgumentList '--self-test', "`"$Answer`"" -PassThru
+if (-not $Probe.WaitForExit(120000)) { $Probe.Kill(); Fail 'the built Grabbit.exe hung when started (--self-test)' }
+$Said = if (Test-Path $Answer) { (Get-Content -Raw $Answer).Trim() } else { '' }
+Remove-Item $Answer -ErrorAction SilentlyContinue
+if (-not $Said) { Fail 'the built Grabbit.exe does not start (--self-test gave no answer)' }
+Write-Host ">> it starts: Grabbit $Said"
+
 # Which commit this is, so release.py can tell a build of the current code from
 # an older one carrying the same version number. Changes not yet committed mark
 # it as such: a release is only ever made from a commit anyone can check out.

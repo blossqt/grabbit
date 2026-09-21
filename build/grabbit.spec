@@ -17,10 +17,28 @@ hiddenimports = [
 # gallery-dl is deliberately NOT bundled into this exe: it runs as its own
 # program from tools\gallery-dl.exe (see app/grabbit/gallerydl.py).
 
+# Qt's plugins, named here rather than left to PyInstaller's Qt hook. The hook
+# drops any plugin whose Qt libraries it finds by a second path - and a build
+# run from inside a packaged app, such as the Claude desktop app, sees AppData
+# by two paths. It once dropped every plugin that way, qwindows.dll included,
+# and the exe it made could not open a window. These are the kinds 1.1.0 had.
+import PySide6
+qt_plugins = os.path.join(os.path.dirname(PySide6.__file__), 'plugins')
+qt_plugin_binaries = [
+    (os.path.join(qt_plugins, kind, name), os.path.join('PySide6', 'plugins', kind))
+    for kind in ('platforms', 'imageformats', 'iconengines', 'styles', 'tls', 'generic',
+                 'networkinformation')
+    if os.path.isdir(os.path.join(qt_plugins, kind))
+    for name in sorted(os.listdir(os.path.join(qt_plugins, kind)))
+    if name.lower().endswith('.dll')
+]
+if not any(dest.endswith('platforms') and src.endswith('qwindows.dll') for src, dest in qt_plugin_binaries):
+    raise SystemExit('Qt\'s Windows platform plugin (qwindows.dll) was not found - the exe could not start')
+
 a = Analysis(
     [os.path.join(app_dir, 'main.py')],
     pathex=[app_dir],
-    binaries=[],
+    binaries=qt_plugin_binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
