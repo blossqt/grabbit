@@ -1,7 +1,7 @@
 """Simple line icons, drawn as SVG and tinted to match the current theme."""
 
-from PySide6.QtCore import QByteArray, QRectF, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PySide6.QtCore import QByteArray, QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QPolygonF
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QApplication
 
@@ -91,28 +91,37 @@ def clear_cache():
     _cache.clear()
 
 
+# The icon's colour: the same blue as Homework Hub's, so the two sit together.
+#
+# A constant on purpose. make_icon.py bakes this icon into the exe at build
+# time, and a colour taken from the palette there is simply whatever accent
+# Windows had that day - so each release froze a different one, blue one time
+# and gold the next, and none of them followed the accent afterwards. The rest
+# of the interface still follows the theme; the icon is the app's name.
+APP_ICON_COLOR = '#3b5bdb'
+
+
+def render_app_icon(size: int) -> QPixmap:
+    """The app icon at one size: a downward arrow dropping into a tray."""
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.scale(size / 64.0, size / 64.0)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor(APP_ICON_COLOR))
+    painter.drawRoundedRect(QRectF(4, 4, 56, 56), 14, 14)
+    painter.setBrush(QColor('#ffffff'))
+    painter.drawRoundedRect(QRectF(28, 14, 8, 22), 4, 4)
+    painter.drawPolygon(QPolygonF([QPointF(20, 30), QPointF(44, 30), QPointF(32, 46)]))
+    painter.drawRoundedRect(QRectF(16, 48, 32, 6), 3, 3)
+    painter.end()
+    return pixmap
+
+
 def app_icon() -> QIcon:
-    """Window/tray icon: a downward arrow dropping into a tray."""
+    """The window, tray and notification icon - and the one in the exe."""
     result = QIcon()
-    accent = QApplication.palette().highlight().color()
     for size in (16, 24, 32, 48, 64, 256):
-        pixmap = QPixmap(size, size)
-        pixmap.fill(Qt.transparent)
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.Antialiasing)
-        scale = size / 64.0
-        painter.scale(scale, scale)
-        painter.setBrush(accent)
-        painter.setPen(Qt.NoPen)
-        painter.drawRoundedRect(QRectF(4, 4, 56, 56), 14, 14)
-        pen_color = QColor('#ffffff')
-        painter.setBrush(pen_color)
-        painter.drawRoundedRect(QRectF(28, 14, 8, 22), 4, 4)
-        path_points = [(20, 30), (44, 30), (32, 46)]
-        from PySide6.QtGui import QPolygonF
-        from PySide6.QtCore import QPointF
-        painter.drawPolygon(QPolygonF([QPointF(x, y) for x, y in path_points]))
-        painter.drawRoundedRect(QRectF(16, 48, 32, 6), 3, 3)
-        painter.end()
-        result.addPixmap(pixmap)
+        result.addPixmap(render_app_icon(size))
     return result

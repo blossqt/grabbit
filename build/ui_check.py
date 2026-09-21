@@ -126,6 +126,19 @@ def main():
     window._tick()
     report('the once-a-second refresh runs', True, window.count_label.text().strip())
 
+    # The icon is baked into the exe at build time, when the palette is just
+    # Windows' accent of the day, so it must not take its colour from there.
+    # 1.2.0 was built under a gold accent and shipped a gold icon: recreate that
+    # palette and check the icon ignores it.
+    from PySide6.QtGui import QColor, QPalette
+    from grabbit.ui import icons
+    gold = QPalette(app.palette())
+    gold.setColor(QPalette.Highlight, QColor('#9c6f00'))
+    app.setPalette(gold)
+    tile = icons.render_app_icon(64).toImage().pixelColor(12, 32).name()
+    report('the app icon keeps its own colour under any accent',
+           tile == icons.APP_ICON_COLOR, f'{tile} under a {app.palette().highlight().color().name()} accent')
+
     engine.shutdown()
     failures = [name for name, ok in results if not ok]
     print(f'\n{len(results) - len(failures)}/{len(results)} checks passed')
