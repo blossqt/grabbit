@@ -175,7 +175,8 @@ p4a apk \
   --permission=android.permission.WRITE_EXTERNAL_STORAGE \
   --permission=android.permission.MANAGE_EXTERNAL_STORAGE \
   --permission=android.permission.POST_NOTIFICATIONS \
-  --permission=android.permission.FOREGROUND_SERVICE
+  --permission=android.permission.FOREGROUND_SERVICE \
+  --permission=android.permission.REQUEST_INSTALL_PACKAGES
 
 say 'result'
 ls -lh "$OUTDIR"/*.apk

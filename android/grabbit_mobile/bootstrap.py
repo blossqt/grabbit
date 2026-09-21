@@ -200,6 +200,88 @@ def open_url(url: str) -> bool:
     return webbrowser.open(url)
 
 
+# What Android's installer sends back to this activity (see install_apk).
+INSTALL_STATUS_ACTION = 'com.grabbit.downloader.INSTALL_STATUS'
+
+
+def install_apk(path: str) -> None:
+    """Hand a downloaded APK to Android's own installer.
+
+    No app may install anything silently, this one included: it opens an
+    installer session, writes the APK into it and commits it, and Android
+    answers - with an intent back to this activity, read by install_status -
+    by asking for the confirmation screen it wants the person to see. The
+    update then goes over this copy, keeping its downloads and settings,
+    because both are signed with the same key.
+
+    Raises on anything that stops it, so the caller can fall back to letting
+    the browser fetch the APK instead.
+    """
+    from jnius import autoclass
+    activity = autoclass('org.kivy.android.PythonActivity').mActivity
+    Intent = autoclass('android.content.Intent')
+    PendingIntent = autoclass('android.app.PendingIntent')
+    SessionParams = autoclass('android.content.pm.PackageInstaller$SessionParams')
+    installer = activity.getPackageManager().getPackageInstaller()
+    session_id = installer.createSession(SessionParams(SessionParams.MODE_FULL_INSTALL))
+    session = installer.openSession(session_id)
+    try:
+        stream = session.openWrite('grabbit.apk', 0, os.path.getsize(path))
+        with open(path, 'rb') as handle:
+            for chunk in iter(lambda: handle.read(1 << 16), b''):
+                stream.write(chunk)
+        session.fsync(stream)
+        stream.close()
+        answer = Intent(activity, activity.getClass())
+        answer.setAction(INSTALL_STATUS_ACTION)
+        # UPDATE_CURRENT | MUTABLE: the installer writes its answer into this
+        # intent, which Android 12 and later forbid unless it says so. The bit
+        # is ignored where it has no name yet.
+        pending = PendingIntent.getActivity(activity, session_id, answer, 0x08000000 | 0x02000000)
+        session.commit(pending.getIntentSender())
+    except Exception:
+        session.abandon()
+        raise
+    finally:
+        session.close()
+
+
+def install_status(intent):
+    """What Android's installer said, if this intent is its answer.
+
+    None when it is not; ('confirm', None) once the confirmation screen has
+    been opened; ('failed', message) when the installer gave up.
+    """
+    if intent is None:
+        return None
+    try:
+        from jnius import autoclass, cast
+    except ImportError:
+        return None                    # off a phone, nothing installs anything
+    try:
+        if intent.getAction() != INSTALL_STATUS_ACTION:
+            return None
+        Intent = autoclass('android.content.Intent')
+        PackageInstaller = autoclass('android.content.pm.PackageInstaller')
+        status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, -999)
+        if status == PackageInstaller.STATUS_PENDING_USER_ACTION:
+            confirm = cast('android.content.Intent', intent.getParcelableExtra(Intent.EXTRA_INTENT))
+            autoclass('org.kivy.android.PythonActivity').mActivity.startActivity(confirm)
+            return 'confirm', None
+        if status == PackageInstaller.STATUS_SUCCESS:
+            return 'done', None
+        if status == PackageInstaller.STATUS_FAILURE_ABORTED:
+            return 'failed', 'The update was cancelled.'
+        if status == PackageInstaller.STATUS_FAILURE_CONFLICT:
+            return 'failed', ('This update is signed differently from the Grabbit installed here, '
+                              'so Android refuses it. Uninstall Grabbit, then install the new one.')
+        detail = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) or f'status {status}'
+        return 'failed', f'Android could not install the update: {detail}'
+    except Exception as error:
+        log.exception('could not read the installer\'s answer')
+        return 'failed', f'Android could not install the update: {error}'
+
+
 def safe_insets() -> tuple:
     """How far the system's own furniture reaches in, in pixels.
 

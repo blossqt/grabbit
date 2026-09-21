@@ -355,6 +355,13 @@ class GrabbitApp(App):
         Clock.schedule_once(lambda *_: self._handle_intent(intent), 0)
 
     def _handle_intent(self, intent):
+        # Android's installer answers an update through an intent too.
+        from grabbit_mobile.bootstrap import install_status
+        installing = install_status(intent)
+        if installing is not None:
+            if installing[0] == 'failed':
+                self._update_failed(installing[1])
+            return
         link = self._link_from_intent(intent)
         if link:
             self._schedule_message('info', f'Shared with Grabbit: {link[:70]}')
@@ -515,18 +522,51 @@ class GrabbitApp(App):
                                    answer.error or f'This is the newest version: Grabbit {APP_VERSION}.')
 
     def _get_update(self):
-        """Hand the APK's link to the browser, which downloads it; opening the
-        download installs it over this copy, keeping everything in it."""
+        """Download the APK here, held to the signed manifest's size and hash,
+        and hand it to Android's installer - which asks to confirm, as it must.
+        If that cannot be done, the browser fetches it instead."""
         answer = self._update_answer
-        if answer is None or answer.asset is None:
+        if answer is None or answer.asset is None or getattr(self, '_updating', False):
             return
-        from grabbit_mobile.bootstrap import open_url
-        if open_url(answer.asset.url):
-            self._schedule_message('info', f'Downloading {answer.asset.name} - '
-                                   'open it when it finishes to install')
-            self.show_update(None)
-        else:
-            self._schedule_message('error', 'Could not open the download link.')
+        self._updating, self._installing_answer = True, answer
+        self.show_update(None)
+        shown = [-1]
+
+        def progress(done, total):
+            megabytes = done // 1_000_000
+            if megabytes != shown[0]:
+                shown[0] = megabytes
+                self._schedule_message('info', f'Downloading Grabbit {answer.latest}… '
+                                       f'{megabytes} of {total // 1_000_000} MB')
+
+        def work():
+            try:
+                apk = updates.download(answer.asset, paths.data_dir() / 'updates', progress)
+            except updates.UpdateError as error:
+                message = str(error)
+                Clock.schedule_once(lambda *_: self._update_failed(message), 0)
+                return
+            Clock.schedule_once(lambda *_: self._hand_to_installer(apk, answer), 0)
+
+        threading.Thread(target=work, name='grabbit-update-download', daemon=True).start()
+
+    def _hand_to_installer(self, apk, answer):
+        from grabbit_mobile.bootstrap import install_apk, open_url
+        try:
+            install_apk(str(apk))
+            self._schedule_message('info', 'Android will ask you to confirm the update.')
+        except Exception:
+            # Not on a phone, or the installer turned the session down: the
+            # browser fetches the same APK, and Android installs it the same way.
+            if open_url(answer.asset.url):
+                self._schedule_message('info', f'Downloading {answer.asset.name} in the browser - '
+                                       'open it when it finishes to install')
+        self._updating = False
+
+    def _update_failed(self, message):
+        self._updating = False
+        self._schedule_message('error', message)
+        self.show_update(getattr(self, '_installing_answer', None))
 
     def on_resume(self):
         # A phone keeps an app paused for days; the clock above does not run
