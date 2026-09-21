@@ -54,13 +54,15 @@ function Confirm-Page($seconds) {
     $screen = Get-Screen
     $x = [int]($screen.Width * 0.75)
     $y = [int]($screen.Height - (14 + 24) * $screen.Dp)
+    # The label in the middle is white; the button is all blue beside it.
+    $side = [int]($x + 60 * $screen.Dp)
     $probe = Join-Path $env:TEMP 'grabbit-page-probe.png'
     $deadline = (Get-Date).AddSeconds($seconds)
     while ((Get-Date) -lt $deadline) {
         & $adb shell "screencap -p /sdcard/page-probe.png" | Out-Null
         & $adb pull /sdcard/page-probe.png $probe 2>&1 | Out-Null
         $blue = & $python -c "from PIL import Image
-r, g, b = Image.open(r'$probe').convert('RGB').getpixel(($x, $y))
+r, g, b = Image.open(r'$probe').convert('RGB').getpixel(($side, $y))
 print(1 if b > 200 and r < 120 else 0)"
         if ([int]$blue -eq 1) {
             & $adb shell "input tap $x $y" | Out-Null
