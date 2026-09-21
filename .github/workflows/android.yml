@@ -28,6 +28,7 @@ env:
   TOOLCHAIN_KEY: android-toolchain-v1
   NATIVES_KEY: android-natives-v1
   P4A_KEY: android-p4a-v1
+  DEBUGKEY_KEY: android-debug-keystore-v1
 
 jobs:
   apk:
@@ -179,6 +180,19 @@ jobs:
             ~/android/arm64-sysroot
           key: ${{ env.NATIVES_KEY }}-${{ hashFiles('build/android/build_aria2.sh', 'build/android/build_tools.sh', 'build/patches/*.patch') }}
 
+      # Gradle invents a debug keystore when it cannot find one, and a runner
+      # starts without one every time - so each build would be signed with a
+      # different key, and Android refuses to install an APK over one signed
+      # with another. Keeping the first key means these APKs update in place
+      # like any other app. It is the ordinary debug key, with the password
+      # everyone's SDK uses; it guards nothing and is not a secret.
+      - name: Restore the debug signing key
+        id: debugkey
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: ${{ env.DEBUGKEY_KEY }}
+
       - name: Set up python-for-android
         id: p4asetup
         run: bash build/android/setup_p4a.sh
@@ -186,6 +200,15 @@ jobs:
       - name: Build the APK
         id: build
         run: bash build/android/build_apk.sh
+
+      # Only after a build that got as far as signing, which is when Gradle
+      # makes the key; once saved, every later run restores this same one.
+      - name: Keep the debug signing key
+        if: always() && steps.build.outcome == 'success' && steps.debugkey.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: ${{ env.DEBUGKEY_KEY }}
 
       # Written back even when the build failed, because what it holds is
       # CPython, SDL and Kivy - none of which this app can break, and all of
