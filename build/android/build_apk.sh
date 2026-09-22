@@ -193,7 +193,7 @@ p4a apk \
   --activity-launch-mode=singleTask \
   --intent-filters="$HERE/intent_filters.xml" \
   --add-source="$HERE/java" \
-  --native-service 'com.grabbit.downloader.DownloadService" android:exported="false" android:foregroundServiceType="dataSync' \
+  --native-service='com.grabbit.downloader.DownloadService" android:exported="false" android:foregroundServiceType="dataSync' \
   --icon="$HERE/icon.png" \
   --presplash="$HERE/presplash.png" \
   --presplash-color='#17171c' \

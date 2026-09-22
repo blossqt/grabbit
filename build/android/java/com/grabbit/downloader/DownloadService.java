@@ -72,11 +72,14 @@ public class DownloadService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        String title = intent == null ? null : intent.getStringExtra("title");
-        String text = intent == null ? null : intent.getStringExtra("text");
-        int percent = intent == null ? -1 : intent.getIntExtra("percent", -1);
-        Notification notification = build(this, title, text, percent);
+        // Nothing here may throw: an exception in a service takes the whole
+        // app down with it, and whatever goes wrong, the downloads can still
+        // carry on while the app is open.
         try {
+            String title = intent == null ? null : intent.getStringExtra("title");
+            String text = intent == null ? null : intent.getStringExtra("text");
+            int percent = intent == null ? -1 : intent.getIntExtra("percent", -1);
+            Notification notification = build(this, title, text, percent);
             if (Build.VERSION.SDK_INT >= 29) {
                 startForeground(NOTIFICATION, notification,
                                 ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
@@ -85,7 +88,7 @@ public class DownloadService extends Service {
             }
         } catch (RuntimeException e) {
             // Refused: the app left the screen first, or has used up Android
-            // 15's six hours for today. The downloads carry on while it is open.
+            // 15's six hours for today.
             Log.w(TAG, "could not keep downloading in the background", e);
             stopSelf();
             return START_NOT_STICKY;
@@ -93,11 +96,16 @@ public class DownloadService extends Service {
         synchronized (LOCK) {
             running = true;
         }
-        if (wakeLock == null) {
-            PowerManager power = (PowerManager) getSystemService(POWER_SERVICE);
-            wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "grabbit:downloads");
-            wakeLock.setReferenceCounted(false);
-            wakeLock.acquire(LONGEST);
+        try {
+            if (wakeLock == null) {
+                PowerManager power = (PowerManager) getSystemService(POWER_SERVICE);
+                wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "grabbit:downloads");
+                wakeLock.setReferenceCounted(false);
+                wakeLock.acquire(LONGEST);
+            }
+        } catch (RuntimeException e) {
+            // Downloads still carry on off screen, if not with the screen off.
+            Log.w(TAG, "could not hold a wake lock", e);
         }
         return START_NOT_STICKY;
     }
