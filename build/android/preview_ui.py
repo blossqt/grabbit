@@ -9,6 +9,8 @@ of made-up tasks is enough to see every state at once.
     ... --update           with the banner a newer release would show
     ... --page video       with the page a pasted link opens (video, audio,
                            gif or image), for a video served from this machine
+    ... --dialog remove    with a dialog open (remove, or storage)
+    ... --width 360        as narrow as a smaller phone (412 by default)
 """
 
 import math
@@ -32,7 +34,7 @@ os.environ.setdefault('KIVY_NO_ARGS', '1')
 from kivy.config import Config                              # noqa: E402
 
 # A phone-shaped window, so the layout is judged at the size it will be used.
-Config.set('graphics', 'width', '412')
+Config.set('graphics', 'width', sys.argv[sys.argv.index('--width') + 1] if '--width' in sys.argv else '412')
 Config.set('graphics', 'height', '892')
 Config.set('graphics', 'resizable', '1')
 
@@ -367,6 +369,67 @@ def check_page(app, report):
         site.close()
 
 
+def open_dialog():
+    from grabbit_mobile.ui.widgets import Dialog
+    return next((child for child in Window.children if isinstance(child, Dialog)), None)
+
+
+def labels_clear(buttons, room=None) -> bool:
+    """Every label fits its button whole, with room either side - by default
+    the room a dialog asks for."""
+    from kivy.core.text import Label as CoreLabel
+    from grabbit_mobile.ui.widgets import Dialog
+    room = Dialog.ROOM if room is None else room
+    return all(CoreLabel(font_size=b.font_size).get_extents(b.text)[0] + 2 * room
+               <= b.width + 0.5 for b in buttons)
+
+
+def check_dialogs(app, report):
+    """The app's dialogs: one rounded card for all of them, labels clear of edges."""
+    from kivy.metrics import dp
+    from grabbit_mobile.ui.widgets import Card
+
+    task = next(iter(app.engine.store))
+    count = len(list(app.engine.store))
+    app.confirm_remove(task.id)
+    settle(6)
+    dialog = open_dialog()
+    card = dialog.children[0] if dialog is not None else None
+    report('removing a download asks in a rounded card, as the rest of the app is drawn',
+           isinstance(card, Card) and card._radius >= dp(12),
+           f'{card._radius / dp(1):.0f}dp corners' if isinstance(card, Card) else 'no dialog')
+    if dialog is None:
+        return
+    buttons = list(reversed(dialog.buttons.children))
+    report('its three choices stack, full width, the main one on top and Cancel last',
+           dialog.buttons.orientation == 'vertical'
+           and [b.text for b in buttons] == ['Delete it too', 'Keep the file', 'Cancel'],
+           ' / '.join(b.text for b in buttons))
+    report("and every label keeps clear of its button's edges", labels_clear(buttons))
+    inside = all(dialog.x + card.padding[0] - 1 <= b.x and b.right <= dialog.right - card.padding[2] + 1
+                 for b in buttons)
+    report('inside the card, with its padding around them', inside)
+    tap(buttons[-1])
+    closed = wait_until(lambda: open_dialog() is None, 3)
+    report('Cancel closes it and removes nothing',
+           closed and len(list(app.engine.store)) == count)
+
+    app.ask_for_storage()
+    settle(6)
+    dialog = open_dialog()
+    buttons = list(reversed(dialog.buttons.children)) if dialog else []
+    texts = [b.text for b in buttons]
+    if dialog is not None and dialog.buttons.orientation == 'horizontal':
+        report('two choices that fit share a row, the main one on the right',
+               texts == ['Not now', 'Open settings'] and labels_clear(buttons), ' | '.join(texts))
+    else:
+        report('two choices too wide to share a row stack, the main one on top',
+               texts == ['Open settings', 'Not now'] and labels_clear(buttons), ' / '.join(texts))
+    if dialog is not None:
+        dialog.dismiss()
+        wait_until(lambda: open_dialog() is None, 3)
+
+
 def check(app):
     """Tap through everything and report it, the way the other tests do."""
     results = []
@@ -374,6 +437,8 @@ def check(app):
     def report(name, ok, detail=''):
         results.append((name, ok))
         print(f'  [{"PASS" if ok else "FAIL"}] {name}' + (f' - {detail}' if detail else ''))
+
+    from grabbit_mobile.ui.widgets import BUTTON_MARGIN
 
     # Updates first, so every check after this one also shows that a banner
     # which has come and gone leaves nothing behind to catch taps.
@@ -404,6 +469,9 @@ def check(app):
     inset = title.to_window(title.x, 0)[0]
     report("the title sits in from the edge, in line with the link box's text",
            inset >= dp(16), f'{inset:.0f}px')
+    report('and stays on one line, however narrow the phone',
+           title.texture_size[1] < 1.6 * title.font_size and title.width >= title.texture_size[0],
+           f'{Window.width}px wide')
     report('there are no format chips on the main screen any more',
            not hasattr(app, '_format_chips'))
 
@@ -464,7 +532,12 @@ def check(app):
             break
     else:
         report('every details tab opens', True, 'General, Files, Peers, Trackers, Log')
+    report('and every tab has room for its whole word', labels_clear(
+        app.details.tab_chips.values(), room=BUTTON_MARGIN),
+        ', '.join(f'{c.text} {c.width:.0f}px' for c in app.details.tab_chips.values()))
     app.details.dismiss()
+    wait_until(lambda: app.details.parent is None)
+    check_dialogs(app, report)
 
     failures = [name for name, ok in results if not ok]
     print()
@@ -552,8 +625,9 @@ def main():
         app.refresh()
         if '--update' in sys.argv:
             from grabbit import APP_VERSION, updates
-            apk = updates.Asset('Grabbit-1.3.0-arm64.apk', 1, '0' * 64, updates.RELEASES_PAGE)
-            sample = updates.Check(APP_VERSION, updates.Release('1.3.0', 'now', '', None, apk), apk)
+            # Newer than any real one, so the banner shows whatever this copy is.
+            apk = updates.Asset('Grabbit-9.0.0-arm64.apk', 1, '0' * 64, updates.RELEASES_PAGE)
+            sample = updates.Check(APP_VERSION, updates.Release('9.0.0', 'now', '', None, apk), apk)
             app.show_update(sample)
         if '--check' in sys.argv:
             code = check(app)
@@ -574,6 +648,13 @@ def main():
                         app.details.show_tab(name)
                     wanted = sys.argv[sys.argv.index('--tab') + 1] if '--tab' in sys.argv else 'General'
                     app.details.show_tab(wanted)
+                    Clock.schedule_once(
+                        lambda _: (Window.screenshot(name=shot), app.stop()), 0.8)
+                elif '--dialog' in sys.argv:
+                    if sys.argv[sys.argv.index('--dialog') + 1] == 'storage':
+                        app.ask_for_storage()
+                    else:
+                        app.confirm_remove(list(app.engine.store)[0].id)
                     Clock.schedule_once(
                         lambda _: (Window.screenshot(name=shot), app.stop()), 0.8)
                 else:

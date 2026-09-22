@@ -5,12 +5,15 @@ be described in canvas instructions. They are here so the screens can read as
 layout rather than as drawing.
 """
 
+from kivy.core.text import Label as CoreLabel
+from kivy.core.window import Window
 from kivy.metrics import dp
 from kivy.graphics import Color, Ellipse, Line, RoundedRectangle, Triangle
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.label import Label
+from kivy.uix.modalview import ModalView
 from kivy.uix.widget import Widget
 
 from grabbit.tasks import KIND_IMAGE, KIND_MAGNET, KIND_MEDIA, KIND_TORRENT, State
@@ -48,11 +51,11 @@ class Chip(ButtonBehavior, Label):
     """One filter, on or off. The sidebar's rows, made to fit sideways."""
 
     def __init__(self, text='', selected=False, **kwargs):
-        super().__init__(text=text, **kwargs)
+        super().__init__(text=text, halign='center', valign='middle', shorten=True, **kwargs)
         self.font_size = dp(13)
         self.size_hint_x = None
         self.height = dp(30)
-        self.padding_x = dp(12)
+        self.padding = [dp(12), 0, dp(12), 0]
         self.selected = selected
         with self.canvas.before:
             self._color = Color(*(theme.HOVER if selected else theme.TRANSPARENT))
@@ -67,6 +70,11 @@ class Chip(ButtonBehavior, Label):
     def _redraw(self, *_):
         self._rect.pos = self.pos
         self._rect.size = self.size
+        if self.size_hint_x is not None:
+            # A share of a row rather than the width of its words: the word
+            # keeps clear of the edges, and is cut short if it has to be.
+            self.padding = [0, 0, 0, 0]
+            self.text_size = (max(0, self.width - 2 * BUTTON_MARGIN), self.height)
 
     def set_selected(self, selected: bool):
         if selected != self.selected:
@@ -76,6 +84,14 @@ class Chip(ButtonBehavior, Label):
     def _apply(self):
         self._color.rgba = theme.HOVER if self.selected else theme.TRANSPARENT
         self.color = theme.TEXT if self.selected else theme.DIM
+
+
+def share_by_words(chips, room=dp(20)):
+    """Chips splitting one row between them, each in proportion to its word
+    and some room either side of it, rather than evenly - so a long word is
+    not squeezed into the share a short one needs."""
+    for chip in chips:
+        chip.size_hint_x = CoreLabel(font_size=chip.font_size).get_extents(chip.text)[0] + room
 
 
 class Option(Chip):
@@ -110,9 +126,13 @@ class Option(Chip):
 
 class FlatButton(Button):
     """A button that draws its own rounded background, because Kivy's default
-    one is a grey bitmap from 2011."""
+    one is a grey bitmap from 2011. Its label keeps clear of the edges, and
+    is cut short rather than running into them should it ever be too long."""
 
     def __init__(self, fill=theme.HOVER, radius=8, **kwargs):
+        kwargs.setdefault('halign', 'center')
+        kwargs.setdefault('valign', 'middle')
+        kwargs.setdefault('shorten', True)
         super().__init__(background_normal='', background_down='',
                          background_color=theme.TRANSPARENT, **kwargs)
         self._radius = dp(radius)
@@ -127,6 +147,83 @@ class FlatButton(Button):
     def _redraw(self, *_):
         self._rect.pos = self.pos
         self._rect.size = self.size
+        self.text_size = (max(0, self.width - 2 * BUTTON_MARGIN), self.height)
+
+
+# The least room a button's label keeps from either edge.
+BUTTON_MARGIN = dp(8)
+
+# The looks a dialog's buttons come in: (fill, label colour).
+BUTTON_STYLES = {
+    'primary': (theme.BLUE, (1, 1, 1, 1)),
+    'danger': (theme.state_color(State.ERROR), (1, 1, 1, 1)),
+    'plain': (theme.HOVER, theme.TEXT),
+}
+
+
+class Dialog(ModalView):
+    """A question in a rounded card over the dimmed app.
+
+    Every dialog in the app is one of these, so they all look like the rest
+    of it - Kivy's own Popup is a square box with a rule under its title.
+    buttons are (label, style, action), style being one of BUTTON_STYLES,
+    listed as a row reads: the one that does nothing first, the main action
+    last. They share a row when every label fits its share with room either
+    side, and stack, full width, when one would not - the main action on top,
+    the one that does nothing at the bottom - so no label is squeezed
+    against its edges, whatever the words or the width of the phone. Any of
+    them closes the dialog, then runs its action, if it has one.
+    """
+
+    ROOM = dp(16)          # each side of a label, for its button to count as fitting
+
+    def __init__(self, title, message='', buttons=(), **kwargs):
+        super().__init__(size_hint=(None, None), background='', background_color=theme.TRANSPARENT,
+                         overlay_color=(0, 0, 0, 0.6), **kwargs)
+        self.width = min(Window.width - dp(40), dp(400))
+        padding = [dp(22), dp(20), dp(22), dp(18)]
+        inner = self.width - padding[0] - padding[2]
+        card = Card(orientation='vertical', radius=16, fill=theme.ALT, size_hint_y=None,
+                    padding=padding, spacing=dp(10))
+        card.bind(minimum_height=card.setter('height'), height=self.setter('height'))
+        card.add_widget(self._words(title, dp(17), theme.TEXT, inner, bold=True))
+        if message:
+            card.add_widget(self._words(message, dp(14), theme.DIM, inner))
+        card.add_widget(Widget(size_hint_y=None, height=dp(6)))
+        self.buttons = self._buttons(buttons, inner)
+        card.add_widget(self.buttons)
+        self.add_widget(card)
+
+    @staticmethod
+    def _words(text, size, color, width, bold=False):
+        label = Label(text=text, font_size=size, color=color, bold=bold, halign='left',
+                      valign='top', size_hint_y=None, text_size=(width, None))
+        label.bind(texture_size=lambda widget, value: setattr(widget, 'height', value[1]))
+        label.texture_update()          # measured now, so the card opens at its size
+        return label
+
+    def _buttons(self, buttons, width):
+        buttons = list(buttons)
+        gap, height, stacked_gap = dp(10), dp(46), dp(8)
+        share = (width - gap * (len(buttons) - 1)) / max(1, len(buttons))
+        measure = CoreLabel(font_size=dp(15))
+        in_a_row = all(measure.get_extents(label)[0] + 2 * self.ROOM <= share
+                       for label, _, _ in buttons)
+        box = BoxLayout(orientation='horizontal' if in_a_row else 'vertical',
+                        spacing=gap if in_a_row else stacked_gap, size_hint_y=None)
+        box.height = (height if in_a_row
+                      else len(buttons) * height + (len(buttons) - 1) * stacked_gap)
+        for label, style, action in (buttons if in_a_row else reversed(buttons)):
+            fill, color = BUTTON_STYLES[style]
+            button = FlatButton(text=label, font_size=dp(15), fill=fill, color=color)
+            button.bind(on_release=lambda _, act=action: self._pick(act))
+            box.add_widget(button)
+        return box
+
+    def _pick(self, action):
+        self.dismiss()
+        if action is not None:
+            action()
 
 
 class ProgressTrack(Widget):

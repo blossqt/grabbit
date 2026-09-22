@@ -35,7 +35,6 @@ from kivy.metrics import dp                                 # noqa: E402
 from kivy.uix.boxlayout import BoxLayout                    # noqa: E402
 from kivy.uix.button import Button                          # noqa: E402
 from kivy.uix.label import Label                            # noqa: E402
-from kivy.uix.popup import Popup                            # noqa: E402
 from kivy.uix.scrollview import ScrollView                  # noqa: E402
 from kivy.utils import platform                             # noqa: E402
 
@@ -52,7 +51,7 @@ from grabbit_mobile.ui.details import DetailsSheet          # noqa: E402
 from grabbit_mobile.ui.graph import SpeedGraph              # noqa: E402
 from grabbit_mobile.ui.linkbox import LinkBox               # noqa: E402
 from grabbit_mobile.ui.rows import TaskRow                  # noqa: E402
-from grabbit_mobile.ui.widgets import Card, Chip, FlatButton, TapLabel  # noqa: E402
+from grabbit_mobile.ui.widgets import Card, Chip, Dialog, FlatButton, TapLabel  # noqa: E402
 
 IMPORTED = time.monotonic()
 
@@ -300,12 +299,15 @@ class GrabbitApp(App):
         # screen's rounded corner rather than hard against it.
         bar = BoxLayout(size_hint_y=None, height=dp(34), spacing=dp(8),
                         padding=[dp(10), 0, dp(2), 0])
+        # The name is always as wide as it is - on a narrower phone the speeds
+        # beside it give way, rather than the name wrapping onto two lines.
         name = Label(text='Grabbit', color=theme.TEXT, font_size=dp(18), bold=True,
-                     halign='left', valign='middle')
-        name.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
+                     size_hint_x=None)
+        name.bind(texture_size=lambda widget, value: setattr(widget, 'width', value[0]))
+        name.texture_update()
         self.speed_label = Label(text='↓ 0 B/s   ↑ 0 B/s', color=theme.DIM, font_size=dp(11),
                                  halign='right', valign='middle', shorten=True,
-                                 size_hint_x=None, width=dp(172))
+                                 shorten_from='right')
         self.speed_label.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
         self.graph_chip = Chip(text='Graph')
         self.graph_chip.bind(on_release=lambda *_: self.show_graph(not self.graph_shown))
@@ -315,19 +317,25 @@ class GrabbitApp(App):
         return bar
 
     def _build_update_banner(self):
-        """The desktop's update banner, in one row."""
-        banner = Card(size_hint_y=None, height=dp(40), spacing=dp(6),
-                      padding=[dp(10), dp(4), dp(4), dp(4)])
+        """The desktop's update banner, in one row: what is out on one line and
+        what this copy is under it, so neither is cut short on a narrow phone."""
+        banner = Card(size_hint_y=None, height=dp(44), spacing=dp(6),
+                      padding=[dp(12), dp(5), dp(5), dp(5)])
+        words = BoxLayout(orientation='vertical')
         self.update_label = Label(text='', color=theme.TEXT, font_size=dp(13), halign='left',
-                                  valign='middle', shorten=True, shorten_from='right')
-        self.update_label.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
+                                  valign='bottom', shorten=True, shorten_from='right')
+        self.update_note = Label(text='', color=theme.DIM, font_size=dp(11), halign='left',
+                                 valign='top', shorten=True, shorten_from='right')
+        for label in (self.update_label, self.update_note):
+            label.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
+            words.add_widget(label)
         get = FlatButton(text='Get it', size_hint_x=None, width=dp(68), font_size=dp(13),
                          color=(1, 1, 1, 1), fill=theme.BLUE)
         get.bind(on_release=lambda *_: self._get_update())
         self.update_later = FlatButton(text='Later', size_hint_x=None, width=dp(60),
                                        font_size=dp(13), color=theme.DIM)
         self.update_later.bind(on_release=lambda *_: self.show_update(None))
-        for widget in (self.update_label, get, self.update_later):
+        for widget in (words, get, self.update_later):
             banner.add_widget(widget)
         return banner
 
@@ -521,35 +529,21 @@ class GrabbitApp(App):
     def _maybe_ask_for_storage(self):
         """Android 11 and later hide the real Downloads folder behind a
         permission only the user can grant, on a screen only they can reach."""
-        from grabbit_mobile.bootstrap import has_all_files_access, open_all_files_settings
+        from grabbit_mobile.bootstrap import has_all_files_access
         marker = paths.data_dir() / '.asked-for-storage'
         if has_all_files_access() is not False or marker.exists():
             return
         marker.write_text('asked')
+        self.ask_for_storage()
 
-        body = BoxLayout(orientation='vertical', padding=dp(14), spacing=dp(12))
-        body.add_widget(Label(
-            text=('Android is keeping Grabbit out of your Downloads folder.\n\n'
-                  'Without file access, downloads are saved inside the app\'s own '
-                  'folder instead - still readable over USB, but not in the '
-                  'Downloads app.'),
-            color=theme.TEXT, halign='left', valign='top',
-            text_size=(Window.width * 0.7, None)))
-        buttons = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(10))
-        popup = Popup(title='Where downloads go', content=body,
-                      size_hint=(0.88, None), height=dp(320))
-        later = FlatButton(text='Not now', color=theme.TEXT, fill=theme.HOVER)
-        later.bind(on_release=popup.dismiss)
-        grant = FlatButton(text='Open settings', color=(1, 1, 1, 1), fill=theme.BLUE)
-
-        def go(*_):
-            popup.dismiss()
-            open_all_files_settings()
-        grant.bind(on_release=go)
-        buttons.add_widget(later)
-        buttons.add_widget(grant)
-        body.add_widget(buttons)
-        popup.open()
+    def ask_for_storage(self):
+        from grabbit_mobile.bootstrap import open_all_files_settings
+        Dialog('Where downloads go',
+               'Android is keeping Grabbit out of your Downloads folder.\n\n'
+               'Without file access, downloads are saved inside the app\'s own folder '
+               'instead - still readable over USB, but not in the Downloads app.',
+               [('Not now', 'plain', None),
+                ('Open settings', 'primary', open_all_files_settings)]).open()
 
     def _schedule_refresh(self):
         Clock.schedule_once(lambda *_: self.refresh(), 0)
@@ -645,7 +639,8 @@ class GrabbitApp(App):
         if self._update_answer is None:
             self.update_slot.height = 0
             return
-        self.update_label.text = f'Grabbit {answer.latest} is out - you have {APP_VERSION}'
+        self.update_label.text = f'Grabbit {answer.latest} is out'
+        self.update_note.text = f'You have {APP_VERSION}'
         self.update_slot.add_widget(self.update_banner)
         self.update_slot.height = self.update_banner.height
 
@@ -769,32 +764,18 @@ class GrabbitApp(App):
         task = self.engine.store.get(task_id)
         if task is None:
             return
-        body = BoxLayout(orientation='vertical', padding=dp(14), spacing=dp(12))
-        body.add_widget(Label(text=task.name or task.source, color=theme.TEXT, shorten=True,
-                              shorten_from='right', text_size=(Window.width * 0.7, None),
-                              halign='left', valign='top'))
-        buttons = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(10))
-        popup = Popup(title='Remove this download', content=body,
-                      size_hint=(0.88, None), height=dp(240))
 
         def finish(delete_files):
-            popup.dismiss()
             self.engine.remove([task_id], delete_files=delete_files)
             if self.selected_id == task_id:
                 self.selected_id = ''
                 self.graph.select('')
             self._schedule_refresh()
 
-        for label, delete, colour in (('Keep the file', False, theme.HOVER),
-                                      ('Delete it too', True, theme.state_color(State.ERROR))):
-            button = FlatButton(text=label, fill=colour, color=theme.TEXT, font_size=dp(14))
-            button.bind(on_release=lambda widget, d=delete: finish(d))
-            buttons.add_widget(button)
-        cancel = FlatButton(text='Cancel', fill=theme.HOVER, color=theme.DIM, font_size=dp(14))
-        cancel.bind(on_release=popup.dismiss)
-        buttons.add_widget(cancel)
-        body.add_widget(buttons)
-        popup.open()
+        Dialog('Remove this download?', task.name or task.source, [
+            ('Cancel', 'plain', None),
+            ('Keep the file', 'plain', lambda: finish(False)),
+            ('Delete it too', 'danger', lambda: finish(True))]).open()
 
     # --------------------------------------------------------------- drawing
     def refresh(self):

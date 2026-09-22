@@ -19,7 +19,7 @@ from grabbit.torrentmeta import peer_client
 from grabbit.util import human_eta, human_size, human_speed, human_time
 
 from . import theme
-from .widgets import Card, Chip
+from .widgets import Card, Chip, share_by_words
 
 TABS = ['General', 'Files', 'Peers', 'Trackers', 'Log']
 
@@ -97,11 +97,12 @@ class DetailsSheet(ModalView):
         self.tab_chips = {}
         for name in TABS:
             chip = Chip(text=name, selected=(name == self.tab))
-            chip.size_hint_x = 1      # five of them, sharing the width evenly
             chip.font_size = dp(12)
             chip.bind(on_release=lambda widget, n=name: self.show_tab(n))
             self.tab_chips[name] = chip
             tabs.add_widget(chip)
+        # Five of them across the sheet: "Trackers" needs more of it than "Log".
+        share_by_words(self.tab_chips.values())
         frame.add_widget(tabs)
 
         self.scroll = ScrollView()
