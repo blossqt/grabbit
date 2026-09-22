@@ -36,12 +36,16 @@ POLL_KEYS = ['gid', 'status', 'totalLength', 'completedLength', 'uploadLength',
 class MobileEngine:
     """Runs aria2, keeps the task list, and reports changes through callbacks."""
 
-    def __init__(self, settings, on_change=None, on_message=None):
+    def __init__(self, settings, on_change=None, on_message=None, on_poll=None):
         self.settings = settings
         self.store = TaskStore()
         self.store.load()
         self.on_change = on_change or (lambda: None)
         self.on_message = on_message or (lambda level, text: None)
+        # After every poll, from the poll thread, with the tasks and the
+        # totals - which keeps running while the app is in the background and
+        # its interface is paused (the notification, background.py).
+        self.on_poll = on_poll or (lambda tasks, stats: None)
 
         self.process: Aria2Process | None = None
         self.client = None
@@ -485,6 +489,10 @@ class MobileEngine:
                 log.debug('poll failed: %s', exc)
             except Exception:
                 log.exception('poll loop error')
+            try:
+                self.on_poll(list(self.store), dict(self.stats))
+            except Exception:
+                log.exception('poll listener failed')
             time.sleep(1.0)
 
     def _poll_once(self):

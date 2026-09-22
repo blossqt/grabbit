@@ -59,6 +59,7 @@ executable and is still run as its own process.
 | aria2 1.37.0 | `libaria2c.so` | GPL-2.0-or-later (with OpenSSL exception) | as above, with the same patch |
 | FFmpeg 8.0, ffprobe | `libffmpeg.so`, `libffprobe.so` | LGPL-2.1-or-later (see below) | https://github.com/FFmpeg/FFmpeg at tag `n8.0` |
 | QuickJS-ng | `libquickjs.so` | MIT | https://github.com/quickjs-ng/quickjs |
+| gallery-dl 1.32.13 | `gallery-dl/`, run by the APK's own Python (see below) | GPL-2.0-only | https://github.com/mikf/gallery-dl at tag `v1.32.13` |
 
 Statically linked into those:
 
@@ -91,9 +92,20 @@ The Python side of the APK contains:
 | websockets | BSD-3-Clause | https://github.com/python-websockets/websockets |
 | requests, urllib3, idna, charset-normalizer, filetype, six | Apache-2.0 / MIT | dependencies of Kivy |
 
-gallery-dl has no place on a phone: it is a separate program, and the isolation
-that keeps it at arm's length needs a command line the APK does not have. The
-phone build simply goes without it.
+gallery-dl is kept apart from Grabbit's code on the phone as it is on Windows.
+It is a Python program, so it travels as its source's compiled form rather than
+as a binary: in a folder of its own with the three libraries it needs, off the
+app's import path. The APK carries a standalone Python interpreter
+(`libpythonbin.so`), and Grabbit runs gallery-dl as its own process with it,
+passing it a link on the command line and reading back the JSON it prints.
+Grabbit never imports it. `build/android/build_apk.sh` names the exact
+versions, whose source PyPI and the projects' repositories publish.
+
+| Library, in `gallery-dl/` | Licence | Source |
+|---|---|---|
+| requests 2.34.2 | Apache-2.0 | https://github.com/psf/requests |
+| urllib3 2.8.0 | MIT | https://github.com/urllib3/urllib3 |
+| idna 3.20 | BSD-3-Clause | https://github.com/kjd/idna |
 
 ## Qt (LGPL-3.0)
 

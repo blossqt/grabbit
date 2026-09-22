@@ -98,13 +98,17 @@ Reading frames out of a video served over HTTP, the way a site serves one:
 
 ## The Android build
 
-The APK carries the same engine — aria2, yt-dlp, FFmpeg — cross-compiled for
-arm64, with a Kivy interface instead of Qt and QuickJS in place of Deno, which
-has no Android target. Pasting or sharing a link opens a page once the link has
-been read, with the choices the desktop's card offers: quality and file type,
-the sound alone, a GIF, or one frame picked with a slider. The link box itself
-is Android's own text field, so holding it gives Android's own copy and paste
-menu. Building it needs WSL (Ubuntu), a JDK, and roughly 15 GB:
+The APK carries the same engine — aria2, yt-dlp, FFmpeg, gallery-dl —
+cross-compiled for arm64 where it is compiled at all, with a Kivy interface
+instead of Qt and QuickJS in place of Deno, which has no Android target.
+Pasting or sharing a link opens a page once the link has been read, with the
+choices the desktop's card offers: quality and file type, the sound alone, a
+GIF, or one frame picked with a slider. The link box itself is Android's own
+text field, so holding it gives Android's own copy and paste menu. Downloads
+carry on with the app off screen: while anything is downloading, a foreground
+service (`build/android/java`) keeps the app from being frozen and shows
+Android's own progress notification. Building it needs WSL (Ubuntu), a JDK,
+and roughly 15 GB:
 
     bash build/android/fetch_sdk.sh        # NDK, SDK command-line tools, adb
     bash build/android/build_aria2.sh      # aria2 + OpenSSL, zlib, expat, c-ares

@@ -3,7 +3,9 @@
 gallery-dl runs as a separate program (tools/gallery-dl.exe) rather than being
 imported: Grabbit only asks it to print the list of files behind a link and
 reads that JSON back. It downloads nothing itself - every URL it finds goes to
-aria2 like any other file.
+aria2 like any other file. On a phone it is a package that the APK's own
+Python runs, in a process of its own, which comes to the same thing (see
+android/grabbit_mobile/bootstrap.py).
 
 Keeping it at arm's length also keeps the licences apart: gallery-dl is
 GPL-2.0-only, and calling a separate program is plain aggregation.
@@ -29,12 +31,26 @@ TIMEOUT = 90
 DIRECTORY, URL = 2, 3
 
 
+# How to run it, where it is not an executable of its own: the command and
+# its environment. The phone fills these in; the desktop leaves them alone.
+COMMAND: list | None = None
+ENVIRONMENT: dict | None = None
+
+
 def executable() -> str | None:
     return find_tool('gallery-dl')
 
 
+def command() -> list | None:
+    """What starts gallery-dl here, or None if this copy has none."""
+    if COMMAND:
+        return list(COMMAND)
+    exe = executable()
+    return [exe] if exe else None
+
+
 def available() -> bool:
-    return bool(executable())
+    return bool(command())
 
 
 def _arguments(settings, max_items: int) -> list:
@@ -91,17 +107,25 @@ def _item(url: str, kwdict: dict, index: int, referer: str) -> MediaItem:
     )
 
 
+def _who(value) -> str:
+    """A person's name from gallery-dl's metadata - where some sites give a
+    whole profile (X's does, bio and all) rather than a name."""
+    if isinstance(value, dict):
+        value = value.get('name') or value.get('nick') or value.get('username')
+    return str(value) if value else ''
+
+
 def probe(url: str, settings, max_items: int = 400) -> ProbeResult | None:
     """Ask gallery-dl what is behind a link. None means 'not a site it knows'."""
-    exe = executable()
-    if not exe:
+    run = command()
+    if not run:
         return None
 
     try:
         finished = subprocess.run(
-            [exe, *_arguments(settings, max_items), url],
+            [*run, *_arguments(settings, max_items), url],
             capture_output=True, text=True, encoding='utf-8', errors='replace',
-            timeout=TIMEOUT, creationflags=CREATE_NO_WINDOW)
+            timeout=TIMEOUT, creationflags=CREATE_NO_WINDOW, env=ENVIRONMENT)
     except subprocess.TimeoutExpired:
         log.info('gallery-dl timed out on %s', url[:80])
         return None
@@ -124,7 +148,8 @@ def probe(url: str, settings, max_items: int = 400) -> ProbeResult | None:
 
     parsed = urlparse(url)
     referer = f'{parsed.scheme}://{parsed.netloc}/'
-    result = ProbeResult(url=url, kind='gallery', site=site_name(url) or parsed.netloc)
+    known = site_name(url)             # "X" for x.com, where gallery-dl still says twitter
+    result = ProbeResult(url=url, kind='gallery', site=known or parsed.netloc)
     items: list = []
     for message in messages:
         if not isinstance(message, list) or not message:
@@ -133,11 +158,13 @@ def probe(url: str, settings, max_items: int = 400) -> ProbeResult | None:
             items.append(_item(message[1], message[2] or {}, len(items) + 1, referer))
         elif message[0] == DIRECTORY and len(message) >= 2:
             meta = message[1] or {}
-            result.site = str(meta.get('category') or result.site).title()
-            result.uploader = str(meta.get('user') or meta.get('username')
-                                  or meta.get('author') or result.uploader or '')
-            result.title = str(meta.get('title') or meta.get('description')
-                               or result.title or '')
+            if not known:
+                result.site = str(meta.get('category') or result.site).title()
+            result.uploader = (_who(meta.get('user')) or _who(meta.get('username'))
+                               or _who(meta.get('author')) or result.uploader)
+            # A post's own words, where it has no title: X's tweets, say.
+            words = meta.get('title') or meta.get('description') or meta.get('content')
+            result.title = ' '.join(str(words).split())[:200] if words else result.title
 
     if not items:
         error = (finished.stderr or '').strip().splitlines()

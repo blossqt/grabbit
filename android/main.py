@@ -44,6 +44,7 @@ from grabbit.tasks import (KIND_IMAGE, KIND_MEDIA, RUNNING_STATES,  # noqa: E402
                            State)
 from grabbit.util import human_speed                        # noqa: E402
 from grabbit_mobile import paths                            # noqa: E402
+from grabbit_mobile.background import Background           # noqa: E402
 from grabbit_mobile.engine import MobileEngine              # noqa: E402
 from grabbit_mobile.ui import theme                         # noqa: E402
 from grabbit_mobile.ui.choose import ChoosePage             # noqa: E402
@@ -159,9 +160,12 @@ class GrabbitApp(App):
         self.settings = Settings.load()
         self.settings.download_dir = str(paths.downloads_dir())
         self.settings.max_media_jobs = 2
+        # Keeps downloads going with the app off screen (background.py).
+        self.background = Background()
         self.engine = MobileEngine(self.settings,
                                    on_change=self._schedule_refresh,
-                                   on_message=self._schedule_message)
+                                   on_message=self._schedule_message,
+                                   on_poll=self.background.follow)
         self._rows = {}
         self._pending = []          # choices made before aria2 was up
         self._insets = (0, 0)
@@ -596,11 +600,31 @@ class GrabbitApp(App):
         if self.input.text.strip() and analysis.url in self.input.text:
             self.input.set_text('')
         self.settings.save()
+        self.background.expect(analysis.title or analysis.url)
+        self._ask_for_notifications()
         if self.engine.running:
             self.engine.add_analysis(analysis, choice)
         else:
             self._pending.append((analysis, choice))
             self._schedule_message('info', 'It starts as soon as the engine is ready')
+
+    def _ask_for_notifications(self):
+        """Ask, once, to show a download's progress - at the first download,
+        when the question makes sense. Android 13 and later need leave for
+        the notification; the downloads carry on without it all the same."""
+        marker = paths.data_dir() / '.asked-for-notifications'
+        if marker.exists():
+            return
+        try:
+            from android.permissions import Permission, check_permission, request_permissions
+            from jnius import autoclass
+            if autoclass('android.os.Build$VERSION').SDK_INT < 33:
+                return
+            marker.write_text('asked')
+            if not check_permission(Permission.POST_NOTIFICATIONS):
+                request_permissions([Permission.POST_NOTIFICATIONS])
+        except Exception:
+            pass          # not on a phone
 
     def _choose_status(self, key: str):
         self.status_filter = key
@@ -754,6 +778,7 @@ class GrabbitApp(App):
         if task is None:
             return
         if task.state == State.PAUSED:
+            self.background.expect(task.name or task.source)
             self.engine.resume([task_id])
         elif task.state in (State.DOWNLOADING, State.SEEDING, State.QUEUED):
             self.engine.pause([task_id])
@@ -822,6 +847,7 @@ class GrabbitApp(App):
     def on_stop(self):
         self.settings.save()
         self.engine.shutdown()
+        self.background.stop()
 
 
 if __name__ == '__main__':

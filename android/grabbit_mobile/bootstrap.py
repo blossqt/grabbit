@@ -98,6 +98,39 @@ def prepare_environment() -> None:
     os.environ.setdefault('TMPDIR', str(scratch))
     tempfile.tempdir = str(scratch)
     os.environ.setdefault('XDG_CACHE_HOME', str(paths.cache_dir()))
+    adopt_gallery_dl()
+
+
+def adopt_gallery_dl() -> bool:
+    """Let the shared code run gallery-dl, for the photo posts yt-dlp leaves
+    behind - X's, for one.
+
+    It is a separate program under the GPL, and is kept at arm's length as it
+    is on Windows: build_apk.sh puts it in a folder of its own, off the app's
+    import path, and it runs as its own process with the APK's Python - the
+    interpreter python-for-android ships as libpythonbin.so for this - talking
+    to Grabbit only through its command line and the JSON it prints. The app
+    never imports it.
+    """
+    app = os.environ.get('ANDROID_APP_PATH') or os.environ.get('ANDROID_ARGUMENT', '')
+    folder = os.path.join(app, 'gallery-dl')
+    python = next((candidate for candidate in (sys.executable, os.path.join(app, '.bin', 'python'))
+                   if candidate and os.path.isfile(candidate)), None)
+    if not app or not python or not os.path.isdir(os.path.join(folder, 'gallery_dl')):
+        return False
+    bundle = os.path.join(app, '_python_bundle')
+    environment = dict(os.environ)
+    environment['PYTHONHOME'] = bundle
+    environment['PYTHONPATH'] = os.pathsep.join([
+        folder, os.path.join(bundle, 'stdlib.zip'), os.path.join(bundle, 'modules'),
+        os.path.join(bundle, 'site-packages')])
+    # requests warns that it has no character-set detector, which it does not
+    # need here: it reads the sites' JSON as UTF-8.
+    environment['PYTHONWARNINGS'] = 'ignore:Unable to find acceptable character detection'
+    from grabbit import gallerydl
+    gallerydl.COMMAND = [python, '-m', 'gallery_dl']
+    gallerydl.ENVIRONMENT = environment
+    return True
 
 
 def link_farm(found: dict) -> dict:

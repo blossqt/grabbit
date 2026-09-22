@@ -99,7 +99,7 @@ class FakeEngine:
     process = None          # the real engine has an aria2 behind this
     site = None             # a SampleSite, when the page is being looked at
 
-    def __init__(self, settings, on_change=None, on_message=None):
+    def __init__(self, settings, on_change=None, on_message=None, on_poll=None):
         self.settings = settings
         self.store = TaskStore()
         self.running = True
@@ -369,6 +369,75 @@ def check_page(app, report):
         site.close()
 
 
+def check_background(report):
+    """The rules for keeping downloads going off screen, against a stand-in
+    for Android's service: when it starts, what it says, when it stops."""
+    from grabbit_mobile import background
+
+    class Service:
+        running, refuse, calls, attempts = False, False, [], 0
+
+        @classmethod
+        def show(cls, context, title, text, percent):
+            cls.attempts += 1
+            if not cls.running and cls.refuse:
+                raise RuntimeError('not allowed to start service: app is in background')
+            cls.calls.append((title, text, percent))
+            cls.running = True
+
+        @classmethod
+        def hide(cls, context):
+            cls.calls.append('hide')
+            cls.running = False
+
+        @classmethod
+        def isRunning(cls):
+            return cls.running
+
+    now = [100.0]
+    notice = background.Background(Service, object(), clock=lambda: now[0])
+
+    def task(state, total=0, done=0, name='A video'):
+        return Task(kind=KIND_MEDIA, name=name, state=state, total=total, done=done)
+
+    fast = {'download_speed': 2_000_000}
+    notice.follow([task(State.COMPLETED), task(State.PAUSED)], fast)
+    report('with nothing downloading, it stays off', not Service.calls)
+    notice.follow([task(State.DOWNLOADING, 200, 50)], fast)
+    first = Service.calls[-1] if Service.calls else None
+    report('a download starts it, saying how far along it is',
+           first is not None and first[2] == 25 and first[1].startswith('25% · '), str(first))
+    shown = len(Service.calls)
+    notice.follow([task(State.DOWNLOADING, 200, 50)], fast)
+    report('and it says nothing more until something changes', len(Service.calls) == shown)
+    notice.follow([task(State.DOWNLOADING, 200, 150), task(State.QUEUED, name='B')], fast)
+    report('several downloads are counted together', Service.calls[-1][0] == '2 downloads'
+           and Service.calls[-1][2] == 75, str(Service.calls[-1]))
+    notice.follow([task(State.SEEDING)], fast)
+    report('it stops once nothing is left to fetch - seeding waits for the app',
+           Service.calls[-1] == 'hide' and not Service.running)
+
+    notice.expect('A video')
+    started = Service.running
+    now[0] += 5
+    notice.follow([], {})
+    kept = Service.running
+    now[0] += background.HOLD
+    notice.follow([], {})
+    report('a tap starts it at once, and holds it until the download reaches the engine',
+           started and kept and not Service.running)
+
+    Service.refuse, Service.attempts = True, 0
+    for _ in range(5):
+        notice.follow([task(State.DOWNLOADING, 100, 10)], {})
+        now[0] += 1
+    refused = Service.attempts
+    now[0] += background.RETRY
+    notice.follow([task(State.DOWNLOADING, 100, 10)], {})
+    report('when Android refuses it, it asks again later rather than every second',
+           refused == 1 and Service.attempts == 2, f'{refused} then {Service.attempts} attempt(s)')
+
+
 def open_dialog():
     from grabbit_mobile.ui.widgets import Dialog
     return next((child for child in Window.children if isinstance(child, Dialog)), None)
@@ -538,6 +607,7 @@ def check(app):
     app.details.dismiss()
     wait_until(lambda: app.details.parent is None)
     check_dialogs(app, report)
+    check_background(report)
 
     failures = [name for name, ok in results if not ok]
     print()

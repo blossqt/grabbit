@@ -100,6 +100,19 @@ rm -rf "$APPDIR/shared/grabbit/ui" \
        "$APPDIR/shared/grabbit/selfupdate.py"
 find "$APPDIR" -name '__pycache__' -type d -prune -exec rm -rf {} +
 find "$APPDIR" -name '*.pyc' -delete
+
+# gallery-dl, for the photo posts yt-dlp leaves behind - X's, for one. It is a
+# separate program under the GPL and is kept at arm's length, as on Windows: a
+# folder of its own, off the app's import path, run as its own process with the
+# APK's Python (grabbit_mobile/bootstrap.py), never imported. It needs
+# requests, which needs urllib3 and idna; certifi is in the APK already.
+# requests does without a character-set detector, which is as well:
+# charset-normalizer is the package p4a cannot install (see recipes/kivy).
+say 'adding gallery-dl'
+python -m pip install --quiet --no-deps --only-binary=:all: --target "$APPDIR/gallery-dl" \
+  gallery-dl==1.32.13 requests==2.34.2 urllib3==2.8.0 idna==3.20
+rm -rf "$APPDIR/gallery-dl/bin" "$APPDIR/gallery-dl/share"
+
 python - "$APPDIR" <<'PY'
 import compileall, sys
 # Fail early and loudly on a syntax error rather than in the middle of gradle.
@@ -144,6 +157,15 @@ rm -rf "$STORAGE/build/venv"
 
 mkdir -p "$OUTDIR"
 cd "$OUTDIR"
+# DownloadService (java/) keeps downloads going while the app is off screen. It
+# is a foreground service in the app's own process, which p4a declares only by
+# name (--native-service) - and Android 14 and later refuse a foreground
+# service whose manifest entry has no foregroundServiceType. p4a writes the
+# name into android:name="..." as it is, so the attributes ride in on it; the
+# check at the end confirms they landed. It replaces --wakelock, which kept the
+# screen on at full brightness while the app was open and did nothing once it
+# was not.
+#
 # --display-cutout=shortEdges lets the app draw beside the camera cutout at all
 # times. Without it Android may stop doing so whenever the system bars change -
 # as they do when the keyboard opens - and shift everything down, leaving a
@@ -170,10 +192,11 @@ p4a apk \
   --display-cutout=shortEdges \
   --activity-launch-mode=singleTask \
   --intent-filters="$HERE/intent_filters.xml" \
+  --add-source="$HERE/java" \
+  --native-service 'com.grabbit.downloader.DownloadService" android:exported="false" android:foregroundServiceType="dataSync' \
   --icon="$HERE/icon.png" \
   --presplash="$HERE/presplash.png" \
   --presplash-color='#17171c' \
-  --wakelock \
   --enable-androidx \
   --permission=android.permission.INTERNET \
   --permission=android.permission.ACCESS_NETWORK_STATE \
@@ -182,6 +205,8 @@ p4a apk \
   --permission=android.permission.MANAGE_EXTERNAL_STORAGE \
   --permission=android.permission.POST_NOTIFICATIONS \
   --permission=android.permission.FOREGROUND_SERVICE \
+  --permission=android.permission.FOREGROUND_SERVICE_DATA_SYNC \
+  --permission=android.permission.WAKE_LOCK \
   --permission=android.permission.REQUEST_INSTALL_PACKAGES
 
 say 'result'
@@ -197,3 +222,19 @@ for lib in libaria2c.so libffmpeg.so libffprobe.so libquickjs.so; do
     || { echo "error: $lib is missing from the APK" >&2; exit 1; }
   echo "   $lib"
 done
+
+# The same for the background service - compiled in, and declared with the
+# type Android 14 insists on (see --native-service above) - and for gallery-dl.
+TOOLS="$ANDROID_ROOT/build-tools/35.0.0"
+"$TOOLS/dexdump" "$APK" 2>/dev/null | grep -q 'Lcom/grabbit/downloader/DownloadService;' \
+  || { echo "error: DownloadService is not compiled into the APK" >&2; exit 1; }
+"$TOOLS/aapt2" dump xmltree --file AndroidManifest.xml "$APK" \
+  | grep -A4 'com.grabbit.downloader.DownloadService' | grep -q 'foregroundServiceType' \
+  || { echo "error: the manifest does not declare DownloadService as a data-sync service" >&2; exit 1; }
+echo "   DownloadService"
+PRIVATE="$(mktemp)"
+unzip -p "$APK" assets/private.tar > "$PRIVATE"
+tar -tf "$PRIVATE" | grep -q 'gallery-dl/gallery_dl/__main__' \
+  || { echo "error: gallery-dl is missing from the APK" >&2; exit 1; }
+rm -f "$PRIVATE"
+echo "   gallery-dl"
