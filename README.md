@@ -127,6 +127,21 @@ inside the app through `run-as` and downloads real things — a video, a TikTok,
 a photo post, a GIF — reporting each one. It needs neither the screen nor the
 lock code, so it can run while the phone sits on the desk.
 
+How long the app takes to open is measured on the phone too, unlocked:
+
+    powershell -File build\android\startup_time.ps1
+
+It stops the app, opens it as the launcher would, and reads back from the
+phone's log how far it had got at each step — Python, Kivy, the window, the
+interface built, the first frame — timed from the touch. On a Galaxy S24+ the
+app is on screen about 0.9 s in. Three things keep it there. yt-dlp, the
+largest thing the app loads, comes in only after the first frame. pyjnius
+reads every method a Java class has before it can use one — thousands, for
+Android's view classes — so start-up code asks for public members only
+(`bootstrap.public_class`) and avoids calls that hand back a View. And Android
+takes the splash screen down on its UI thread, one job at a time, so nothing
+is queued there ahead of it.
+
 The phone engine is plain Python, so it also runs on a desktop against the
 desktop binaries — faster still, and enough to catch most mistakes:
 
@@ -186,6 +201,7 @@ the real thing:
       engine.py         aria2 process + task list + media jobs
       aria2rpc.py       JSON-RPC client and process supervision
       media.py          yt-dlp probing and downloads (streams routed through aria2)
+      mediaitems.py     what a link turned out to hold, without loading yt-dlp
       extractors.py     Instagram photo slides, TikTok photo posts
       gallerydl.py      photo-first sites, via gallery-dl
       pagescrape.py     reads media straight off an ordinary page

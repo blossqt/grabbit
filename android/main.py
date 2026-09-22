@@ -11,17 +11,33 @@ import sys
 import threading
 import time
 
+# When this file began running, for the start-up report (see _first_frame).
+LAUNCHED = time.monotonic()
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'shared'))
 
+if 'ANDROID_ARGUMENT' in os.environ:
+    # Kivy's clock asks ctypes where the C library is as it loads, and on a
+    # phone python-for-android answers that by asking Java for the app's
+    # library folder - four Java classes read through pyjnius, a quarter of a
+    # second before the window can open - to find a library every Android
+    # process has already loaded. Name it straight away instead.
+    import ctypes.util
+    _find_library = ctypes.util.find_library
+    ctypes.util.find_library = lambda name: 'libc.so' if name == 'c' else _find_library(name)
+
 from kivy.app import App                                    # noqa: E402
+from kivy.base import EventLoop                             # noqa: E402
 from kivy.clock import Clock                                # noqa: E402
 from kivy.core.window import Window                         # noqa: E402
+from kivy.logger import Logger                              # noqa: E402
 from kivy.metrics import dp                                 # noqa: E402
 from kivy.uix.boxlayout import BoxLayout                    # noqa: E402
 from kivy.uix.button import Button                          # noqa: E402
 from kivy.uix.label import Label                            # noqa: E402
 from kivy.uix.popup import Popup                            # noqa: E402
 from kivy.uix.scrollview import ScrollView                  # noqa: E402
+from kivy.utils import platform                             # noqa: E402
 
 from grabbit import APP_VERSION, updates                    # noqa: E402
 from grabbit.settings import Settings                       # noqa: E402
@@ -37,6 +53,8 @@ from grabbit_mobile.ui.graph import SpeedGraph              # noqa: E402
 from grabbit_mobile.ui.linkbox import LinkBox               # noqa: E402
 from grabbit_mobile.ui.rows import TaskRow                  # noqa: E402
 from grabbit_mobile.ui.widgets import Card, Chip, FlatButton, TapLabel  # noqa: E402
+
+IMPORTED = time.monotonic()
 
 # Shared text is rarely just a link - "look at this <url> 😂" is the normal
 # shape of it, so pick the link out rather than refusing the message.
@@ -73,6 +91,24 @@ def matches(task, status: str, kind: str) -> bool:
     if kind == 'file' and (task.is_torrent or task.kind in (KIND_MEDIA, KIND_IMAGE)):
         return False
     return True
+
+
+def process_age() -> float | None:
+    """Seconds since this process began - on a phone, the moment Android
+    started the app, a few milliseconds after the icon was touched - or None
+    where that cannot be read.
+
+    The kernel keeps it, in clock ticks since boot, in /proc: asking Android
+    instead would have pyjnius read a Java class, which is itself a
+    noticeable part of starting up.
+    """
+    try:
+        with open('/proc/self/stat') as stat:
+            fields = stat.read().rsplit(')', 1)[1].split()
+        started = int(fields[19]) / os.sysconf('SC_CLK_TCK')
+        return time.clock_gettime(time.CLOCK_BOOTTIME) - started
+    except (OSError, ValueError, IndexError, AttributeError):
+        return None
 
 
 class DragHandle(Button):
@@ -188,29 +224,75 @@ class GrabbitApp(App):
         self.footer.bind(on_release=lambda *_: self.check_for_updates(manual=True))
         root.add_widget(self.footer)
 
-        self.details = DetailsSheet(self.engine)
+        self.details = None         # made the first time one is opened
         self.show_graph(bool(getattr(self.settings, 'show_graph', False)))
 
-        # The window is not attached yet, so Android cannot be asked about its
-        # cutout until a moment later - and is asked again whenever the space
-        # it gives the app may have changed: the keyboard coming or going moves
-        # the system bars, and on some phones the app's surface with them.
+        # Clear of the cutout from the first frame - and asked again once the
+        # window has settled, and whenever the space Android gives the app may
+        # have changed: the keyboard coming or going moves the system bars,
+        # and on some phones the app's surface with them.
+        self._apply_insets()
         Clock.schedule_once(lambda *_: self._apply_insets(), 0.3)
         Clock.schedule_once(lambda *_: self._apply_insets(), 1.5)
         self._insets_later = Clock.create_trigger(lambda *_: self._apply_insets(), 0.35)
         Window.bind(on_resize=lambda *_: self._insets_later(),
                     keyboard_height=lambda *_: self._insets_later())
+        Clock.schedule_interval(lambda *_: self.refresh(), 1.0)
+        # The first check follows the engine starting (see _start_engine_worker);
+        # after that twice a day while open, and on coming back after longer.
+        Clock.schedule_interval(lambda *_: self.check_for_updates(), updates.CHECK_INTERVAL)
+        # Kivy takes the splash screen down as its first frame begins, before
+        # that frame is on screen, which leaves a moment of black between the
+        # two. The app takes it down itself, once the frame is there.
+        EventLoop.remove_android_splash = lambda *_: None
+        self._built = time.monotonic()
+        Window.bind(on_flip=self._first_frame)
+        return root
+
+    def _first_frame(self, *_):
+        """The first frame is drawn; it is on screen by the next."""
+        Window.unbind(on_flip=self._first_frame)
+        self._drawn = time.monotonic()
+        Clock.schedule_once(lambda *_: self._on_screen(), 0)
+
+    def _on_screen(self):
+        """Take the splash screen down, then do what could wait for it.
+
+        Android takes the splash down on its UI thread, one thing after
+        another, so it goes first: work queued there ahead of it would keep
+        it up. The engine starts before the link box is made, so that a page
+        opened for a shared link is already there to make it wait (LinkBox).
+        """
+        if platform == 'android':
+            try:
+                from android import remove_presplash
+                remove_presplash()
+            except Exception:
+                # python-for-android takes it down itself five seconds in.
+                Logger.exception('Start-up: could not take the splash screen down')
+        self._report_start()
+        self._start_engine()
+        self.input.ready()
         # Whatever part of the window the app does not draw - behind a
         # keyboard as it slides in, around a surface Android has moved - is
         # the app's own colour rather than black.
         from grabbit_mobile.bootstrap import paint_window
         paint_window(theme.PALETTE['window'])
-        Clock.schedule_once(lambda *_: self._start_engine(), 0.4)
-        Clock.schedule_interval(lambda *_: self.refresh(), 1.0)
-        # The first check follows the engine starting (see _start_engine_worker);
-        # after that twice a day while open, and on coming back after longer.
-        Clock.schedule_interval(lambda *_: self.check_for_updates(), updates.CHECK_INTERVAL)
-        return root
+
+    def _report_start(self):
+        """Say in the log how long opening took.
+
+        build/android/startup_time.ps1 reads this line back from the phone.
+        """
+        age = process_age()
+        marks = [('imported', IMPORTED), ('built', self._built), ('first frame', self._drawn)]
+        if age is None:
+            zero, since = LAUNCHED, 'main.py began'
+        else:
+            zero, since = time.monotonic() - age, 'the process started'
+            marks.insert(0, ('main.py', LAUNCHED))
+        Logger.info('Start-up: ' + ', '.join(f'{name} {moment - zero:.2f}s' for name, moment in marks)
+                    + f' (since {since})')
 
     # ----------------------------------------------------------------- parts
     def _build_top_bar(self):
@@ -295,15 +377,40 @@ class GrabbitApp(App):
         punch-hole and the footer under the bar at the bottom.
         """
         from grabbit_mobile.bootstrap import safe_insets
-        top, bottom = safe_insets()
+        top, bottom = safe_insets(Window.height)
         self._insets = (top, bottom)
         self.root_box.padding = [dp(8), dp(8) + top, dp(8), dp(8) + bottom]
 
     # ------------------------------------------------------------- plumbing
     def _start_engine(self):
+        from grabbit_mobile.bootstrap import prepare_environment
+        prepare_environment()       # temp and cache folders, before any link is read
         self._request_permissions()
-        self._watch_for_shared_links()
+        reading = self._watch_for_shared_links()
         threading.Thread(target=self._start_engine_worker, daemon=True).start()
+        if not reading:
+            # A link shared to open the app loads yt-dlp as it is read, and
+            # is better off with the phone to itself than sharing it with this.
+            threading.Thread(target=self._load_ytdlp, name='grabbit-load-ytdlp', daemon=True).start()
+
+    @staticmethod
+    def _load_ytdlp():
+        """Load yt-dlp now that the window is up, so reading a link does not wait for it.
+
+        It is the largest thing the app loads, and nothing needs it until a
+        link is read or a video resumes, so the app opens without it and it
+        comes in here, behind the first frame. Its sites are matched once too:
+        that compiles every one of their address patterns, which the first
+        link would otherwise sit through.
+        """
+        started = time.monotonic()
+        try:
+            from grabbit import analyze as analyze_mod
+            from grabbit import media                   # noqa: F401 - loading is the point
+            analyze_mod.matching_extractor('https://grabbit.invalid/')
+        except Exception:
+            return        # the first link loads it instead, and reports what is wrong
+        Logger.info(f'Warm-up: yt-dlp loaded in {time.monotonic() - started:.2f}s')
 
     def _start_engine_worker(self):
         from grabbit_mobile.bootstrap import unpack_tools
@@ -324,24 +431,42 @@ class GrabbitApp(App):
 
     @staticmethod
     def _request_permissions():
+        """Ask for storage where the ordinary permission still reaches Downloads.
+
+        That is Android 10 and older; later ones hide the folder behind the
+        all-files screen instead (_maybe_ask_for_storage). Asking is not free
+        even when the answer is already known: Android opens an invisible
+        screen of its own over the app, which pauses and resumes it while it
+        is still starting - so ask only where it matters, and only while the
+        permission is missing.
+        """
         try:
-            from android.permissions import Permission, request_permissions
-            request_permissions([Permission.WRITE_EXTERNAL_STORAGE,
-                                 Permission.READ_EXTERNAL_STORAGE,
-                                 Permission.POST_NOTIFICATIONS])
+            from android.permissions import Permission, check_permission, request_permissions
+            from jnius import autoclass
+            if autoclass('android.os.Build$VERSION').SDK_INT >= 30:
+                return
+            missing = [permission for permission in (Permission.WRITE_EXTERNAL_STORAGE,
+                                                     Permission.READ_EXTERNAL_STORAGE)
+                       if not check_permission(permission)]
+            if missing:
+                request_permissions(missing)
         except Exception:
-            pass          # not on a phone, or the version does not need them
+            pass          # not on a phone
 
     # ------------------------------------------------ links from other apps
-    def _watch_for_shared_links(self):
+    def _watch_for_shared_links(self) -> bool:
         """Grabbit sits in the share sheet and owns magnet links, so most links
-        arrive from another app rather than through the text box."""
-        self._handle_intent(self._current_intent())
+        arrive from another app rather than through the text box.
+
+        True when a link shared to open the app is being read.
+        """
+        reading = self._handle_intent(self._current_intent())
         try:
             from android import activity as android_activity
             android_activity.bind(on_new_intent=self._on_new_intent)
         except Exception:
             pass          # off-device: nothing shares anything with us
+        return reading
 
     @staticmethod
     def _current_intent():
@@ -354,17 +479,19 @@ class GrabbitApp(App):
     def _on_new_intent(self, intent):
         Clock.schedule_once(lambda *_: self._handle_intent(intent), 0)
 
-    def _handle_intent(self, intent):
+    def _handle_intent(self, intent) -> bool:
+        """Act on what another app sent; True when it was a link to read."""
         # Android's installer answers an update through an intent too.
         from grabbit_mobile.bootstrap import install_status
         installing = install_status(intent)
         if installing is not None:
             if installing[0] == 'failed':
                 self._update_failed(installing[1])
-            return
+            return False
         link = self._link_from_intent(intent)
         if link:
             self.inspect(link)
+        return bool(link)
 
     @staticmethod
     def _link_from_intent(intent) -> str:
@@ -622,6 +749,8 @@ class GrabbitApp(App):
         self.refresh()
 
     def open_details(self, task_id: str):
+        if self.details is None:
+            self.details = DetailsSheet(self.engine)
         self.details.open_task(task_id)
 
     def toggle_task(self, task_id: str):

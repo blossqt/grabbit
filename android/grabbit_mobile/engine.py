@@ -18,7 +18,6 @@ import threading
 import time
 
 from grabbit import analyze as analyze_mod
-from grabbit import media as media_mod
 from grabbit.aria2rpc import Aria2Error, Aria2Process
 from grabbit.tasks import (KIND_HTTP, KIND_IMAGE, KIND_MAGNET, KIND_MEDIA, KIND_TORRENT,
                            FINISHED_STATES, State, Task, TaskStore, task_paths)
@@ -393,7 +392,10 @@ class MobileEngine:
             task = self.store.get(task_id)
             if not task or task.state in FINISHED_STATES or task.state == State.PAUSED:
                 continue
-            job = media_mod.MediaJob(task, self.settings, {
+            # Here rather than at the top: it brings yt-dlp, which the app is
+            # quicker to open without (main.py loads it just after).
+            from grabbit.media import MediaJob
+            job = MediaJob(task, self.settings, {
                 'emit': self._on_media_event,
                 'aria2_add': self._media_add,
                 'aria2_status': self._media_status,

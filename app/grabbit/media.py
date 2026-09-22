@@ -13,7 +13,6 @@ import os
 import subprocess
 import threading
 import time
-from dataclasses import dataclass, field
 
 from yt_dlp import YoutubeDL
 from yt_dlp.downloader.common import FileDownloader
@@ -21,6 +20,7 @@ from yt_dlp.postprocessor.common import PostProcessor
 from yt_dlp.utils import DownloadCancelled, determine_protocol, traverse_obj
 
 from . import extractors
+from .mediaitems import MediaItem, ProbeResult
 from .paths import find_tool
 from .util import CREATE_NO_WINDOW, safe_filename, site_name
 
@@ -200,48 +200,6 @@ def download_params(settings, save_dir: str, quality: str | None = None,
 
 
 # --------------------------------------------------------------------------- probing
-
-@dataclass
-class MediaItem:
-    key: str = ''
-    kind: str = 'video'            # video | image | audio
-    title: str = ''
-    thumbnail: str = ''            # small, for the grid
-    preview: str = ''              # large, for the preview window
-    duration: float | None = None
-    width: int = 0
-    height: int = 0
-    filesize: int | None = None
-    ext: str = ''
-    url: str = ''                  # page URL (playlist entries)
-    direct_url: str = ''           # file URL (images/audio)
-    filename: str = ''             # preferred name on disk, when the source knows one
-    group: str = ''                # video | audio | image | file, for sorting/labels
-    headers: dict = field(default_factory=dict)
-    info: dict | None = None       # pre-extracted info, saves a second lookup
-    index: int = 1
-    optional: bool = False         # unticked by default (slideshow soundtrack)
-    heights: list = field(default_factory=list)
-
-
-@dataclass
-class ProbeResult:
-    url: str = ''
-    kind: str = 'video'            # video | gallery | playlist
-    site: str = ''
-    title: str = ''
-    uploader: str = ''
-    thumbnail: str = ''
-    description: str = ''
-    items: list = field(default_factory=list)
-    heights: list = field(default_factory=list)
-    is_live: bool = False
-    error: str = ''
-
-    @property
-    def ok(self) -> bool:
-        return not self.error and bool(self.items)
-
 
 def _pick_thumbnail(entry: dict, target: int = 480) -> tuple[str, str]:
     """(grid thumbnail, large preview) from an info dict."""

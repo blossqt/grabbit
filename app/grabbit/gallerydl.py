@@ -15,7 +15,7 @@ import os
 import subprocess
 from urllib.parse import urlparse
 
-from .media import MediaItem, ProbeResult
+from .mediaitems import MediaItem, ProbeResult
 from .paths import find_tool
 from .util import CREATE_NO_WINDOW, site_name
 

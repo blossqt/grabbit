@@ -27,9 +27,14 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.modalview import ModalView
 from kivy.uix.textinput import TextInput
 
+from ..bootstrap import public_class
 from . import theme
 
 log = logging.getLogger(__name__)
+
+# android.view.View's values for these, which Android keeps fixed: reading them
+# through pyjnius would mean reading all of View first.
+VISIBLE, GONE = 0, 8
 
 
 def _android():
@@ -83,6 +88,20 @@ class LinkBox(BoxLayout):
         self.stand_in = field
         self.add_widget(field)
 
+    def ready(self):
+        """The app is on screen: Android's field can be made.
+
+        It is made on Android's UI thread, which is also where the splash
+        screen is taken down - made any sooner, it would keep the splash up
+        until it was done (main.py calls this just after the splash goes).
+        And not while something covers the main screen: a link shared to open
+        the app opens its page at once, and the field would only be hidden
+        behind it, slowing the page down as it appeared.
+        """
+        if self.native is not None:
+            self.native.wanted = True
+            self.native.follow()
+
     def set_text(self, value: str):
         self.text = value
         if self.native is not None:
@@ -96,11 +115,11 @@ class LinkBox(BoxLayout):
             self.stand_in.focus = False
 
 
-def _chars(autoclass, text: str):
+def _chars(text: str):
     """Text as Android's views take it. pyjnius turns a Python str into a
     Java String, but not into the CharSequence setText and setHint ask for."""
     from jnius import cast
-    return cast('java.lang.CharSequence', autoclass('java.lang.String')(text))
+    return cast('java.lang.CharSequence', public_class('java.lang.String')(text))
 
 
 class _NativeField:
@@ -110,6 +129,8 @@ class _NativeField:
         self.box = box
         self.view = None
         self.visible = True
+        self.wanted = False         # set by LinkBox.ready()
+        self._making = False
         self._placed = None
         self._ui = run_on_ui_thread
         self._autoclass = autoclass
@@ -162,54 +183,57 @@ class _NativeField:
 
         # Held here: a listener Java still calls must not be collected.
         self._watcher, self._actions, self._keys = Watcher(), Actions(), Keys()
-        self._create()
         self._place_later = Clock.create_trigger(lambda _: self._place(), 0)
         box.bind(pos=self._place_later, size=self._place_later)
         Window.bind(size=self._place_later)
-        Clock.schedule_interval(lambda _: self._follow_modals(), 0.15)
+        Clock.schedule_interval(lambda _: self.follow(), 0.15)
 
-    def _create(self):
+    def create(self):
         autoclass = self._autoclass
         box = self.box
 
         @self._ui
-        def create():
+        def make():
             try:
-                Activity = autoclass('org.kivy.android.PythonActivity')
-                activity = Activity.mActivity
-                Color = autoclass('android.graphics.Color')
-                EditorInfo = autoclass('android.view.inputmethod.EditorInfo')
-                InputType = autoclass('android.text.InputType')
+                activity = autoclass('org.kivy.android.PythonActivity').mActivity
+                Color = public_class('android.graphics.Color')
+                EditorInfo = public_class('android.view.inputmethod.EditorInfo')
+                InputType = public_class('android.text.InputType')
                 # The device's own dark theme, so the menu, the handles and the
-                # cursor look exactly as they do in any other app here.
-                themed = autoclass('android.view.ContextThemeWrapper')(
-                    activity, autoclass('android.R$style').Theme_DeviceDefault)
-                edit = autoclass('android.widget.EditText')(themed)
+                # cursor look exactly as they do in any other app here. Looked
+                # up by name: android.R.style would have pyjnius read all of
+                # Android's styles to find the one.
+                style = activity.getResources().getIdentifier('Theme.DeviceDefault', 'style', 'android')
+                themed = public_class('android.view.ContextThemeWrapper')(activity, style)
+                edit = public_class('android.widget.EditText')(themed)
                 edit.setSingleLine(True)
-                edit.setHint(_chars(autoclass, box.hint))
+                edit.setHint(_chars(box.hint))
                 edit.setTextColor(Color.parseColor(theme.PALETTE['text']))
                 edit.setHintTextColor(Color.parseColor(theme.PALETTE['dim']))
                 edit.setBackgroundColor(Color.TRANSPARENT)      # Kivy draws the box
                 edit.setTextSize(1, 14.0)                        # 14dp, as the rest of the app
                 edit.setPadding(int(dp(10)), 0, int(dp(10)), 0)
-                edit.setGravity(autoclass('android.view.Gravity').CENTER_VERTICAL)
+                edit.setGravity(public_class('android.view.Gravity').CENTER_VERTICAL)
                 edit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI)
                 edit.setImeOptions(EditorInfo.IME_ACTION_GO | EditorInfo.IME_FLAG_NO_EXTRACT_UI)
                 edit.addTextChangedListener(self._watcher)
                 edit.setOnEditorActionListener(self._actions)
                 edit.setOnKeyListener(self._keys)
-                Activity.getLayout().addView(edit, self._params())
+                # Over SDL's surface, in the window's content frame beside it.
+                # Asking for SDL's own layout to put it in would hand pyjnius
+                # a ViewGroup to read in full.
+                activity.addContentView(edit, self._params())
                 self.view = edit
             except Exception:
                 log.exception('could not make the link box')
-        create()
+        make()
 
     def _params(self):
-        """Where the box is, in the layout's pixels: Kivy measures from the
-        bottom of the surface, Android from its top."""
+        """Where the box is, in the content frame's pixels: Kivy measures
+        from the bottom of the surface, Android from its top."""
         box = self.box
         x, y = box.to_window(box.x, box.y)
-        params = self._autoclass('android.widget.RelativeLayout$LayoutParams')(
+        params = public_class('android.widget.FrameLayout$LayoutParams')(
             max(1, int(box.width)), max(1, int(box.height)))
         params.leftMargin = int(x)
         params.topMargin = int(Window.height - (y + box.height))
@@ -228,24 +252,27 @@ class _NativeField:
             view.setLayoutParams(params)
         place()
 
-    def _follow_modals(self):
+    def follow(self):
         """Out of the way while something covers the main screen - and where
         the layout last put the box, which may have moved before Android had
-        made the field to move."""
+        made the field to move. Made, once wanted, when nothing covers it."""
         box = self.box
-        if self.view is not None and self._placed != (*box.to_window(box.x, box.y), box.width,
-                                                       box.height, Window.height):
-            self._place()
         covered = any(isinstance(child, ModalView) for child in Window.children)
-        if covered == (not self.visible) or self.view is None:
+        if self.view is None:
+            if self.wanted and not covered and not self._making:
+                self._making = True
+                self.create()
+            return
+        if self._placed != (*box.to_window(box.x, box.y), box.width, box.height, Window.height):
+            self._place()
+        if covered == (not self.visible):
             return
         self.visible = not covered
         view = self.view
-        View = self._autoclass('android.view.View')
 
         @self._ui
         def show():
-            view.setVisibility(View.GONE if covered else View.VISIBLE)
+            view.setVisibility(GONE if covered else VISIBLE)
             if covered:
                 # Hidden first, so the focus it gives up cannot land back on it.
                 self._drop_keyboard(view)
@@ -278,7 +305,7 @@ class _NativeField:
         if view is None:
             return
 
-        text = _chars(self._autoclass, value)
+        text = _chars(value)
 
         @self._ui
         def write():

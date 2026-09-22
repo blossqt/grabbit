@@ -8,9 +8,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 
-from . import gallerydl
-from . import media as media_mod
-from . import metalink, pagescrape
+from . import gallerydl, metalink, pagescrape
 from .torrentmeta import TorrentInfo, parse_magnet, parse_torrent
 from .util import safe_filename, site_name
 
@@ -42,7 +40,7 @@ class Analysis:
     torrent_data: bytes = b''
     torrent_info: TorrentInfo | None = None
     metalink_files: list = field(default_factory=list)
-    probe: object = None          # media.ProbeResult
+    probe: object = None          # a mediaitems.ProbeResult
     filename: str = ''
     filesize: int = 0
     content_type: str = ''
@@ -122,6 +120,13 @@ def matching_extractor(url: str) -> str:
     return ''
 
 
+def _probe(url: str, settings):
+    # media.py brings yt-dlp with it, the largest thing Grabbit loads: loading it
+    # the first time a link needs it lets the phone app open without it.
+    from . import media
+    return media.probe(url, settings)
+
+
 def _from_probe(url: str, result, analysis: Analysis) -> Analysis:
     analysis.probe = result
     analysis.title = result.title
@@ -195,7 +200,7 @@ def analyze(url: str, settings) -> Analysis:
 
     extractor = matching_extractor(url)
     if extractor:
-        result = media_mod.probe(url, settings)
+        result = _probe(url, settings)
         if result.items and not result.error:
             return _from_probe(url, result, analysis)
         # A site yt-dlp knows, but no video on this particular page - a photo
@@ -231,7 +236,7 @@ def analyze(url: str, settings) -> Analysis:
             return found
 
     if content_type.startswith('text/html') or (not content_type and not head.get('length')):
-        result = media_mod.probe(url, settings)          # yt-dlp's generic extractor
+        result = _probe(url, settings)                   # yt-dlp's generic extractor
         if result.items and not result.error:
             return _from_probe(url, result, analysis)
         scraped = pagescrape.scrape(url, settings)       # read the page ourselves

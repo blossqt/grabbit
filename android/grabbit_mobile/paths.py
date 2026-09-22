@@ -50,6 +50,16 @@ def logs_dir() -> Path:
     return path
 
 
+def cache_dir() -> Path:
+    """What can be thrown away: on a phone, Android's own cache folder for the
+    app, which the system empties when space runs short - as does Clear cache
+    in the app's settings."""
+    private = os.environ.get('ANDROID_PRIVATE')
+    path = Path(private).parent / 'cache' if private and ON_ANDROID else data_dir() / 'cache'
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def downloads_dir() -> Path:
     """Where finished files go.
 

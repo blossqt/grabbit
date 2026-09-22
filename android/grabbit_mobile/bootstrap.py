@@ -29,21 +29,35 @@ BUNDLED = {
 }
 
 
+def public_class(name: str):
+    """A Java class through pyjnius, with only its public side read.
+
+    Before pyjnius can use a class it reads every method and field declared
+    anywhere in its ancestry, private ones included: thousands, for Android's
+    view classes, and at start-up that reading is time the app is not on
+    screen. Nothing here uses anything but public members, so only those are
+    read. (What a Java method returns is still wrapped by pyjnius itself, in
+    full - which is why the code here avoids calls that return a View.)
+    """
+    from jnius import autoclass
+    return autoclass(name, include_protected=False, include_private=False)
+
+
 def native_library_dir() -> str | None:
     """Where Android unpacked our lib*.so files, if we are on a phone."""
+    # Python itself is in that directory - p4a ships the interpreter as
+    # libpythonbin.so and links .bin/python to it - so following the link
+    # answers without asking Android, whose answer pyjnius would first have
+    # to read a Java class for, just as the app is starting.
+    interpreter = os.path.realpath(sys.executable or '')
+    if os.path.basename(interpreter).startswith('libpython'):
+        return os.path.dirname(interpreter)
     try:
         from jnius import autoclass
         activity = autoclass('org.kivy.android.PythonActivity').mActivity
         return activity.getApplicationInfo().nativeLibraryDir
     except Exception:
-        pass
-    # No activity to ask: a headless run, or a background service. Python
-    # itself is in that same directory - p4a ships the interpreter as
-    # libpythonbin.so and links .bin/python to it - so follow the link.
-    interpreter = os.path.realpath(sys.executable or '')
-    if os.path.basename(interpreter).startswith('libpython'):
-        return os.path.dirname(interpreter)
-    return None
+        return None
 
 
 def locate(name: str) -> str | None:
@@ -68,17 +82,22 @@ def locate(name: str) -> str | None:
 
 
 def prepare_environment() -> None:
-    """Give the standard library a temp directory that exists.
+    """Give the standard library a temp directory, and yt-dlp a cache, that exist.
 
     Android has no /tmp, and p4a sets no TMPDIR, so tempfile falls back to the
     working directory. yt-dlp writes the scripts it hands to QuickJS there, so
     point it somewhere we own and can clear out.
+
+    Nor is there a HOME, so yt-dlp's cache - what it has worked out about
+    YouTube's player, among other things - would go to /data/.cache, which no
+    app may write, and every attempt to keep it would fail.
     """
     import tempfile
     scratch = paths.data_dir() / 'tmp'
     scratch.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault('TMPDIR', str(scratch))
     tempfile.tempdir = str(scratch)
+    os.environ.setdefault('XDG_CACHE_HOME', str(paths.cache_dir()))
 
 
 def link_farm(found: dict) -> dict:
@@ -282,7 +301,7 @@ def install_status(intent):
         return 'failed', f'Android could not install the update: {error}'
 
 
-def safe_insets() -> tuple:
+def safe_insets(surface_height: int = 0) -> tuple:
     """How far the system's own furniture reaches into what the app draws, in
     pixels.
 
@@ -294,25 +313,28 @@ def safe_insets() -> tuple:
     the keyboard is up - an inset it has already moved clear of must not be
     added again.
 
+    surface_height is SDL's surface as Kivy has it (Window.height). From
+    Android 11 the window manager answers, which costs almost nothing; asking
+    a view instead, as older versions must, has pyjnius read the whole of
+    View first - the slowest single step of starting up.
+
     Returns (top, bottom), both zero anywhere that cannot answer.
     """
     try:
         from jnius import autoclass
         activity = autoclass('org.kivy.android.PythonActivity').mActivity
+        if surface_height and autoclass('android.os.Build$VERSION').SDK_INT >= 30:
+            metrics = activity.getWindowManager().getCurrentWindowMetrics()
+            insets = metrics.getWindowInsets()
+            top, bottom = _window_insets(autoclass, insets)
+            # The surface starts at the top of the window, so it is only
+            # ever short of the bottom - by what it has been moved clear of.
+            return int(top), int(max(0, bottom - (metrics.getBounds().height() - surface_height)))
         decor = activity.getWindow().getDecorView()
         insets = decor.getRootWindowInsets()
         if insets is None:
             return 0, 0
-        top = bottom = 0
-        cutout = insets.getDisplayCutout()
-        if cutout is not None:
-            top, bottom = cutout.getSafeInsetTop(), cutout.getSafeInsetBottom()
-        try:
-            types = autoclass('android.view.WindowInsets$Type')
-            bars = insets.getInsets(types.statusBars() | types.navigationBars())
-            top, bottom = max(top, bars.top), max(bottom, bars.bottom)
-        except Exception:
-            pass          # older Android: the cutout is the best we have
+        top, bottom = _window_insets(autoclass, insets)
         try:
             surface = autoclass('org.libsdl.app.SDLActivity').getContentView().getChildAt(0)
             where = autoclass('android.graphics.Rect')()
@@ -324,6 +346,21 @@ def safe_insets() -> tuple:
         return int(top), int(bottom)
     except Exception:
         return 0, 0
+
+
+def _window_insets(autoclass, insets) -> tuple:
+    """(top, bottom) that the cutout and the system bars take from a window."""
+    top = bottom = 0
+    cutout = insets.getDisplayCutout()
+    if cutout is not None:
+        top, bottom = cutout.getSafeInsetTop(), cutout.getSafeInsetBottom()
+    try:
+        types = autoclass('android.view.WindowInsets$Type')
+        bars = insets.getInsets(types.statusBars() | types.navigationBars())
+        top, bottom = max(top, bars.top), max(bottom, bars.bottom)
+    except Exception:
+        pass          # older Android: the cutout is the best we have
+    return top, bottom
 
 
 def paint_window(colour: str) -> None:
@@ -343,10 +380,11 @@ def paint_window(colour: str) -> None:
     @run_on_ui_thread
     def paint():
         try:
-            value = autoclass('android.graphics.Color').parseColor(colour)
+            value = public_class('android.graphics.Color').parseColor(colour)
             window = autoclass('org.kivy.android.PythonActivity').mActivity.getWindow()
-            window.setBackgroundDrawable(autoclass('android.graphics.drawable.ColorDrawable')(value))
-            window.getDecorView().setBackgroundColor(value)
+            # The window's background is what its decor view draws, so this
+            # colours that too - without asking for the view, a View.
+            window.setBackgroundDrawable(public_class('android.graphics.drawable.ColorDrawable')(value))
             window.setStatusBarColor(value)
             window.setNavigationBarColor(value)
         except Exception:

@@ -13,7 +13,7 @@ import re
 import urllib.request
 from urllib.parse import urljoin, urlparse
 
-from .media import MediaItem, ProbeResult
+from .mediaitems import MediaItem, ProbeResult
 from .util import host_of, safe_filename
 
 log = logging.getLogger(__name__)

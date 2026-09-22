@@ -42,7 +42,7 @@ from kivy.core.window import Window                         # noqa: E402
 from kivy.input.motionevent import MotionEvent              # noqa: E402
 
 from grabbit import analyze as analyze_mod                  # noqa: E402
-from grabbit.media import MediaItem, ProbeResult            # noqa: E402
+from grabbit.mediaitems import MediaItem, ProbeResult       # noqa: E402
 from grabbit.tasks import (KIND_HTTP, KIND_IMAGE, KIND_MEDIA, KIND_TORRENT,  # noqa: E402
                            State, Task, TaskStore)
 
