@@ -225,16 +225,18 @@ done
 
 # The same for the background service - compiled in, and declared with the
 # type Android 14 insists on (see --native-service above) - and for gallery-dl.
+# grep -c rather than -q: -q stops reading at the first match, and under
+# pipefail the writer's broken pipe would fail the check it just passed.
 TOOLS="$ANDROID_ROOT/build-tools/35.0.0"
-"$TOOLS/dexdump" "$APK" 2>/dev/null | grep -q 'Lcom/grabbit/downloader/DownloadService;' \
+"$TOOLS/dexdump" "$APK" 2>/dev/null | grep -c 'Lcom/grabbit/downloader/DownloadService;' > /dev/null \
   || { echo "error: DownloadService is not compiled into the APK" >&2; exit 1; }
 "$TOOLS/aapt2" dump xmltree --file AndroidManifest.xml "$APK" \
-  | grep -A4 'com.grabbit.downloader.DownloadService' | grep -q 'foregroundServiceType' \
+  | grep -A4 'com.grabbit.downloader.DownloadService' | grep -c 'foregroundServiceType' > /dev/null \
   || { echo "error: the manifest does not declare DownloadService as a data-sync service" >&2; exit 1; }
 echo "   DownloadService"
 PRIVATE="$(mktemp)"
 unzip -p "$APK" assets/private.tar > "$PRIVATE"
-tar -tf "$PRIVATE" | grep -q 'gallery-dl/gallery_dl/__main__' \
+tar -tf "$PRIVATE" | grep -c 'gallery-dl/gallery_dl/__main__' > /dev/null \
   || { echo "error: gallery-dl is missing from the APK" >&2; exit 1; }
 rm -f "$PRIVATE"
 echo "   gallery-dl"
