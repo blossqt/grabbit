@@ -97,7 +97,9 @@ class MainWindow(QMainWindow):
         self.update_progress.connect(self._on_update_progress)
         self.update_staged.connect(self._on_update_staged)
         self.update_stopped.connect(self._on_update_stopped)
-        QTimer.singleShot(updates.FIRST_CHECK_DELAY * 1000, lambda: self.check_for_updates(False))
+        # The moment the event loop runs - the window is up by then, and the
+        # check itself runs on a thread of its own.
+        QTimer.singleShot(0, lambda: self.check_for_updates(False))
         self._update_timer = QTimer(self)
         self._update_timer.setInterval(updates.CHECK_INTERVAL * 1000)
         self._update_timer.timeout.connect(lambda: self.check_for_updates(False))

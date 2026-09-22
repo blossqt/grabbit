@@ -69,6 +69,10 @@ KIND_FILTERS = [('all', 'Everything'), ('torrent', 'Torrents'), ('video', 'Video
 DOWNLOADING_STATES = (State.DOWNLOADING, State.QUEUED, State.METADATA,
                       State.EXTRACTING, State.PROCESSING)
 
+# Coming back to the app asks for updates again once this many seconds have
+# passed since the last check (on_resume).
+UPDATE_RECHECK = 60
+
 
 def matches(task, status: str, kind: str) -> bool:
     """The sidebar's filters, in the same order the desktop applies them."""
@@ -182,6 +186,7 @@ class GrabbitApp(App):
         # zero-height layout still lays out its children, and they go on
         # taking touches meant for whatever is drawn where they are.
         self._update_answer = None
+        self._update_declined = set()       # "Later", until Grabbit next starts
         self._update_checking = False
         self._last_update_check = 0.0
         self.update_banner = self._build_update_banner()
@@ -241,8 +246,9 @@ class GrabbitApp(App):
         Window.bind(on_resize=lambda *_: self._insets_later(),
                     keyboard_height=lambda *_: self._insets_later())
         Clock.schedule_interval(lambda *_: self.refresh(), 1.0)
-        # The first check follows the engine starting (see _start_engine_worker);
-        # after that twice a day while open, and on coming back after longer.
+        # The first check comes as soon as the app is on screen (_on_screen);
+        # after that twice a day while open, and each time it is opened again
+        # (on_resume).
         Clock.schedule_interval(lambda *_: self.check_for_updates(), updates.CHECK_INTERVAL)
         # Kivy takes the splash screen down as its first frame begins, before
         # that frame is on screen, which leaves a moment of black between the
@@ -275,6 +281,7 @@ class GrabbitApp(App):
                 Logger.exception('Start-up: could not take the splash screen down')
         self._report_start()
         self._start_engine()
+        self.check_for_updates()            # every launch asks, straight away
         self.input.ready()
         # Whatever part of the window the app does not draw - behind a
         # keyboard as it slides in, around a surface Android has moved - is
@@ -338,7 +345,7 @@ class GrabbitApp(App):
         get.bind(on_release=lambda *_: self._get_update())
         self.update_later = FlatButton(text='Later', size_hint_x=None, width=dp(60),
                                        font_size=dp(13), color=theme.DIM)
-        self.update_later.bind(on_release=lambda *_: self.show_update(None))
+        self.update_later.bind(on_release=lambda *_: self._decline_update())
         for widget in (words, get, self.update_later):
             banner.add_widget(widget)
         return banner
@@ -437,8 +444,6 @@ class GrabbitApp(App):
             # slip in between being read and being cleared.
             Clock.schedule_once(lambda *_: self._add_pending(), 0)
             Clock.schedule_once(lambda *_: self._maybe_ask_for_storage(), 0.5)
-            # Late enough not to compete with a link that was shared to open us.
-            Clock.schedule_once(lambda *_: self.check_for_updates(), 10)
         self._schedule_refresh()
 
     @staticmethod
@@ -689,10 +694,18 @@ class GrabbitApp(App):
 
         threading.Thread(target=ask, name='grabbit-update-check', daemon=True).start()
 
+    def _decline_update(self):
+        """Later: not this version again until Grabbit next starts - as on
+        Windows. Asking from the footer still shows it."""
+        if self._update_answer is not None:
+            self._update_declined.add(self._update_answer.latest)
+        self.show_update(None)
+
     def _on_update_checked(self, answer, manual: bool):
         self._update_checking = False
         if answer.available:
-            self.show_update(answer)
+            if manual or answer.latest not in self._update_declined:
+                self.show_update(answer)
             if manual:
                 self._schedule_message('info', f'Grabbit {answer.latest} is out.')
         elif manual:
@@ -747,9 +760,11 @@ class GrabbitApp(App):
         self.show_update(getattr(self, '_installing_answer', None))
 
     def on_resume(self):
-        # A phone keeps an app paused for days; the clock above does not run
-        # while it is, so catch up on the way back.
-        if time.monotonic() - self._last_update_check > updates.CHECK_INTERVAL:
+        # Opening Grabbit again counts as launching it, since a phone keeps an
+        # app in memory for days: ask again - unless it asked a moment ago, as
+        # Android also resumes it on the way back from its own screens, the
+        # installer's and the permission questions.
+        if time.monotonic() - self._last_update_check > UPDATE_RECHECK:
             self.check_for_updates()
         return True
 

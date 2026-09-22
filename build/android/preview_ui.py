@@ -532,6 +532,26 @@ def check(app):
     settle()
     report('Later takes it away entirely',
            not app.update_slot.children and app.update_slot.height == 0)
+    app._on_update_checked(newer, False)
+    settle()
+    report('and keeps that version away until Grabbit starts again', not app.update_slot.children)
+    app._on_update_checked(newer, True)
+    settle()
+    asked = app.update_banner.parent is app.update_slot
+    tap(app.update_later)
+    settle()
+    report('though asking from the footer still shows it', asked)
+
+    report('every launch asks for updates straight away', UPDATE_CHECKS == ['android'],
+           f'{len(UPDATE_CHECKS)} check(s)')
+    app.on_resume()
+    wait_until(lambda: not app._update_checking, 3)
+    soon = len(UPDATE_CHECKS)
+    app._last_update_check -= phone.UPDATE_RECHECK + 1
+    app.on_resume()
+    wait_until(lambda: len(UPDATE_CHECKS) > soon, 3)
+    report('opening it again asks again - but not twice within a minute',
+           soon == 1 and len(UPDATE_CHECKS) == 2, f'{soon} then {len(UPDATE_CHECKS)} check(s)')
 
     from kivy.metrics import dp
     title = app.root_box.children[-1].children[-1]
@@ -671,8 +691,21 @@ def show_page(app, kind: str, shot: str | None):
         app.stop()
 
 
+# Every check for updates the app makes, answered by nothing_newer.
+UPDATE_CHECKS = []
+
+
+def nothing_newer(platform, current=None, timeout=15):
+    """Stands in for asking GitHub, which the app now does the moment it is on
+    screen: nothing newer, at once, and counted."""
+    from grabbit import APP_VERSION, updates
+    UPDATE_CHECKS.append(platform)
+    return updates.Check(current or APP_VERSION)
+
+
 def main():
     phone.MobileEngine = FakeEngine
+    phone.updates.check = nothing_newer
     app = phone.GrabbitApp()
 
     # No phone here, so skip the parts that talk to Android.

@@ -127,7 +127,19 @@ def main():
     app = QApplication([])
     theme.apply_theme(app, 'dark')
 
+    from grabbit import APP_VERSION, updates
     from grabbit.ui.main_window import MainWindow
+
+    # The window asks GitHub for a newer Grabbit the moment it is up. Here it
+    # is told there is none, at once: the checks below feed it their own
+    # answers, and must not race a real one still on its way back.
+    launched = []
+
+    def nothing_newer(platform, current=None, timeout=15):
+        launched.append(platform)
+        return updates.Check(current or APP_VERSION)
+
+    updates.check = nothing_newer
 
     settings = Settings()
     settings.show_graph = False
@@ -203,6 +215,8 @@ def main():
     report('File and Help can both check for updates',
            window.action_check_updates in menus['&File'].actions()
            and window.action_check_updates in menus['&Help'].actions())
+    report('and the window asked by itself the moment it opened', launched == ['windows'],
+           f'{len(launched)} check(s)')
 
     zip_asset = updates.Asset('Grabbit-9.0.0-win64.zip', 1, '0' * 64, 'https://example.invalid/zip')
     newer = updates.Check('1.2.0', updates.Release('9.0.0', 'now', 'What changed.', zip_asset, None),

@@ -40,8 +40,7 @@ MANIFEST_NAME = 'latest.json'
 SIGNATURE_NAME = 'latest.json.sig'
 SCHEMA = 1
 
-# The first check comes as soon as the window is up, and then twice a day.
-FIRST_CHECK_DELAY = 5
+# Both apps check the moment they are on screen, and then twice a day.
 CHECK_INTERVAL = 12 * 3600
 
 PLATFORMS = ('windows', 'android')

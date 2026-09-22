@@ -168,13 +168,15 @@ reachable over USB, just not listed in the Downloads app.
 
 ## Updates and releases
 
-Both apps ask GitHub for the latest release a minute after they start and twice
-a day after that; the phone also asks when it comes back from a long pause. When
-it is newer than the copy that is running, the desktop shows a banner that
-downloads the new zip, and the phone one that downloads the new APK — which
-installs over the old app and keeps everything in it. **Help › Check for
-updates** asks straight away; on the phone, touch the version line at the
-bottom. **Settings › Interface** turns the automatic checks off.
+Both apps ask GitHub for the latest release the moment they start and twice a
+day after that; the phone also asks each time it is opened again, since a phone
+keeps an app in memory for days. When it is newer than the copy that is
+running, the desktop shows a banner that downloads the new zip, and the phone
+one that downloads the new APK — which installs over the old app and keeps
+everything in it. **Later** puts that version off until the app next starts.
+**Help › Check for updates** asks straight away; on the phone, touch the
+version line at the bottom. **Settings › Interface** turns the automatic checks
+off.
 
 To publish a release:
 
