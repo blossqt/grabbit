@@ -156,6 +156,34 @@ fi
 # dies there instead of where the real problem was.
 rm -rf "$STORAGE/build/venv"
 
+# RestartReceiver (java/) starts unfinished downloads again after the phone
+# restarts. p4a has no switch for a receiver, so it is written into the
+# manifest template: p4a's own, which a first build copies, and the copy in
+# the distribution, which every later build renders from. The check at the end
+# confirms it arrived.
+say 'declaring the restart receiver'
+python - "$STORAGE/dists/$DIST" <<'PY'
+import glob, os, sys
+import pythonforandroid
+RECEIVER = """        <receiver android:name="com.grabbit.downloader.RestartReceiver"
+                  android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+"""
+roots = [os.path.join(os.path.dirname(pythonforandroid.__file__), 'bootstraps'), sys.argv[1]]
+for root in roots:
+    for path in glob.glob(os.path.join(root, '**', 'AndroidManifest.tmpl.xml'), recursive=True):
+        with open(path, encoding='utf-8') as handle:
+            text = handle.read()
+        if 'RestartReceiver' in text or '</application>' not in text:
+            continue
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write(text.replace('</application>', RECEIVER + '    </application>', 1))
+        print('   ' + path)
+PY
+
 mkdir -p "$OUTDIR"
 cd "$OUTDIR"
 # The downloads run in a process of their own, so that closing the window -
@@ -212,6 +240,7 @@ p4a apk \
   --permission=android.permission.FOREGROUND_SERVICE_SPECIAL_USE \
   --permission=android.permission.WAKE_LOCK \
   --permission=android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS \
+  --permission=android.permission.RECEIVE_BOOT_COMPLETED \
   --permission=android.permission.REQUEST_INSTALL_PACKAGES
 
 say 'result'
@@ -233,7 +262,7 @@ done
 # gallery-dl. grep -c rather than -q: -q stops reading at the first match, and
 # under pipefail the writer's broken pipe would fail the check it just passed.
 TOOLS="$ANDROID_ROOT/build-tools/35.0.0"
-for class in DownloadService ServiceEngine; do
+for class in DownloadService ServiceEngine RestartReceiver; do
   "$TOOLS/dexdump" "$APK" 2>/dev/null | grep -c "Lcom/grabbit/downloader/$class;" > /dev/null \
     || { echo "error: $class is not compiled into the APK" >&2; exit 1; }
 done
@@ -243,6 +272,9 @@ echo "$MANIFEST" | grep -A6 'com.grabbit.downloader.ServiceEngine' | grep -c 'fo
 echo "$MANIFEST" | grep -A6 'com.grabbit.downloader.ServiceEngine' | grep -c ':service_engine' > /dev/null \
   || { echo "error: the manifest does not give ServiceEngine a process of its own" >&2; exit 1; }
 echo "   ServiceEngine, in a process of its own"
+echo "$MANIFEST" | grep -A8 'com.grabbit.downloader.RestartReceiver' | grep -c 'BOOT_COMPLETED' > /dev/null \
+  || { echo "error: the manifest does not declare RestartReceiver for the phone restarting" >&2; exit 1; }
+echo "   RestartReceiver"
 PRIVATE="$(mktemp)"
 unzip -p "$APK" assets/private.tar > "$PRIVATE"
 LISTING="$(tar -tf "$PRIVATE")"

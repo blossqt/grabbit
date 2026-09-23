@@ -151,6 +151,19 @@ public class DownloadService extends PythonService {
                 .putExtra("title", title));
     }
 
+    /** After the phone restarts, with downloads left unfinished
+     * (RestartReceiver): start the downloader straight into the foreground.
+     * Android lets a service start that way while it delivers the news of the
+     * restart, and not otherwise. */
+    public static void resume(Context context, String title) {
+        Intent intent = defaultIntent(context).setAction(ACTION_FOREGROUND).putExtra("title", title);
+        if (Build.VERSION.SDK_INT >= 26) {
+            context.startForegroundService(intent);
+        } else {
+            context.startService(intent);
+        }
+    }
+
     /** Whether Android lets Grabbit run with no battery limits. */
     public static boolean unrestricted(Context context) {
         try {
