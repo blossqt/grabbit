@@ -21,6 +21,10 @@ ROW_HEIGHT = dp(84)
 
 def detail_line(task) -> str:
     """Everything the desktop's columns say, in one sentence."""
+    if task.state == State.ERROR:
+        # What went wrong can run long, so the way out comes first; the
+        # details sheet has all of it.
+        return '   ·   '.join(b for b in ('Failed - tap to try again', task.error) if b)
     bits = [task.status_text]
     if task.total:
         bits.append(f'{human_size(task.done)} / {human_size(task.total)}')

@@ -853,11 +853,11 @@ class GrabbitApp(App):
         self.details.open_task(task_id)
 
     def toggle_task(self, task_id: str):
-        """Start what is waiting, pause what is running."""
+        """Start what is waiting, pause what is running, try again what failed."""
         task = self.engine.store.get(task_id)
         if task is None:
             return
-        if task.state == State.PAUSED:
+        if task.state in (State.PAUSED, State.ERROR):
             self.engine.expect(task.name or task.source)
             self.engine.resume([task_id])
         elif task.state in (State.DOWNLOADING, State.SEEDING, State.QUEUED):

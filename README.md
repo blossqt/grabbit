@@ -104,11 +104,22 @@ instead of Qt and QuickJS in place of Deno, which has no Android target.
 Pasting or sharing a link opens a page once the link has been read, with the
 choices the desktop's card offers: quality and file type, the sound alone, a
 GIF, or one frame picked with a slider. The link box itself is Android's own
-text field, so holding it gives Android's own copy and paste menu. Downloads
-carry on with the app off screen: while anything is downloading, a foreground
-service (`build/android/java`) keeps the app from being frozen and shows
-Android's own progress notification. Building it needs WSL (Ubuntu), a JDK,
-and roughly 15 GB:
+text field, so holding it gives Android's own copy and paste menu.
+
+The downloads run in a process of their own, apart from the window: a second
+Python interpreter (`android/service.py`, `grabbit_mobile/host.py`) that owns
+aria2 and every download, and that the window asks for everything over a
+local socket (`remote.py`). So closing the window — swiping Grabbit out of the
+recent apps included — leaves them running. While anything downloads or
+seeds, that process is a foreground service (`build/android/java`) with
+Android's own progress notification, a wake lock for the screen being off,
+and no daily time limit; it ends itself once there is nothing left to do and
+no window asking. A video that fails for want of a network, or that YouTube
+refuses halfway, is tried again by itself. The gear beside Graph opens
+Settings: updates, downloads at once, the download folder, Wi-Fi only,
+seeding, and battery use.
+
+Building it needs WSL (Ubuntu), a JDK, and roughly 15 GB:
 
     bash build/android/fetch_sdk.sh        # NDK, SDK command-line tools, adb
     bash build/android/build_aria2.sh      # aria2 + OpenSSL, zlib, expat, c-ares
@@ -147,8 +158,13 @@ takes the splash screen down on its UI thread, one job at a time, so nothing
 is queued there ahead of it.
 
 The phone engine is plain Python, so it also runs on a desktop against the
-desktop binaries — faster still, and enough to catch most mistakes:
+desktop binaries — faster still, and enough to catch most mistakes.
+`engine_check.py` runs the downloader and the window's side of it together,
+with aria2 and files served from the machine itself, and checks the rules for
+retrying, Wi-Fi only, seeding and ending, in about a minute; `test_engine.py`
+downloads real things from the internet:
 
+    %LOCALAPPDATA%\GrabbitBuild\venv\Scripts\python.exe build\android\engine_check.py
     %LOCALAPPDATA%\GrabbitBuild\venv\Scripts\python.exe build\android\test_engine.py
 
 So does the phone interface. `preview_ui.py` runs it in a phone-shaped
@@ -174,9 +190,10 @@ keeps an app in memory for days. When it is newer than the copy that is
 running, the desktop shows a banner that downloads the new zip, and the phone
 one that downloads the new APK — which installs over the old app and keeps
 everything in it. **Later** puts that version off until the app next starts.
-**Help › Check for updates** asks straight away; on the phone, touch the
-version line at the bottom. **Settings › Interface** turns the automatic checks
-off.
+**Help › Check for updates** asks straight away; on the phone, **Settings ›
+Check for updates**, or touch the version line at the bottom. **Settings ›
+Interface** on the desktop, and **Check by itself** on the phone, turn the
+automatic checks off.
 
 To publish a release:
 
@@ -223,7 +240,10 @@ the real thing:
       ui/               Qt interface (speedgraph.py is the graph pane)
     android/            the phone build
       main.py           Kivy interface
+      service.py        the downloader's own process
       grabbit_mobile/   the same engine without Qt, plus Android's storage rules
+        host.py         the downloader: aria2, the downloads, the socket
+        remote.py       the window's side of that socket
         ui/             the desktop layout, folded into one column
     aria2/              aria2's source, fetched by bootstrap.ps1 (not in git)
     build/              build scripts, patches, self-test, release.ps1

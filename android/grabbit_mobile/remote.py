@@ -79,6 +79,7 @@ class RemoteEngine:
         self._drawing = False           # and _draw is on its way for it
         self._handover = threading.Lock()
         self._launched = 0.0
+        self._edited = 0.0              # when a tap last changed the copy here
 
     # ---------------------------------------------------------- starting
     def start(self) -> bool:
@@ -150,6 +151,7 @@ class RemoteEngine:
         self._ask({'op': 'resume', 'ids': list(task_ids)})
 
     def remove(self, task_ids, delete_files: bool = False):
+        self._edited = time.monotonic()
         for task_id in task_ids:
             self.store.remove(task_id)
         self._ask({'op': 'remove', 'ids': list(task_ids), 'delete_files': bool(delete_files)})
@@ -180,6 +182,7 @@ class RemoteEngine:
 
     def _mark(self, task_ids, state):
         """Show a tap's effect at once; the next snapshot has the last word."""
+        self._edited = time.monotonic()
         for task_id in task_ids:
             task = self.store.get(task_id)
             if task is not None:
@@ -266,7 +269,8 @@ class RemoteEngine:
             except queue.Empty:
                 item = None
         if self._active and not self._stop.is_set():
-            self._take(self._call(sock, {'op': 'snapshot', 'after': self._after}))
+            asked = time.monotonic()
+            self._take(self._call(sock, {'op': 'snapshot', 'after': self._after}), asked)
 
     def _call(self, sock, request: dict):
         self._numbered += 1
@@ -282,9 +286,10 @@ class RemoteEngine:
             raise RemoteError(reply.get('error') or 'it failed')
         return reply.get('result')
 
-    def _take(self, snapshot: dict):
+    def _take(self, snapshot: dict, asked: float = 0.0):
         """Hand a snapshot to the thread that draws - only the newest, however
         many arrive while it is busy, with every message none of them showed."""
+        snapshot['asked'] = asked
         messages = [entry for entry in snapshot.get('messages') or [] if entry[0] > self._after]
         if messages:
             self._after = max(entry[0] for entry in messages)
@@ -301,16 +306,19 @@ class RemoteEngine:
             self._drawing = False
         if snapshot is None:
             return
-        seen = set()
-        for state in snapshot.get('tasks') or []:
-            task = self.store.get(state.get('id', ''))
-            if task is None:
-                task = self.store.add(Task(id=state['id']))
-            wire.apply_state(task, state)
-            seen.add(task.id)
-        for task in list(self.store):
-            if task.id not in seen:
-                self.store.remove(task.id)
+        # One asked for before the last tap cannot know of it, and would undo
+        # on screen - for a second - what the tap did.
+        if snapshot.get('asked', 0.0) >= self._edited:
+            seen = set()
+            for state in snapshot.get('tasks') or []:
+                task = self.store.get(state.get('id', ''))
+                if task is None:
+                    task = self.store.add(Task(id=state['id']))
+                wire.apply_state(task, state)
+                seen.add(task.id)
+            for task in list(self.store):
+                if task.id not in seen:
+                    self.store.remove(task.id)
         self.stats = snapshot.get('stats') or {}
         self.version = snapshot.get('version') or ''
         self.running = bool(snapshot.get('running'))
