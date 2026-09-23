@@ -114,8 +114,10 @@ recent apps included — leaves them running. While anything downloads or
 seeds, that process is a foreground service (`build/android/java`) with
 Android's own progress notification, a wake lock for the screen being off,
 and no daily time limit; it ends itself once there is nothing left to do and
-no window asking. A video that fails for want of a network, or that YouTube
-refuses halfway, is tried again by itself. The gear beside Graph opens
+no window asking. After the phone restarts, whatever was unfinished starts
+again by itself (`RestartReceiver`). A video that fails for want of a network,
+or that YouTube refuses halfway, is tried again by itself, and so is anything a
+server turns away for asking too much at once. The gear beside Graph opens
 Settings: updates, downloads at once, the download folder, Wi-Fi only,
 seeding, and battery use.
 
@@ -141,6 +143,10 @@ Then from Windows, with the phone plugged in and USB debugging on:
 inside the app through `run-as` and downloads real things — a video, a TikTok,
 a photo post, a GIF — reporting each one. It needs neither the screen nor the
 lock code, so it can run while the phone sits on the desk.
+
+`device_client.py`, run inside the app the same way, talks to the running
+downloader as the window does — `status`, `add <url>`, `add-torrent`,
+`remove` — which is how to watch it carry on with the window closed.
 
 How long the app takes to open is measured on the phone too, unlocked:
 
