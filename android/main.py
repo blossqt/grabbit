@@ -52,7 +52,8 @@ from grabbit_mobile.ui.details import DetailsSheet          # noqa: E402
 from grabbit_mobile.ui.graph import SpeedGraph              # noqa: E402
 from grabbit_mobile.ui.linkbox import LinkBox               # noqa: E402
 from grabbit_mobile.ui.rows import TaskRow                  # noqa: E402
-from grabbit_mobile.ui.widgets import Card, Chip, Dialog, FlatButton, TapLabel  # noqa: E402
+from grabbit_mobile.ui.widgets import (Card, Chip, Dialog, FlatButton, IconButton,  # noqa: E402
+                                       TapLabel)
 
 IMPORTED = time.monotonic()
 
@@ -159,7 +160,9 @@ class GrabbitApp(App):
         # arrive seconds late; asking for finer slicing costs a little
         # throughput and keeps the interface answering.
         sys.setswitchinterval(0.002)
-        theme.use_symbol_font()
+        # The phone's own font, with Android's fallbacks behind it (ui/fonts.py).
+        from grabbit_mobile.ui.fonts import use_system_font
+        use_system_font(paths.data_dir() / 'fonts.json')
         Window.clearcolor = theme.WINDOW
         self.settings = Settings.load()
         # The downloads run in a process of their own, which outlives this
@@ -373,8 +376,8 @@ class GrabbitApp(App):
         """The title bar while downloads are being picked out: leave, how
         many, and all of them."""
         bar = BoxLayout(size_hint_y=None, height=dp(34), spacing=dp(6), padding=[0, 0, dp(2), 0])
-        leave = FlatButton(text='×', font_size=dp(22), size_hint_x=None, width=dp(38),
-                           color=theme.TEXT, fill=theme.TRANSPARENT)
+        leave = IconButton('close', extent=dp(13), color=theme.TEXT, size_hint_x=None,
+                           width=dp(38))
         leave.bind(on_release=lambda *_: self.stop_choosing())
         self.chosen_label = Label(text='', color=theme.TEXT, font_size=dp(16), bold=True,
                                   halign='left', valign='middle', shorten=True,
@@ -1063,7 +1066,7 @@ class GrabbitApp(App):
         tasks = [task for task in map(self.engine.store.get, self.chosen) if task is not None]
         self.chosen_label.text = f'{len(tasks)} selected'
         everything = bool(self._rows) and set(self._rows) <= self.chosen
-        self.choose_all_button.text = 'Select none' if everything else 'Select all'
+        self.choose_all_button.text = 'Deselect' if everything else 'Select all'
         self.share_chosen_button.color = (theme.TEXT if any(finished(t) for t in tasks)
                                           else theme.DIM)
 

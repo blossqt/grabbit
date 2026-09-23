@@ -38,23 +38,6 @@ STATE_COLORS = {
 UPLOAD = '#1faa59'
 
 
-def use_symbol_font() -> None:
-    """Draw everything in DejaVu Sans, which has the arrows.
-
-    Kivy's default Roboto has no ↑ or ↓, and a speed readout without them says
-    nothing - they came out as empty boxes on the phone. DejaVu is already in
-    Kivy's own data folder, so this costs nothing and fixes every glyph at
-    once rather than one label at a time.
-    """
-    import os
-    import kivy
-    from kivy.core.text import DEFAULT_FONT, LabelBase
-
-    path = os.path.join(os.path.dirname(kivy.__file__), 'data', 'fonts', 'DejaVuSans.ttf')
-    if os.path.exists(path):
-        LabelBase.register(DEFAULT_FONT, path)
-
-
 def rgba(value: str, alpha: float = 1.0) -> tuple:
     """'#3a86ff' -> (0.23, 0.53, 1.0, alpha)."""
     text = value.lstrip('#')

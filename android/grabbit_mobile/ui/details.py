@@ -13,7 +13,6 @@ from kivy.metrics import dp
 from kivy.graphics import Color, RoundedRectangle
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.modalview import ModalView
 from kivy.uix.scrollview import ScrollView
@@ -24,7 +23,7 @@ from grabbit.util import human_eta, human_size, human_speed, human_time
 
 from ..files import finished, finished_files
 from . import theme
-from .widgets import Card, Chip, share_by_words
+from .widgets import Card, Chip, IconButton, share_by_words
 
 TABS = ['General', 'Files', 'Peers', 'Trackers', 'Log']
 
@@ -120,9 +119,7 @@ class DetailsSheet(ModalView):
         self.title = Label(text='', color=theme.TEXT, font_size=dp(15), bold=True,
                            halign='left', valign='middle', shorten=True, shorten_from='right')
         self.title.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
-        close = Button(text='×', size_hint_x=None, width=dp(38), font_size=dp(22),
-                       color=theme.DIM, background_normal='', background_down='',
-                       background_color=theme.TRANSPARENT)
+        close = IconButton('close', extent=dp(13), size_hint_x=None, width=dp(38))
         close.bind(on_release=lambda *_: self.dismiss())
         header.add_widget(self.title)
         header.add_widget(close)

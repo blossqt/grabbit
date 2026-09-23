@@ -20,7 +20,7 @@ from grabbit.util import human_eta, human_size, human_speed
 
 from ..files import finished
 from . import theme
-from .widgets import Card, KindGlyph, ProgressTrack, ShareButton
+from .widgets import Card, IconButton, KindGlyph, ProgressTrack
 
 ROW_HEIGHT = dp(84)
 
@@ -58,8 +58,6 @@ def detail_line(task, hints: bool = True) -> str:
     # a running one the same hint just pushes the numbers off the end.
     if hints and task.state == State.PAUSED:
         bits.append('tap to start')
-    elif hints and task.state == State.COMPLETED:
-        bits.append('tap to open')
     return '   ·   '.join(b for b in bits if b)
 
 
@@ -97,17 +95,14 @@ class TaskRow(Card):
         self.title.bind(on_release=lambda button: self._tap(
             button, on_open if self.finished else on_select))
 
-        def flat(symbol, width, size, action):
-            button = Button(text=symbol, size_hint_x=None, width=dp(width), font_size=dp(size),
-                            color=theme.DIM, background_normal='', background_down='',
-                            background_color=theme.TRANSPARENT)
+        def icon(kind, extent, action):
+            button = IconButton(kind, extent=dp(extent), size_hint_x=None, width=dp(32))
             button.bind(on_release=lambda pressed: self._tap(pressed, action))
             return button
 
-        self.share_button = ShareButton(size_hint_x=None, width=dp(32))
-        self.share_button.bind(on_release=lambda pressed: self._tap(pressed, on_share))
-        self.details_button = flat('i', 30, 15, on_details)
-        self.remove_button = flat('×', 32, 20, on_remove)
+        self.share_button = icon('share', 18, on_share)
+        self.details_button = icon('info', 18, on_details)
+        self.remove_button = icon('close', 12, on_remove)
         self.heading.add_widget(self.glyph)
         self.heading.add_widget(self.title)
 

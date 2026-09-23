@@ -229,27 +229,55 @@ class Dialog(ModalView):
             action()
 
 
-class ShareButton(ButtonBehavior, Widget):
-    """Android's share symbol - three dots and the two lines between them -
-    drawn, as the kinds of download are: no font has it."""
+# Every drawn symbol's line: a Kivy Line is drawn this far either side of
+# its path, so twice this thick - about the weight of the text beside it.
+STROKE = dp(0.8)
 
-    def __init__(self, **kwargs):
+
+class IconButton(ButtonBehavior, Widget):
+    """A symbol to tap - share, details, close - drawn, and centred on the
+    middle of its space. No font has Android's share symbol, and a symbol
+    typed as text sits wherever its font puts it rather than on the line
+    the rest of a row is centred on.
+
+    extent is how big the symbol is drawn; the button itself can be larger,
+    to be easier to hit.
+    """
+
+    def __init__(self, kind: str, extent=dp(18), color=theme.DIM, **kwargs):
         super().__init__(**kwargs)
+        self.kind, self.extent, self.color = kind, extent, color
         self.bind(pos=self._redraw, size=self._redraw)
 
     def _redraw(self, *_):
         self.canvas.clear()
-        size = min(dp(17), self.width, self.height)
+        size = min(self.extent, self.width, self.height)
         x, y = self.center_x - size / 2, self.center_y - size / 2
-        dots = [(0.76, 0.82), (0.24, 0.50), (0.76, 0.18)]
-        radius = size * 0.14
         with self.canvas:
-            Color(*theme.DIM)
-            Line(points=[value for dx, dy in dots for value in (x + size * dx, y + size * dy)],
-                 width=max(1.1, size * 0.07))
-            for dx, dy in dots:
-                Ellipse(pos=(x + size * dx - radius, y + size * dy - radius),
-                        size=(2 * radius, 2 * radius))
+            Color(*self.color)
+            getattr(self, f'_draw_{self.kind}')(x, y, size)
+
+    @staticmethod
+    def _draw_share(x, y, size):
+        dots = [(0.76, 0.80), (0.24, 0.50), (0.76, 0.20)]
+        Line(points=[value for dx, dy in dots for value in (x + size * dx, y + size * dy)],
+             width=STROKE)
+        radius = size * 0.12
+        for dx, dy in dots:
+            Ellipse(pos=(x + size * dx - radius, y + size * dy - radius),
+                    size=(2 * radius, 2 * radius))
+
+    @staticmethod
+    def _draw_info(x, y, size):
+        Line(circle=(x + size / 2, y + size / 2, size * 0.45), width=STROKE)
+        Line(points=[x + size / 2, y + size * 0.25, x + size / 2, y + size * 0.55], width=STROKE)
+        dot = STROKE * 1.3
+        Ellipse(pos=(x + size / 2 - dot, y + size * 0.70 - dot), size=(2 * dot, 2 * dot))
+
+    @staticmethod
+    def _draw_close(x, y, size):
+        Line(points=[x, y, x + size, y + size], width=STROKE)
+        Line(points=[x, y + size, x + size, y], width=STROKE)
 
 
 class ProgressTrack(Widget):
@@ -301,7 +329,8 @@ class KindGlyph(Widget):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.size_hint = (None, None)
-        self.size = (dp(22), dp(22))
+        self.size = (dp(20), dp(20))
+        self.pos_hint = {'center_y': 0.5}
         self._kind = 'file'
         self._color = theme.DIM
         self.bind(pos=self._redraw, size=self._redraw)
@@ -335,7 +364,7 @@ class KindGlyph(Widget):
         self.canvas.clear()
         x, y = self.pos
         size = min(self.width, self.height)
-        stroke = max(1.2, size * 0.085)
+        stroke = STROKE
         with self.canvas:
             Color(*self._color)
             getattr(self, f'_draw_{self._kind}')(x, y, size, stroke)
@@ -344,9 +373,9 @@ class KindGlyph(Widget):
     def _draw_video(self, x, y, size, stroke):
         Line(rounded_rectangle=(x + size * 0.08, y + size * 0.18, size * 0.84,
                                 size * 0.64, size * 0.12), width=stroke)
-        Triangle(points=[x + size * 0.40, y + size * 0.32,
-                         x + size * 0.40, y + size * 0.68,
-                         x + size * 0.68, y + size * 0.50])
+        Triangle(points=[x + size * 0.42, y + size * 0.37,
+                         x + size * 0.42, y + size * 0.63,
+                         x + size * 0.63, y + size * 0.50])
 
     def _draw_audio(self, x, y, size, stroke):
         Ellipse(pos=(x + size * 0.16, y + size * 0.16), size=(size * 0.3, size * 0.26))
@@ -384,13 +413,13 @@ class KindGlyph(Widget):
                      x + size * 0.78, y + size * 0.68], width=stroke)
 
     def _draw_chosen(self, x, y, size, stroke):
-        Ellipse(pos=(x + size * 0.06, y + size * 0.06), size=(size * 0.88, size * 0.88))
+        Ellipse(pos=(x + size * 0.04, y + size * 0.04), size=(size * 0.92, size * 0.92))
         Color(1, 1, 1, 1)
-        Line(points=[x + size * 0.28, y + size * 0.50, x + size * 0.44, y + size * 0.34,
-                     x + size * 0.72, y + size * 0.64], width=stroke * 1.1)
+        Line(points=[x + size * 0.30, y + size * 0.51, x + size * 0.44, y + size * 0.37,
+                     x + size * 0.70, y + size * 0.63], width=stroke)
 
     def _draw_unchosen(self, x, y, size, stroke):
-        Line(circle=(x + size * 0.5, y + size * 0.5, size * 0.42), width=stroke)
+        Line(circle=(x + size * 0.5, y + size * 0.5, size * 0.44), width=stroke)
 
     def _draw_error(self, x, y, size, stroke):
         Line(circle=(x + size * 0.5, y + size * 0.5, size * 0.38), width=stroke)

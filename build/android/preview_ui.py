@@ -594,6 +594,18 @@ def check_finished(app, report):
         settle()
 
         rows = app._rows
+        middles = {round(w.to_window(*w.center)[1] - row.heading.to_window(*row.heading.center)[1], 1)
+                   for row in rows.values()
+                   for w in (row.glyph, row.title, *row.heading.children)}
+        report("every row's symbols and name sit on one middle line", middles == {0.0},
+               str(sorted(middles)))
+        from grabbit_mobile.ui import fonts
+        primary = fonts.FONTS.regular
+        runs = fonts.FONTS.runs('↓ 2 MB/s  Sgt. J 🇺🇸 - Superman', primary)
+        report('a symbol the font lacks comes from a fallback, and emoji are left out',
+               [path for path, _ in runs][:2] == [fonts.FONTS.chain[-1], primary]
+               and '🇺' not in ''.join(piece for _, piece in runs),
+               ' | '.join(f'{os.path.basename(path)}: {piece!r}' for path, piece in runs))
         with_share = sorted(task_id for task_id, row in rows.items()
                             if row.share_button.parent is row.heading)
         report('finished downloads carry a share button, and nothing else does',
@@ -606,9 +618,8 @@ def check_finished(app, report):
                hands.opened[-1:] == [video.file_path], str(hands.opened[-1:]))
         reveal(rows[photo.id].detail)
         tap(rows[photo.id].detail)
-        report('and so does its status line, which says so',
-               hands.opened[-1:] == [photo.file_path] and 'tap to open' in rows[photo.id].detail.text,
-               rows[photo.id].detail.text)
+        report('and so does its status line',
+               hands.opened[-1:] == [photo.file_path], rows[photo.id].detail.text)
         reveal(rows[video.id].share_button)
         tap(rows[video.id].share_button)
         report('the share button shares that file', hands.shared[-1:] == [[video.file_path]],
@@ -657,7 +668,7 @@ def check_finished(app, report):
 
         tap(app.choose_all_button)
         report('Select all picks every download on show',
-               app.chosen == set(rows) and app.choose_all_button.text == 'Select none',
+               app.chosen == set(rows) and app.choose_all_button.text == 'Deselect',
                f'{len(app.chosen)} of {len(rows)}')
         buttons = [app.choose_all_button, app.share_chosen_button, app.remove_chosen_button]
         report('every button while picking has room for its word',
