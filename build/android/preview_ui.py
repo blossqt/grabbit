@@ -10,6 +10,7 @@ of made-up tasks is enough to see every state at once.
     ... --page video       with the page a pasted link opens (video, audio,
                            gif or image), for a video served from this machine
     ... --dialog remove    with a dialog open (remove, or storage)
+    ... --settings         with the settings page open
     ... --width 360        as narrow as a smaller phone (412 by default)
 """
 
@@ -94,25 +95,39 @@ class SampleSite:
 
 
 class FakeEngine:
-    """Enough of MobileEngine for the interface to draw itself."""
+    """Enough of RemoteEngine for the interface to draw itself."""
 
-    process = None          # the real engine has an aria2 behind this
     site = None             # a SampleSite, when the page is being looked at
+    controls = context = None       # DownloadService, on a phone
 
-    def __init__(self, settings, on_change=None, on_message=None, on_poll=None):
+    def __init__(self, settings, on_change=None, on_message=None, controls=None,
+                 context=None, schedule=None):
         self.settings = settings
         self.store = TaskStore()
-        self.running = True
+        self.running = self.connected = True
+        self.version = '1.37.0'
+        self.held = False
         self.stats = {'download_speed': 4_100_000, 'upload_speed': 620_000}
         self.on_change = on_change or (lambda: None)
         self.on_message = on_message or (lambda level, text: None)
         self._tick = 0
         self.added = []
+        self.expected = []
+        self.settings_sent = 0
         for task in _sample_tasks():
             self.store.add(task)
 
     def start(self):
         return True
+
+    def expect(self, title):
+        self.expected.append(title)
+
+    def set_active(self, active):
+        pass
+
+    def settings_changed(self):
+        self.settings_sent += 1
 
     def analyze_link(self, url, on_done):
         """Magnets and the like are read for real - there is no network in
@@ -164,6 +179,9 @@ class FakeEngine:
     def fetch_status(self, task, keys, callback):
         callback({'bittorrent': {'announceList': [['https://torrent.ubuntu.com/announce'],
                                                   ['https://ipv6.torrent.ubuntu.com/announce']]}})
+
+    def fetch_log(self, task, callback):
+        callback(list(task.log))
 
     def shutdown(self):
         self.running = False
@@ -369,75 +387,6 @@ def check_page(app, report):
         site.close()
 
 
-def check_background(report):
-    """The rules for keeping downloads going off screen, against a stand-in
-    for Android's service: when it starts, what it says, when it stops."""
-    from grabbit_mobile import background
-
-    class Service:
-        running, refuse, calls, attempts = False, False, [], 0
-
-        @classmethod
-        def show(cls, context, title, text, percent):
-            cls.attempts += 1
-            if not cls.running and cls.refuse:
-                raise RuntimeError('not allowed to start service: app is in background')
-            cls.calls.append((title, text, percent))
-            cls.running = True
-
-        @classmethod
-        def hide(cls, context):
-            cls.calls.append('hide')
-            cls.running = False
-
-        @classmethod
-        def isRunning(cls):
-            return cls.running
-
-    now = [100.0]
-    notice = background.Background(Service, object(), clock=lambda: now[0])
-
-    def task(state, total=0, done=0, name='A video'):
-        return Task(kind=KIND_MEDIA, name=name, state=state, total=total, done=done)
-
-    fast = {'download_speed': 2_000_000}
-    notice.follow([task(State.COMPLETED), task(State.PAUSED)], fast)
-    report('with nothing downloading, it stays off', not Service.calls)
-    notice.follow([task(State.DOWNLOADING, 200, 50)], fast)
-    first = Service.calls[-1] if Service.calls else None
-    report('a download starts it, saying how far along it is',
-           first is not None and first[2] == 25 and first[1].startswith('25% · '), str(first))
-    shown = len(Service.calls)
-    notice.follow([task(State.DOWNLOADING, 200, 50)], fast)
-    report('and it says nothing more until something changes', len(Service.calls) == shown)
-    notice.follow([task(State.DOWNLOADING, 200, 150), task(State.QUEUED, name='B')], fast)
-    report('several downloads are counted together', Service.calls[-1][0] == '2 downloads'
-           and Service.calls[-1][2] == 75, str(Service.calls[-1]))
-    notice.follow([task(State.SEEDING)], fast)
-    report('it stops once nothing is left to fetch - seeding waits for the app',
-           Service.calls[-1] == 'hide' and not Service.running)
-
-    notice.expect('A video')
-    started = Service.running
-    now[0] += 5
-    notice.follow([], {})
-    kept = Service.running
-    now[0] += background.HOLD
-    notice.follow([], {})
-    report('a tap starts it at once, and holds it until the download reaches the engine',
-           started and kept and not Service.running)
-
-    Service.refuse, Service.attempts = True, 0
-    for _ in range(5):
-        notice.follow([task(State.DOWNLOADING, 100, 10)], {})
-        now[0] += 1
-    refused = Service.attempts
-    now[0] += background.RETRY
-    notice.follow([task(State.DOWNLOADING, 100, 10)], {})
-    report('when Android refuses it, it asks again later rather than every second',
-           refused == 1 and Service.attempts == 2, f'{refused} then {Service.attempts} attempt(s)')
-
-
 def open_dialog():
     from grabbit_mobile.ui.widgets import Dialog
     return next((child for child in Window.children if isinstance(child, Dialog)), None)
@@ -497,6 +446,54 @@ def check_dialogs(app, report):
     if dialog is not None:
         dialog.dismiss()
         wait_until(lambda: open_dialog() is None, 3)
+
+
+def check_settings(app, report):
+    """The settings page: every setting saved as it is chosen, and the
+    downloader told; Check for updates answering on the page itself."""
+    from kivy.metrics import dp
+    from grabbit import APP_VERSION, updates
+    from grabbit_mobile.ui.widgets import BUTTON_MARGIN
+
+    tap(app.settings_button)
+    page = app.settings_page
+    wait_until(lambda: page is not None and page.parent is Window, 3)
+    report('the gear opens Settings', page is not None and page.parent is Window)
+    if page is None:
+        return
+    settle(4)
+    report('the page keeps clear of the camera, as the main screen does',
+           page.children[0].padding[1] >= dp(10) + app._insets[0])
+
+    sent = app.engine.settings_sent
+    tap(page.at_once.buttons[5])
+    report('a choice is saved at once, and the downloader told',
+           app.settings.android_downloads_at_once == 5 and app.engine.settings_sent == sent + 1
+           and phone.Settings.load().android_downloads_at_once == 5)
+    tap(page.at_once.buttons[3])
+
+    options = [button for row in page.body.children if hasattr(row, 'buttons')
+               for button in row.buttons.values()]
+    report('every choice has room for its whole word', labels_clear(options, room=BUTTON_MARGIN),
+           f'{len(options)} choices')
+
+    tap(page.check_button)
+    wait_until(lambda: page.update_note.text not in ('', 'Checking…'), 3)
+    report('Check for updates answers on the page',
+           page.update_note.text == 'This is the newest version.' and not page.get_slot.children,
+           page.update_note.text)
+    apk = updates.Asset('Grabbit-9.0.0-arm64.apk', 1, '0' * 64, 'https://example.invalid/apk')
+    page.answered(updates.Check(APP_VERSION, updates.Release('9.0.0', 'now', '', None, apk), apk))
+    settle()
+    report('and offers a newer one to get from there',
+           page.get_button.parent is page.get_slot and '9.0.0' in page.get_button.text,
+           page.get_button.text)
+
+    report('with no phone, the battery setting says so rather than offering a button',
+           not page.battery_slot.children, page.battery_note.text[:40])
+    page.dismiss()
+    wait_until(lambda: app.settings_page is None, 3)
+    report('and ‹ closes it', app.settings_page is None)
 
 
 def check(app):
@@ -627,7 +624,7 @@ def check(app):
     app.details.dismiss()
     wait_until(lambda: app.details.parent is None)
     check_dialogs(app, report)
-    check_background(report)
+    check_settings(app, report)
 
     failures = [name for name, ok in results if not ok]
     print()
@@ -704,7 +701,7 @@ def nothing_newer(platform, current=None, timeout=15):
 
 
 def main():
-    phone.MobileEngine = FakeEngine
+    phone.RemoteEngine = FakeEngine
     phone.updates.check = nothing_newer
     app = phone.GrabbitApp()
 
@@ -751,6 +748,10 @@ def main():
                         app.details.show_tab(name)
                     wanted = sys.argv[sys.argv.index('--tab') + 1] if '--tab' in sys.argv else 'General'
                     app.details.show_tab(wanted)
+                    Clock.schedule_once(
+                        lambda _: (Window.screenshot(name=shot), app.stop()), 0.8)
+                elif '--settings' in sys.argv:
+                    app.open_settings()
                     Clock.schedule_once(
                         lambda _: (Window.screenshot(name=shot), app.stop()), 0.8)
                 elif '--dialog' in sys.argv:

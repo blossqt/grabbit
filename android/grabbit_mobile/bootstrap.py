@@ -194,6 +194,59 @@ def ca_bundle() -> str | None:
         return str(local) if local.exists() else None
 
 
+SERVICE_CLASS = 'com/grabbit/downloader/DownloadService'
+
+
+def service_controls():
+    """DownloadService's static methods, as the downloader's process uses
+    them (host.py and background.py) - or None off a phone.
+
+    Declared rather than looked up, because pyjnius reads every method of a
+    class it looks up - hundreds, for a Service - and to be called on the
+    process's main thread: a thread Python starts can find Android's own
+    classes but not the app's.
+    """
+    try:
+        from jnius import JavaClass, JavaStaticMethod, MetaJavaClass
+    except ImportError:
+        return None
+    try:
+        class DownloadService(JavaClass, metaclass=MetaJavaClass):
+            __javaclass__ = SERVICE_CLASS
+            show = JavaStaticMethod('(Ljava/lang/String;Ljava/lang/String;IZ)Z')
+            hide = JavaStaticMethod('()Z')
+            isForeground = JavaStaticMethod('()Z')
+            finish = JavaStaticMethod('()V')
+            online = JavaStaticMethod('()Z')
+            unmetered = JavaStaticMethod('()Z')
+        return DownloadService
+    except Exception:
+        log.exception('this build has no download service')
+        return None
+
+
+def window_controls():
+    """DownloadService's static methods as the window uses them, and the
+    context they take - (None, None) off a phone. The main thread only, for
+    the reason above."""
+    try:
+        from jnius import JavaClass, JavaStaticMethod, MetaJavaClass
+    except ImportError:
+        return None, None
+    try:
+        class DownloadService(JavaClass, metaclass=MetaJavaClass):
+            __javaclass__ = SERVICE_CLASS
+            begin = JavaStaticMethod('(Landroid/content/Context;)V')
+            expect = JavaStaticMethod('(Landroid/content/Context;Ljava/lang/String;)V')
+            unrestricted = JavaStaticMethod('(Landroid/content/Context;)Z')
+            askForUnrestricted = JavaStaticMethod('(Landroid/content/Context;)Z')
+        from jnius import autoclass
+        return DownloadService, autoclass('org.kivy.android.PythonActivity').mActivity
+    except Exception:
+        log.exception('this build has no download service')
+        return None, None
+
+
 def has_all_files_access() -> bool | None:
     """Whether Android will let us write outside our own folder.
 
@@ -224,6 +277,60 @@ def open_all_files_settings() -> bool:
     except Exception:
         log.exception('could not open the storage settings screen')
         return False
+
+
+# Tells the folder picker's answer apart from anything else the activity hears.
+CHOOSE_FOLDER = 0x6ab1
+
+
+def choose_folder(on_chosen) -> bool:
+    """Android's own folder picker. on_chosen gets the folder's path, or None
+    if the picker was closed - on Android's thread, not the window's.
+
+    The picker answers with a document address rather than a path, and aria2
+    and yt-dlp need a path: for a folder on the phone's own storage or on an
+    SD card the address says which, and that is all it offers. False where
+    no picker can be shown.
+    """
+    try:
+        from android import activity as android_activity
+        from jnius import autoclass
+        Intent = autoclass('android.content.Intent')
+        activity = autoclass('org.kivy.android.PythonActivity').mActivity
+    except Exception:
+        return False
+
+    def answered(request, result, data):
+        if request != CHOOSE_FOLDER:
+            return
+        android_activity.unbind(on_activity_result=answered)
+        path = None
+        try:
+            if result == -1 and data is not None and data.getData() is not None:  # RESULT_OK
+                path = folder_path(autoclass('android.provider.DocumentsContract')
+                                   .getTreeDocumentId(data.getData()))
+        except Exception:
+            log.exception('could not read the folder that was chosen')
+        on_chosen(path)
+
+    try:
+        android_activity.bind(on_activity_result=answered)
+        activity.startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), CHOOSE_FOLDER)
+        return True
+    except Exception:
+        android_activity.unbind(on_activity_result=answered)
+        log.exception('could not open the folder picker')
+        return False
+
+
+def folder_path(document_id: str) -> str | None:
+    """'primary:Download/Films' -> /storage/emulated/0/Download/Films;
+    '1A2B-3C4D:Films' -> /storage/1A2B-3C4D/Films."""
+    volume, _, inside = (document_id or '').partition(':')
+    if not volume:
+        return None
+    root = '/storage/emulated/0' if volume == 'primary' else f'/storage/{volume}'
+    return f'{root}/{inside}'.rstrip('/') if inside else root
 
 
 def open_url(url: str) -> bool:

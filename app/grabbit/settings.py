@@ -116,6 +116,12 @@ class Settings:
     # Advanced
     aria2_extra_options: str = ''
 
+    # The phone's own (android/): what its Settings screen sets that the
+    # desktop says its own way, above. The desktop never reads these.
+    android_download_dir: str = ''       # '' is Download/Grabbit
+    android_downloads_at_once: int = 3
+    wifi_only: bool = False
+
     @property
     def path(self) -> Path:
         return data_dir() / 'settings.json'

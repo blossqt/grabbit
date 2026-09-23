@@ -85,6 +85,23 @@ def downloads_dir() -> Path:
     return path
 
 
+def chosen_downloads_dir(folder: str = '') -> Path:
+    """The folder chosen in Settings, while Grabbit can write to it - which
+    anywhere outside its own folders takes Android's all-files permission -
+    and downloads_dir() when none was chosen or it cannot."""
+    if folder:
+        path = Path(folder)
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            probe = path / '.grabbit-writable'
+            probe.touch()
+            probe.unlink()
+            return path
+        except OSError:
+            pass
+    return downloads_dir()
+
+
 # Filled in by bootstrap.unpack_tools() once the real locations are known.
 TOOL_PATHS: dict = {}
 

@@ -32,6 +32,31 @@ POLL_KEYS = ['gid', 'status', 'totalLength', 'completedLength', 'uploadLength',
              'downloadSpeed', 'uploadSpeed', 'connections', 'numSeeders', 'seeder',
              'errorCode', 'errorMessage', 'infoHash']
 
+# A video that fails for want of a network is tried again by itself, waiting
+# longer each time - 10 seconds, then 20, 40... up to five minutes - for about
+# forty minutes in all, not counting any time with no network at all, which
+# is simply waited out. A failure after real progress starts the count again.
+RETRY_NETWORK = 12
+FIRST_WAIT = 10.0
+LONGEST_WAIT = 300.0
+# What a network failure says, one way or another.
+NETWORK_SIGNS = ('timed out', 'timeout', 'connection', 'network', 'unreachable',
+                 'resolve', 'name or service', 'getaddrinfo', 'temporary failure',
+                 'reset by peer', 'broken pipe', 'remote end closed', 'incomplete',
+                 'ssl', 'eof occurred', 'http error 5', 'errno 7', 'errno 101',
+                 'errno 104', 'errno 110', 'errno 111', 'errno 113',
+                 'aria2 could not download', 'unable to download')
+# YouTube, among others, sometimes refuses a video's address soon after giving
+# it out. Reading the page again gets a new one, which usually works; twice
+# refused with fresh addresses means it.
+REFUSED_SIGNS = ('403', 'forbidden')
+RETRY_REFUSED = 2
+
+# What a download says while Wi-Fi only holds it back (hold).
+WIFI_NOTE = 'Waiting for Wi-Fi'
+# What held downloads may be doing; anything else is left to finish or stay.
+HOLDABLE = (State.QUEUED, State.METADATA, State.EXTRACTING, State.DOWNLOADING, State.SEEDING)
+
 
 class MobileEngine:
     """Runs aria2, keeps the task list, and reports changes through callbacks."""
@@ -51,12 +76,20 @@ class MobileEngine:
         self.client = None
         self.running = False
         self.stats = {}
+        # Asked whether there is a network at all, before a failed video's
+        # retries are spent waiting for one. The service answers from Android.
+        self.online = lambda: True
+        # Wi-Fi only, off Wi-Fi: everything that would be moving waits (hold).
+        self.held = False
 
+        self._exe = ''
         self._poller: threading.Thread | None = None
         self._lock = threading.RLock()
         self._media_jobs: dict = {}
         self._media_queue: list = []
         self._media_gids: dict = {}
+        self._held: set = set()             # what hold() stopped, to start again
+        self._retry_at: dict = {}           # task id -> when a failed video goes again
 
     # ------------------------------------------------------------------ start
     def start(self) -> bool:
@@ -74,6 +107,7 @@ class MobileEngine:
                 self.on_message('error', f'aria2 cannot be run: {exc}')
                 return False
 
+        self._exe = exe
         try:
             self.process = Aria2Process(exe, self._aria2_options(), paths.logs_dir() / 'aria2.log')
             self.client = self.process.start()
@@ -87,21 +121,43 @@ class MobileEngine:
         self._poller.start()
         return True
 
+    def download_dir(self) -> str:
+        """Where new downloads go: the folder chosen in Settings, if Grabbit
+        can write there, and Download/Grabbit otherwise."""
+        return str(paths.chosen_downloads_dir(getattr(self.settings, 'android_download_dir', '')))
+
+    def at_once(self) -> int:
+        """How many downloads run together; the rest wait their turn."""
+        return max(1, min(10, int(getattr(self.settings, 'android_downloads_at_once', 3) or 3)))
+
+    def _seeding_options(self) -> dict:
+        settings = self.settings
+        options = {'seed-ratio': str(max(0.0, float(getattr(settings, 'seed_ratio', 1.0))))}
+        if not getattr(settings, 'seed_after_download', True):
+            options['seed-time'] = '0'
+        elif getattr(settings, 'seed_time_minutes', 0) > 0:
+            options['seed-time'] = str(settings.seed_time_minutes)
+        return options
+
     def _aria2_options(self) -> dict:
         settings = self.settings
         port = str(getattr(settings, 'bt_port', 51413))
         options = {
-            'dir': str(paths.downloads_dir()),
+            'dir': self.download_dir(),
             'continue': 'true',
-            'max-concurrent-downloads': str(max(1, getattr(settings, 'max_active_downloads', 3))),
+            'max-concurrent-downloads': str(self.at_once()),
             'max-connection-per-server': str(max(1, min(16, getattr(settings, 'connections_per_server', 8)))),
             'split': '8',
             'min-split-size': '1M',
             'file-allocation': 'none',
             'disk-cache': '16M',            # phones have less memory to spare
             'auto-save-interval': '15',
-            'max-tries': '5',
-            'retry-wait': '5',
+            # A phone loses its connection - in a lift, between Wi-Fi and mobile
+            # data - and a download should wait that out rather than fail: aria2
+            # tries again every ten seconds for as long as it takes. A missing
+            # file still fails at once; that is not something waiting fixes.
+            'max-tries': '0',
+            'retry-wait': '10',
             'connect-timeout': '30',
             'timeout': '60',
             'allow-overwrite': 'false',
@@ -119,9 +175,9 @@ class MobileEngine:
             'dht-file-path': str(paths.data_dir() / 'dht.dat'),
             'listen-port': port,
             'dht-listen-port': port,
-            'seed-ratio': '1.0',
             'max-download-result': '500',
         }
+        options.update(self._seeding_options())
         # Android exposes no CA bundle that an OpenSSL build finds by itself,
         # so point aria2 at the one yt-dlp already ships.
         from .bootstrap import ca_bundle
@@ -144,7 +200,10 @@ class MobileEngine:
                 elif task.kind in (KIND_HTTP, KIND_IMAGE):
                     self._add_uri(task, paused=task.state == State.PAUSED)
                 elif task.kind == KIND_TORRENT and task.torrent_file and os.path.exists(task.torrent_file):
-                    self._add_torrent(task, paused=task.state == State.PAUSED)
+                    if task.state == State.SEEDING and self._seeded_enough(task):
+                        continue
+                    self._add_torrent(task, paused=task.state == State.PAUSED,
+                                      seed_only=task.state == State.SEEDING)
                 elif task.kind == KIND_MAGNET:
                     if task.torrent_file and os.path.exists(task.torrent_file):
                         task.state = State.PAUSED
@@ -153,6 +212,69 @@ class MobileEngine:
             except Aria2Error as exc:
                 task.state, task.error = State.ERROR, str(exc)
         self.store.mark_dirty()
+
+    def _seeded_enough(self, task: Task) -> bool:
+        """A torrent that was seeding when Grabbit last stopped, and has since
+        given back all it was meant to: finished, rather than seeded again."""
+        ratio = float(getattr(self.settings, 'seed_ratio', 1.0) or 0)
+        done = (not getattr(self.settings, 'seed_after_download', True)
+                or (ratio > 0 and task.total and task.uploaded >= ratio * task.total))
+        if done:
+            task.state = State.COMPLETED
+            task.up_speed = 0
+            task.completed_at = task.completed_at or time.time()
+        return bool(done)
+
+    def ensure_running(self) -> bool:
+        """Start aria2 again if it has stopped by itself - a crash, or Android
+        ending it - and hand it back every download it had. True while it runs."""
+        if not self.running or self.process is None:
+            return False
+        if self.process.is_running():
+            return True
+        log.warning('aria2 stopped by itself; starting it again')
+        with self._lock:
+            try:
+                self.process = Aria2Process(self._exe, self._aria2_options(),
+                                            paths.logs_dir() / 'aria2.log')
+                self.client = self.process.start()
+            except Aria2Error as exc:
+                self.on_message('error', f'The download engine stopped and would not start again: {exc}')
+                return False
+            self._media_gids.clear()
+            for task in self.store:
+                if task.kind != KIND_MEDIA:
+                    task.gid = ''
+            self._restore()
+        self.on_message('info', 'The download engine stopped by itself, and has been started again')
+        return True
+
+    def apply_settings(self, settings) -> None:
+        """Settings changed in the window: take them up without a restart."""
+        self.settings = settings
+        if self.client is not None:
+            seeding = self._seeding_options()
+            # "No limit" cannot be put back once a limit is set, so it is a
+            # limit no one will reach.
+            seed_time = seeding.get('seed-time', '1000000')
+            try:
+                self.client.call('aria2.changeGlobalOption', {
+                    'max-concurrent-downloads': str(self.at_once()),
+                    'dir': self.download_dir(),
+                    'seed-ratio': seeding['seed-ratio'],
+                    'seed-time': seed_time,
+                })
+            except Aria2Error as exc:
+                log.warning('could not apply the settings to aria2: %s', exc)
+            for task in self.store:
+                if task.is_torrent and task.gid and task.state == State.SEEDING:
+                    try:
+                        self.client.call('aria2.changeOption', task.gid, {
+                            'seed-ratio': seeding['seed-ratio'], 'seed-time': seed_time})
+                    except Aria2Error:
+                        pass
+        self._pump_media()
+        self.on_change()
 
     # ----------------------------------------------------------------- adding
     def analyze_link(self, url: str, on_done) -> None:
@@ -227,7 +349,7 @@ class MobileEngine:
 
     def add_file(self, url, name='', headers=None, mirrors=None, checksum='',
                  kind=KIND_HTTP, thumbnail='') -> Task:
-        task = Task(kind=kind, source=url, save_dir=str(paths.downloads_dir()),
+        task = Task(kind=kind, source=url, save_dir=self.download_dir(),
                     headers=list(headers or []), thumbnail=thumbnail,
                     mirrors=[m for m in (mirrors or []) if m and m != url], checksum=checksum)
         task.name = safe_filename(name) if name else (url.rsplit('/', 1)[-1] or 'download')
@@ -249,7 +371,7 @@ class MobileEngine:
         one frame of it, the moment and the picture type (grabbit.frames)."""
         choice = choice or {}
         task = Task(kind=KIND_MEDIA, source=item.url or probe.url,
-                    save_dir=str(paths.downloads_dir()),
+                    save_dir=self.download_dir(),
                     name=item.title or probe.title, site=probe.site,
                     thumbnail=item.thumbnail or probe.thumbnail)
         task.media = {
@@ -282,7 +404,7 @@ class MobileEngine:
         if self.store.by_info_hash(info['info_hash']):
             self.on_message('warning', 'That torrent is already in the list')
             return None
-        task = Task(kind=KIND_MAGNET, source=magnet, save_dir=str(paths.downloads_dir()),
+        task = Task(kind=KIND_MAGNET, source=magnet, save_dir=self.download_dir(),
                     name=info.get('name') or f'Magnet {info["info_hash"][:8]}',
                     info_hash=info['info_hash'], state=State.METADATA)
         cached = paths.torrents_dir() / f'{info["info_hash"].lower()}.torrent'
@@ -307,7 +429,7 @@ class MobileEngine:
         path = paths.torrents_dir() / f'{meta.info_hash}.torrent'
         path.write_bytes(data)
         task = Task(kind=KIND_TORRENT, source=source or f'magnet:?xt=urn:btih:{meta.info_hash}',
-                    name=meta.name, save_dir=str(paths.downloads_dir()),
+                    name=meta.name, save_dir=self.download_dir(),
                     info_hash=meta.info_hash, torrent_file=str(path), total=meta.total_size)
         if selected is not None:
             task.select_files = select_file_spec(selected, len(meta.files))
@@ -335,7 +457,18 @@ class MobileEngine:
         gid = ''.join(c for c in task.id.lower() if c in '0123456789abcdef')
         return (gid + '0' * 16)[:16]
 
+    def _hold_new(self, task: Task, paused: bool) -> bool:
+        """Whether a download about to be handed to aria2 goes in paused: as
+        asked, or held back by Wi-Fi only."""
+        if self.held and not paused:
+            self._held.add(task.id)
+            task.state = State.QUEUED
+            task.progress_note = WIFI_NOTE
+            return True
+        return paused
+
     def _add_uri(self, task: Task, paused: bool = False):
+        paused = self._hold_new(task, paused)
         options = {'dir': task.save_dir, 'gid': self._gid(task), 'continue': 'true'}
         if task.out:
             options['out'] = './' + task.out
@@ -352,6 +485,7 @@ class MobileEngine:
             task.state, task.error = State.ERROR, str(exc)
 
     def _add_magnet(self, task: Task, paused: bool = False):
+        paused = self._hold_new(task, paused)
         options = {
             'dir': str(paths.torrents_dir()), 'gid': self._gid(task),
             'bt-metadata-only': 'true', 'bt-save-metadata': 'true',
@@ -364,18 +498,31 @@ class MobileEngine:
         except Aria2Error as exc:
             task.state, task.error = State.ERROR, str(exc)
 
-    def _add_torrent(self, task: Task, paused: bool = False):
+    def _add_torrent(self, task: Task, paused: bool = False, seed_only: bool = False):
         import base64
         try:
             data = open(task.torrent_file, 'rb').read()
         except OSError as exc:
             task.state, task.error = State.ERROR, f'torrent file missing: {exc}'
             return
+        paused = self._hold_new(task, paused)
         options = {'dir': task.save_dir, 'gid': self._gid(task), 'continue': 'true'}
         if task.select_files:
             options['select-file'] = task.select_files
         if paused:
             options['pause'] = 'true'
+        if seed_only:
+            # Seeding again after a restart. What is on disk was checked as it
+            # arrived, and checking every piece again would keep a phone busy
+            # for minutes on a large torrent. aria2 counts its upload from
+            # nothing each time, so what went before is carried over, and the
+            # ratio still to reach is what it is asked for.
+            options['bt-seed-unverified'] = 'true'
+            task.uploaded_base = task.uploaded
+            ratio = float(getattr(self.settings, 'seed_ratio', 1.0) or 0)
+            if ratio > 0 and task.total:
+                left = ratio - task.uploaded / task.total
+                options['seed-ratio'] = f'{max(0.01, left):.3f}'
         try:
             task.gid = self.client.call('aria2.addTorrent',
                                         base64.b64encode(data).decode('ascii'), [], options)
@@ -385,12 +532,17 @@ class MobileEngine:
 
     # ---------------------------------------------------------- media jobs
     def _queue_media(self, task: Task):
+        if self.held:
+            self._held.add(task.id)
+            task.state = State.QUEUED
+            task.progress_note = WIFI_NOTE
+            return
         if task.id not in self._media_queue and task.id not in self._media_jobs:
             self._media_queue.append(task.id)
         self._pump_media()
 
     def _pump_media(self):
-        limit = max(1, getattr(self.settings, 'max_media_jobs', 2))
+        limit = self.at_once()
         while self._media_queue and len(self._media_jobs) < limit:
             task_id = self._media_queue.pop(0)
             task = self.store.get(task_id)
@@ -398,7 +550,11 @@ class MobileEngine:
                 continue
             # Here rather than at the top: it brings yt-dlp, which the app is
             # quicker to open without (main.py loads it just after).
+            from grabbit import media
             from grabbit.media import MediaJob
+            # A refusal's advice points at the desktop's options, which have no
+            # counterpart here.
+            media.REFUSED_HINT = ''
             job = MediaJob(task, self.settings, {
                 'emit': self._on_media_event,
                 'aria2_add': self._media_add,
@@ -407,6 +563,7 @@ class MobileEngine:
             })
             self._media_jobs[task_id] = job
             task.state = State.EXTRACTING
+            task.progress_note = ''
             job.start()
         self.on_change()
 
@@ -464,13 +621,26 @@ class MobileEngine:
             task.progress_note = ''       # "Merging…" and the like are over
             self._finish_media(task_id)
         elif event == 'error':
-            task.state = State.ERROR
-            task.error = payload.get('message', 'download failed')
+            message = payload.get('message', 'download failed')
             task.down_speed = 0
+            wait = self._retry_wait(task, message)
+            if wait is None:
+                task.state = State.ERROR
+                task.error = message
+            else:
+                task.state = State.QUEUED
+                task.error = ''
+                task.progress_note = f'Trying again in {int(wait)} s'
+                task.add_log(f'{message} - trying again in {int(wait)} s')
+                self._retry_at[task_id] = time.monotonic() + wait
             self._finish_media(task_id)
         elif event in ('paused', 'cancelled'):
             if event == 'paused':
-                task.state = State.PAUSED
+                if task_id in self._held:
+                    task.state = State.QUEUED           # Wi-Fi only, not the person
+                    task.progress_note = WIFI_NOTE
+                else:
+                    task.state = State.PAUSED
             self._finish_media(task_id)
         self.store.mark_dirty()
         self.on_change()
@@ -479,6 +649,107 @@ class MobileEngine:
         self._media_jobs.pop(task_id, None)
         self._media_gids = {g: t for g, t in self._media_gids.items() if t != task_id}
         self._pump_media()
+
+    def _retry_wait(self, task: Task, message: str) -> float | None:
+        """Seconds until a failed video is tried again, or None to leave it failed."""
+        lowered = message.lower()
+        media = task.media
+        if task.done > media.get('retry_done', -1) + 1_000_000:
+            media['retries'] = 0
+        media['retry_done'] = task.done
+        tries = int(media.get('retries') or 0)
+        if any(sign in lowered for sign in REFUSED_SIGNS):
+            if tries >= RETRY_REFUSED:
+                return None
+            wait = 5.0
+        elif any(sign in lowered for sign in NETWORK_SIGNS) or not self.online():
+            if tries >= RETRY_NETWORK:
+                return None
+            wait = min(LONGEST_WAIT, FIRST_WAIT * 2 ** tries)
+        else:
+            return None
+        media['retries'] = tries + 1
+        return wait
+
+    def _retry_due(self):
+        """Put failed videos back in the queue once their wait is over - or,
+        with no network at all, as soon as there is one again."""
+        if not self._retry_at:
+            return
+        now = time.monotonic()
+        online = None
+        for task_id, when in list(self._retry_at.items()):
+            task = self.store.get(task_id)
+            if task is None or task.state != State.QUEUED or self.held:
+                # Removed, paused or started by hand meanwhile - or held for
+                # Wi-Fi, which starts it again by itself.
+                self._retry_at.pop(task_id, None)
+                continue
+            if online is None:
+                online = self.online()
+            if not online:
+                task.progress_note = 'Waiting for a connection'
+            elif now >= when:
+                self._retry_at.pop(task_id, None)
+                task.progress_note = ''
+                self._queue_media(task)
+            else:
+                task.progress_note = f'Trying again in {int(when - now) + 1} s'
+
+    # ------------------------------------------------------------ Wi-Fi only
+    def hold(self, held: bool) -> None:
+        """Wi-Fi only, away from Wi-Fi: everything that would be moving waits,
+        and starts again by itself once it may. What the person paused stays
+        paused, and nothing they did not pause stays stopped."""
+        with self._lock:
+            if held == self.held:
+                return
+            self.held = held
+            if held:
+                for task in self.store:
+                    if task.state in HOLDABLE:
+                        self._hold_task(task)
+            else:
+                for task_id in list(self._held):
+                    self._held.discard(task_id)
+                    task = self.store.get(task_id)
+                    if task is not None:
+                        self._release_task(task)
+        self.store.mark_dirty()
+        self.on_change()
+
+    def _hold_task(self, task: Task):
+        self._held.add(task.id)
+        if task.kind == KIND_MEDIA:
+            job = self._media_jobs.get(task.id)
+            if job:
+                job.pause()
+            if task.id in self._media_queue:
+                self._media_queue.remove(task.id)
+            self._retry_at.pop(task.id, None)
+        elif task.gid:
+            try:
+                self.client.call('aria2.forcePause', task.gid)
+            except Aria2Error:
+                pass
+        task.state = State.QUEUED
+        task.down_speed = task.up_speed = 0
+        task.progress_note = WIFI_NOTE
+
+    def _release_task(self, task: Task):
+        task.progress_note = ''
+        if task.kind == KIND_MEDIA:
+            job = self._media_jobs.get(task.id)
+            if job:
+                job.resume()
+            else:
+                task.state = State.QUEUED
+                self._queue_media(task)
+        elif task.gid:
+            try:
+                self.client.call('aria2.unpause', task.gid)
+            except Aria2Error:
+                pass
 
     # -------------------------------------------------------------- polling
     def _poll_loop(self):
@@ -489,6 +760,10 @@ class MobileEngine:
                 log.debug('poll failed: %s', exc)
             except Exception:
                 log.exception('poll loop error')
+            try:
+                self._retry_due()
+            except Exception:
+                log.exception('retrying failed downloads went wrong')
             try:
                 self.on_poll(list(self.store), dict(self.stats))
             except Exception:
@@ -548,7 +823,11 @@ class MobileEngine:
         elif state == 'waiting':
             task.state = State.QUEUED
         elif state == 'paused':
-            task.state = State.PAUSED
+            if task.id in self._held:
+                task.state = State.QUEUED           # Wi-Fi only, not the person
+                task.progress_note = WIFI_NOTE
+            else:
+                task.state = State.PAUSED
         elif state == 'error':
             task.state = State.ERROR
             task.error = status.get('errorMessage') or 'download failed'
@@ -593,6 +872,9 @@ class MobileEngine:
             task = self.store.get(task_id)
             if not task or task.state in (State.PAUSED, State.COMPLETED):
                 continue
+            self._retry_at.pop(task_id, None)
+            self._held.discard(task_id)
+            task.progress_note = ''
             if task.kind == KIND_MEDIA:
                 job = self._media_jobs.get(task_id)
                 if job:
@@ -612,6 +894,14 @@ class MobileEngine:
             if not task or task.state not in (State.PAUSED, State.ERROR):
                 continue
             task.error = ''
+            if task.kind == KIND_MEDIA:
+                task.media['retries'] = 0          # a fresh start, by hand
+            if self.held:
+                # Started by hand, off Wi-Fi: it goes with the rest once it may.
+                self._held.add(task_id)
+                task.state = State.QUEUED
+                task.progress_note = WIFI_NOTE
+                continue
             if task.kind == KIND_MEDIA:
                 job = self._media_jobs.get(task_id)
                 if job:
@@ -660,6 +950,8 @@ class MobileEngine:
                 job.cancel()
             if task_id in self._media_queue:
                 self._media_queue.remove(task_id)
+            self._retry_at.pop(task_id, None)
+            self._held.discard(task_id)
             # Ask what is on disk while the download still exists to be asked.
             doomed = task_paths(task, self.client) if delete_files else []
             if task.gid:
@@ -711,6 +1003,11 @@ class MobileEngine:
             callback({})
             return
         self._query('aria2.tellStatus', task.gid, keys, default={}, callback=callback)
+
+    def fetch_log(self, task: Task, callback):
+        """What the Log tab shows. Here it is on the task; the window asks the
+        downloader for it (remote.py)."""
+        callback(list(task.log[-200:]))
 
     def shutdown(self):
         self.running = False

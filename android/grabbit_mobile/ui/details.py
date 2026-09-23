@@ -175,7 +175,7 @@ class DetailsSheet(ModalView):
 
         def show(files):
             def paint(_):
-                if self.engine.store.get(self.task_id) is not task:
+                if self.engine.store.get(self.task_id) is not task or self.tab != 'Files':
                     return
                 self.rows.clear_widgets()
                 self.rows.columns(['File', 'Size', 'Done', ''], widths, header=True)
@@ -211,7 +211,7 @@ class DetailsSheet(ModalView):
 
         def show(peers):
             def paint(_):
-                if self.engine.store.get(self.task_id) is not task:
+                if self.engine.store.get(self.task_id) is not task or self.tab != 'Peers':
                     return
                 self.rows.clear_widgets()
                 self.rows.columns(['Address', 'Client', 'Done', 'Down', 'Up'],
@@ -238,7 +238,7 @@ class DetailsSheet(ModalView):
 
         def show(status):
             def paint(_):
-                if self.engine.store.get(self.task_id) is not task:
+                if self.engine.store.get(self.task_id) is not task or self.tab != 'Trackers':
                     return
                 self.rows.clear_widgets()
                 announce = (status.get('bittorrent') or {}).get('announceList') or []
@@ -252,9 +252,18 @@ class DetailsSheet(ModalView):
         self.engine.fetch_status(task, ['bittorrent'], show)
 
     def _show_log(self, task):
-        entries = task.log[-200:]
-        if not entries and task.kind != KIND_MEDIA:
-            self.rows.line('No messages for this download.', theme.DIM)
-            return
-        for entry in entries:
-            self.rows.line(entry, size=11)
+        # Asked for, like the file list: the downloader keeps it, in its own
+        # process.
+        def show(entries):
+            def paint(_):
+                if self.engine.store.get(self.task_id) is not task or self.tab != 'Log':
+                    return
+                self.rows.clear_widgets()
+                if not entries and task.kind != KIND_MEDIA:
+                    self.rows.line('No messages for this download.', theme.DIM)
+                    return
+                for entry in entries:
+                    self.rows.line(entry, size=11)
+            Clock.schedule_once(paint, 0)
+
+        self.engine.fetch_log(task, show)

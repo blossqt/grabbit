@@ -88,6 +88,7 @@ say 'assembling the Python side'
 rm -rf "$APPDIR"
 mkdir -p "$APPDIR/shared"
 cp "$ROOT/android/main.py" "$APPDIR/main.py"
+cp "$ROOT/android/service.py" "$APPDIR/service.py"
 cp -r "$ROOT/android/grabbit_mobile" "$APPDIR/grabbit_mobile"
 cp -r "$ROOT/app/grabbit" "$APPDIR/shared/grabbit"
 # The desktop front-end has no place on a phone: it is Qt, and nothing here
@@ -157,14 +158,16 @@ rm -rf "$STORAGE/build/venv"
 
 mkdir -p "$OUTDIR"
 cd "$OUTDIR"
-# DownloadService (java/) keeps downloads going while the app is off screen. It
-# is a foreground service in the app's own process, which p4a declares only by
-# name (--native-service) - and Android 14 and later refuse a foreground
-# service whose manifest entry has no foregroundServiceType. p4a writes the
-# name into android:name="..." as it is, so the attributes ride in on it; the
-# check at the end confirms they landed. It replaces --wakelock, which kept the
-# screen on at full brightness while the app was open and did nothing once it
-# was not.
+# The downloads run in a process of their own, so that closing the window -
+# swiping Grabbit away included - leaves them running: --service makes
+# ServiceEngine, a Python interpreter in the ":service_engine" process running
+# service.py, out of DownloadService (java/, --service-class-name), which keeps
+# it in the foreground while anything downloads or seeds. Sticky, so that
+# removing the app's task does not stop it. specialUse, because dataSync - the
+# obvious type - gets six hours a day from Android 15 on, and Android 14 and
+# later refuse a foreground service declared without a type at all; the check
+# at the end confirms it landed. It replaced --wakelock, which kept the screen
+# on at full brightness while the app was open and did nothing once it was not.
 #
 # --display-cutout=shortEdges lets the app draw beside the camera cutout at all
 # times. Without it Android may stop doing so whenever the system bars change -
@@ -193,7 +196,8 @@ p4a apk \
   --activity-launch-mode=singleTask \
   --intent-filters="$HERE/intent_filters.xml" \
   --add-source="$HERE/java" \
-  --native-service='com.grabbit.downloader.DownloadService" android:exported="false" android:foregroundServiceType="dataSync' \
+  --service=engine:service.py:sticky:foregroundServiceType=specialUse \
+  --service-class-name=com.grabbit.downloader.DownloadService \
   --icon="$HERE/icon.png" \
   --presplash="$HERE/presplash.png" \
   --presplash-color='#17171c' \
@@ -205,8 +209,9 @@ p4a apk \
   --permission=android.permission.MANAGE_EXTERNAL_STORAGE \
   --permission=android.permission.POST_NOTIFICATIONS \
   --permission=android.permission.FOREGROUND_SERVICE \
-  --permission=android.permission.FOREGROUND_SERVICE_DATA_SYNC \
+  --permission=android.permission.FOREGROUND_SERVICE_SPECIAL_USE \
   --permission=android.permission.WAKE_LOCK \
+  --permission=android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS \
   --permission=android.permission.REQUEST_INSTALL_PACKAGES
 
 say 'result'
@@ -223,20 +228,28 @@ for lib in libaria2c.so libffmpeg.so libffprobe.so libquickjs.so; do
   echo "   $lib"
 done
 
-# The same for the background service - compiled in, and declared with the
-# type Android 14 insists on (see --native-service above) - and for gallery-dl.
-# grep -c rather than -q: -q stops reading at the first match, and under
-# pipefail the writer's broken pipe would fail the check it just passed.
+# The same for the downloader's service - compiled in, and declared in a process
+# of its own with the type Android 14 insists on (see --service above) - and for
+# gallery-dl. grep -c rather than -q: -q stops reading at the first match, and
+# under pipefail the writer's broken pipe would fail the check it just passed.
 TOOLS="$ANDROID_ROOT/build-tools/35.0.0"
-"$TOOLS/dexdump" "$APK" 2>/dev/null | grep -c 'Lcom/grabbit/downloader/DownloadService;' > /dev/null \
-  || { echo "error: DownloadService is not compiled into the APK" >&2; exit 1; }
-"$TOOLS/aapt2" dump xmltree --file AndroidManifest.xml "$APK" \
-  | grep -A4 'com.grabbit.downloader.DownloadService' | grep -c 'foregroundServiceType' > /dev/null \
-  || { echo "error: the manifest does not declare DownloadService as a data-sync service" >&2; exit 1; }
-echo "   DownloadService"
+for class in DownloadService ServiceEngine; do
+  "$TOOLS/dexdump" "$APK" 2>/dev/null | grep -c "Lcom/grabbit/downloader/$class;" > /dev/null \
+    || { echo "error: $class is not compiled into the APK" >&2; exit 1; }
+done
+MANIFEST="$("$TOOLS/aapt2" dump xmltree --file AndroidManifest.xml "$APK")"
+echo "$MANIFEST" | grep -A6 'com.grabbit.downloader.ServiceEngine' | grep -c 'foregroundServiceType' > /dev/null \
+  || { echo "error: the manifest does not give ServiceEngine a foreground type" >&2; exit 1; }
+echo "$MANIFEST" | grep -A6 'com.grabbit.downloader.ServiceEngine' | grep -c ':service_engine' > /dev/null \
+  || { echo "error: the manifest does not give ServiceEngine a process of its own" >&2; exit 1; }
+echo "   ServiceEngine, in a process of its own"
 PRIVATE="$(mktemp)"
 unzip -p "$APK" assets/private.tar > "$PRIVATE"
-tar -tf "$PRIVATE" | grep -c 'gallery-dl/gallery_dl/__main__' > /dev/null \
-  || { echo "error: gallery-dl is missing from the APK" >&2; exit 1; }
+LISTING="$(tar -tf "$PRIVATE")"
 rm -f "$PRIVATE"
+echo "$LISTING" | grep -c 'service.pyc*$' > /dev/null \
+  || { echo "error: service.py is missing from the APK" >&2; exit 1; }
+echo "   service.py"
+echo "$LISTING" | grep -c 'gallery-dl/gallery_dl/__main__' > /dev/null \
+  || { echo "error: gallery-dl is missing from the APK" >&2; exit 1; }
 echo "   gallery-dl"

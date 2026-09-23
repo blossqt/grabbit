@@ -44,8 +44,7 @@ from grabbit.tasks import (KIND_IMAGE, KIND_MEDIA, RUNNING_STATES,  # noqa: E402
                            State)
 from grabbit.util import human_speed                        # noqa: E402
 from grabbit_mobile import paths                            # noqa: E402
-from grabbit_mobile.background import Background           # noqa: E402
-from grabbit_mobile.engine import MobileEngine              # noqa: E402
+from grabbit_mobile.remote import RemoteEngine              # noqa: E402
 from grabbit_mobile.ui import theme                         # noqa: E402
 from grabbit_mobile.ui.choose import ChoosePage             # noqa: E402
 from grabbit_mobile.ui.details import DetailsSheet          # noqa: E402
@@ -162,16 +161,14 @@ class GrabbitApp(App):
         theme.use_symbol_font()
         Window.clearcolor = theme.WINDOW
         self.settings = Settings.load()
-        self.settings.download_dir = str(paths.downloads_dir())
-        self.settings.max_media_jobs = 2
-        # Keeps downloads going with the app off screen (background.py).
-        self.background = Background()
-        self.engine = MobileEngine(self.settings,
+        # The downloads run in a process of their own, which outlives this
+        # window - closing it, swiping Grabbit away, leaves them running
+        # (grabbit_mobile/host.py). This asks it for everything (remote.py).
+        self.engine = RemoteEngine(self.settings,
                                    on_change=self._schedule_refresh,
                                    on_message=self._schedule_message,
-                                   on_poll=self.background.follow)
+                                   schedule=lambda fn: Clock.schedule_once(lambda *_: fn(), 0))
         self._rows = {}
-        self._pending = []          # choices made before aria2 was up
         self._insets = (0, 0)
         self.page = None            # the one asking what to make of a link
         self.selected_id = ''
@@ -233,6 +230,7 @@ class GrabbitApp(App):
         root.add_widget(self.footer)
 
         self.details = None         # made the first time one is opened
+        self.settings_page = None   # while Settings is open
         self.show_graph(bool(getattr(self.settings, 'show_graph', False)))
 
         # Clear of the cutout from the first frame - and asked again once the
@@ -322,9 +320,13 @@ class GrabbitApp(App):
         self.speed_label.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
         self.graph_chip = Chip(text='Graph')
         self.graph_chip.bind(on_release=lambda *_: self.show_graph(not self.graph_shown))
+        self.settings_button = FlatButton(text='⚙', font_size=dp(20), size_hint_x=None,
+                                          width=dp(38), color=theme.DIM, fill=theme.TRANSPARENT)
+        self.settings_button.bind(on_release=lambda *_: self.open_settings())
         bar.add_widget(name)
         bar.add_widget(self.speed_label)
         bar.add_widget(self.graph_chip)
+        bar.add_widget(self.settings_button)
         return bar
 
     def _build_update_banner(self):
@@ -402,11 +404,17 @@ class GrabbitApp(App):
 
     # ------------------------------------------------------------- plumbing
     def _start_engine(self):
-        from grabbit_mobile.bootstrap import prepare_environment
+        from grabbit_mobile.bootstrap import prepare_environment, window_controls
         prepare_environment()       # temp and cache folders, before any link is read
         self._request_permissions()
         reading = self._watch_for_shared_links()
-        threading.Thread(target=self._start_engine_worker, daemon=True).start()
+        # Start the downloader - or find it still running, downloads and all,
+        # from before this window opened.
+        self.engine.controls, self.engine.context = window_controls()
+        if self.engine.controls is None:
+            self._run_downloader_here()
+        self.engine.start()
+        threading.Thread(target=self._prepare_tools, daemon=True).start()
         if not reading:
             # A link shared to open the app loads yt-dlp as it is read, and
             # is better off with the phone to itself than sharing it with this.
@@ -431,20 +439,31 @@ class GrabbitApp(App):
             return        # the first link loads it instead, and reports what is wrong
         Logger.info(f'Warm-up: yt-dlp loaded in {time.monotonic() - started:.2f}s')
 
-    def _start_engine_worker(self):
+    def _run_downloader_here(self):
+        """Off a phone there is no service to start, so the downloader runs on
+        a thread of this process instead - the same code, reached the same
+        way, which is enough to try the window on a desktop."""
+        from grabbit_mobile.host import Host
+
+        def run():
+            host = Host(Settings.load())
+            host.start()
+            host.run()
+
+        threading.Thread(target=run, name='grabbit-downloader', daemon=True).start()
+
+    def _prepare_tools(self):
+        """FFmpeg and QuickJS, which reading a link here uses - the frames of a
+        video, YouTube's challenges. The downloader has its own copies."""
         from grabbit_mobile.bootstrap import unpack_tools
         try:
             unpack_tools()
         except Exception as exc:
             self._schedule_message('error', f'Could not unpack the tools: {exc}')
             return
-        if self.engine.start():
-            self._schedule_message('info', f'Saving to {paths.downloads_dir()}')
-            # On the interface thread, where the choices are made, so none can
-            # slip in between being read and being cleared.
-            Clock.schedule_once(lambda *_: self._add_pending(), 0)
-            Clock.schedule_once(lambda *_: self._maybe_ask_for_storage(), 0.5)
-        self._schedule_refresh()
+        folder = paths.chosen_downloads_dir(getattr(self.settings, 'android_download_dir', ''))
+        self._schedule_message('info', f'Saving to {folder}')
+        Clock.schedule_once(lambda *_: self._maybe_ask_for_storage(), 0.5)
 
     @staticmethod
     def _request_permissions():
@@ -592,11 +611,6 @@ class GrabbitApp(App):
         if self.page is page:
             self.page = None
 
-    def _add_pending(self):
-        for analysis, choice in self._pending:
-            self.engine.add_analysis(analysis, choice)
-        self._pending.clear()
-
     def _chosen(self, analysis, choice: dict):
         """The page's Download: queue it, now or once the engine is up."""
         from grabbit import analyze as analyze_mod
@@ -605,12 +619,13 @@ class GrabbitApp(App):
         if self.input.text.strip() and analysis.url in self.input.text:
             self.input.set_text('')
         self.settings.save()
-        self.background.expect(analysis.title or analysis.url)
+        # Into the foreground straight away, while the app is certainly on
+        # screen: Android allows a foreground service to start only then.
+        self.engine.expect(analysis.title or analysis.url)
         self._ask_for_notifications()
-        if self.engine.running:
-            self.engine.add_analysis(analysis, choice)
-        else:
-            self._pending.append((analysis, choice))
+        # Sent as soon as the downloader answers, if it has not yet.
+        self.engine.add_analysis(analysis, choice)
+        if not self.engine.connected:
             self._schedule_message('info', 'It starts as soon as the engine is ready')
 
     def _ask_for_notifications(self):
@@ -673,17 +688,21 @@ class GrabbitApp(App):
         self.update_slot.add_widget(self.update_banner)
         self.update_slot.height = self.update_banner.height
 
-    def check_for_updates(self, manual: bool = False):
+    def check_for_updates(self, manual: bool = False, reply=None):
         """Ask GitHub whether a newer Grabbit is out, off the interface thread.
 
         Unprompted checks respect the setting and say nothing unless there is
-        something to offer; one asked for from the footer always answers.
+        something to offer; one asked for - from the footer, or Settings -
+        always answers, and reply(answer) hears it too.
         """
         if not manual and not getattr(self.settings, 'check_for_updates', True):
             return
         if self._update_checking:
+            if reply is not None:
+                self._update_replies.append(reply)
             return
         self._update_checking = True
+        self._update_replies = [reply] if reply is not None else []
         self._last_update_check = time.monotonic()
         if manual:
             self._schedule_message('info', 'Checking for updates…')
@@ -703,6 +722,10 @@ class GrabbitApp(App):
 
     def _on_update_checked(self, answer, manual: bool):
         self._update_checking = False
+        replies, self._update_replies = getattr(self, '_update_replies', []), []
+        for reply in replies:
+            reply(answer)
+        manual = manual or bool(replies)
         if answer.available:
             if manual or answer.latest not in self._update_declined:
                 self.show_update(answer)
@@ -711,6 +734,11 @@ class GrabbitApp(App):
         elif manual:
             self._schedule_message('error' if answer.error else 'info',
                                    answer.error or f'This is the newest version: Grabbit {APP_VERSION}.')
+
+    def take_update(self, answer):
+        """Settings' Get it: the same as the banner's."""
+        self._update_answer = answer
+        self._get_update()
 
     def _get_update(self):
         """Download the APK here, held to the signed manifest's size and hash,
@@ -759,13 +787,22 @@ class GrabbitApp(App):
         self._schedule_message('error', message)
         self.show_update(getattr(self, '_installing_answer', None))
 
+    def on_pause(self):
+        # Off screen, the window stops asking the downloader how things are,
+        # which lets it end itself once there is nothing left to do.
+        self.engine.set_active(False)
+        return True
+
     def on_resume(self):
+        self.engine.set_active(True)
         # Opening Grabbit again counts as launching it, since a phone keeps an
         # app in memory for days: ask again - unless it asked a moment ago, as
         # Android also resumes it on the way back from its own screens, the
         # installer's and the permission questions.
         if time.monotonic() - self._last_update_check > UPDATE_RECHECK:
             self.check_for_updates()
+        if self.settings_page is not None:
+            self.settings_page.on_resume()
         return True
 
     def _resize_graph(self, delta):
@@ -782,6 +819,34 @@ class GrabbitApp(App):
         self.graph.select(self.selected_id)
         self.refresh()
 
+    def open_settings(self):
+        from grabbit_mobile.ui.settings import SettingsPage
+        if self.settings_page is not None:
+            return
+        page = SettingsPage(self, insets=self._insets)
+        page.bind(on_dismiss=lambda *_: setattr(self, 'settings_page', None))
+        self.settings_page = page
+        page.open()
+
+    def battery_unrestricted(self):
+        """Whether Android lets Grabbit run without battery limits; None off a phone."""
+        controls = self.engine.controls
+        if controls is None:
+            return None
+        try:
+            return bool(controls.unrestricted(self.engine.context))
+        except Exception:
+            return None
+
+    def ask_for_battery(self):
+        """Android's own question; the answer is the person's."""
+        controls = self.engine.controls
+        if controls is not None:
+            try:
+                controls.askForUnrestricted(self.engine.context)
+            except Exception:
+                Logger.exception('Settings: could not ask about battery use')
+
     def open_details(self, task_id: str):
         if self.details is None:
             self.details = DetailsSheet(self.engine)
@@ -793,7 +858,7 @@ class GrabbitApp(App):
         if task is None:
             return
         if task.state == State.PAUSED:
-            self.background.expect(task.name or task.source)
+            self.engine.expect(task.name or task.source)
             self.engine.resume([task_id])
         elif task.state in (State.DOWNLOADING, State.SEEDING, State.QUEUED):
             self.engine.pause([task_id])
@@ -847,9 +912,12 @@ class GrabbitApp(App):
         total = len(list(self.engine.store))
         active = sum(1 for t in self.engine.store if t.state in RUNNING_STATES)
         shown = '' if len(tasks) == total else f'{len(tasks)} shown  ·  '
-        process = getattr(self.engine, 'process', None)
-        engine = (f'aria2 {process.version}' if self.engine.running and process
-                  else 'engine stopped')
+        if self.engine.running:
+            engine = f'aria2 {self.engine.version}' if self.engine.version else 'engine running'
+            if self.engine.held:
+                engine += '  ·  waiting for Wi-Fi'
+        else:
+            engine = 'engine stopped' if self.engine.connected else 'engine starting'
         # The version comes first: touching this line checks for a newer one.
         self.footer.text = (f'Grabbit {APP_VERSION}  ·  {engine}  ·  '
                             f'{shown}{total} download(s), {active} active')
@@ -860,9 +928,9 @@ class GrabbitApp(App):
             self.graph.refresh()
 
     def on_stop(self):
+        # The window is going; the downloads are not (host.py).
         self.settings.save()
         self.engine.shutdown()
-        self.background.stop()
 
 
 if __name__ == '__main__':

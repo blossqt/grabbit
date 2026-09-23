@@ -29,6 +29,11 @@ log = logging.getLogger(__name__)
 PROBE_TIMEOUT = 120
 INFO_FRESH_SECONDS = 3600  # media URLs go stale; re-extract after an hour
 
+# What to suggest when a site refuses an anonymous download. The phone, which
+# has no cookies to offer, clears it (grabbit_mobile/engine.py).
+REFUSED_HINT = ('Options › Videos & photos › "Use cookies from" '
+                '(Firefox works best) usually fixes this.')
+
 
 class JobCancelled(DownloadCancelled):
     """The user removed the download."""
@@ -696,9 +701,8 @@ class MediaJob(threading.Thread):
         have_cookies = bool(getattr(self.settings, 'cookies_file', '')
                             or getattr(self.settings, 'cookies_browser', ''))
         if refused and not have_cookies:
-            return (f'{message} — the site refused an anonymous download. '
-                    'Options › Videos & photos › "Use cookies from" '
-                    '(Firefox works best) usually fixes this.')
+            return f'{message} — the site refused an anonymous download.' + (
+                f' {REFUSED_HINT}' if REFUSED_HINT else '')
         return message
 
     def _run(self):
