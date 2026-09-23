@@ -221,6 +221,24 @@ def check_rules():
            options.get('bt-seed-unverified') == 'true' and options.get('seed-ratio') == '0.600'
            and halfway.uploaded_base == 400, str({k: v for k, v in options.items() if 'seed' in k}))
 
+    # A video paused, with no aria2 download changing: on disk all the same,
+    # since the downloader may be ended at any moment without saving.
+    class Quiet:
+        def multicall(self, calls):
+            return [[], [], [], {}]
+
+    saving = MobileEngine(Settings())
+    saving.client = Quiet()
+    video = saving.store.add(Task(kind=KIND_MEDIA, name='Clip', state=State.DOWNLOADING))
+    saving.pause([video.id])
+    saving._poll_step()
+    import json
+    on_disk = json.loads(saving.store.path.read_text(encoding='utf-8'))['tasks']
+    report('a change with no aria2 download behind it is saved as it happens',
+           any(t['id'] == video.id and t['state'] == State.PAUSED for t in on_disk))
+    saving.store.remove(video.id)
+    saving.store.save(force=True)        # the downloader started below reads this list
+
     title, text, percent, upload = describe([Task(kind=KIND_TORRENT, name='ubuntu.iso',
                                                   state=State.SEEDING)], {'upload_speed': 500_000})
     report('seeding keeps the notification, with no bar and the upload speed',

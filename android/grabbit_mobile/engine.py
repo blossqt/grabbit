@@ -574,6 +574,7 @@ class MobileEngine:
             self._media_jobs[task_id] = job
             task.state = State.EXTRACTING
             task.progress_note = ''
+            self.store.mark_dirty()
             job.start()
         self.on_change()
 
@@ -777,21 +778,29 @@ class MobileEngine:
     # -------------------------------------------------------------- polling
     def _poll_loop(self):
         while self.running:
-            try:
-                self._poll_once()
-            except Aria2Error as exc:
-                log.debug('poll failed: %s', exc)
-            except Exception:
-                log.exception('poll loop error')
-            try:
-                self._retry_due()
-            except Exception:
-                log.exception('retrying failed downloads went wrong')
-            try:
-                self.on_poll(list(self.store), dict(self.stats))
-            except Exception:
-                log.exception('poll listener failed')
+            self._poll_step()
             time.sleep(1.0)
+
+    def _poll_step(self):
+        try:
+            self._poll_once()
+        except Aria2Error as exc:
+            log.debug('poll failed: %s', exc)
+        except Exception:
+            log.exception('poll loop error')
+        try:
+            self._retry_due()
+        except Exception:
+            log.exception('retrying failed downloads went wrong')
+        # Whatever changed, on disk within a couple of seconds. The downloader
+        # is ended as often as it ends itself - an update installed, Android
+        # short of memory - and what was only in memory is then gone: a video
+        # finished, a download paused, would come back as it had been.
+        self.store.save()
+        try:
+            self.on_poll(list(self.store), dict(self.stats))
+        except Exception:
+            log.exception('poll listener failed')
 
     def _poll_once(self):
         results = self.client.multicall([
@@ -920,6 +929,7 @@ class MobileEngine:
                 except Aria2Error:
                     pass
                 task.state = State.PAUSED
+        self.store.mark_dirty()
         self.on_change()
 
     def resume(self, task_ids):
@@ -951,6 +961,7 @@ class MobileEngine:
                 except Aria2Error:
                     task.state = State.QUEUED
                     self._add_uri(task)
+        self.store.mark_dirty()
         self.on_change()
 
     @staticmethod
