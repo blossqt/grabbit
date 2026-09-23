@@ -98,6 +98,14 @@ def prepare_environment() -> None:
     os.environ.setdefault('TMPDIR', str(scratch))
     tempfile.tempdir = str(scratch)
     os.environ.setdefault('XDG_CACHE_HOME', str(paths.cache_dir()))
+    # Android keeps its certificates where OpenSSL never looks, so Python's
+    # own HTTPS trusts no site at all: reading a plain file's link failed
+    # with CERTIFICATE_VERIFY_FAILED. Point it at certifi's bundle, which
+    # yt-dlp and aria2 are handed already - once, here, for every caller.
+    if not os.environ.get('SSL_CERT_FILE'):
+        bundle = ca_bundle()
+        if bundle:
+            os.environ['SSL_CERT_FILE'] = bundle
     adopt_gallery_dl()
 
 

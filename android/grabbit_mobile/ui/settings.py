@@ -60,8 +60,10 @@ class SettingsPage(ModalView):
         column.add_widget(header)
 
         scroll = ScrollView(do_scroll_x=False, bar_width=dp(3))
+        # Room on the right for the scroll bar, which is drawn over whatever
+        # is there, so no choice has its edge under it.
         self.body = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(8),
-                              padding=[0, 0, 0, dp(16)])
+                              padding=[0, 0, dp(9), dp(16)])
         self.body.bind(minimum_height=self.body.setter('height'))
         scroll.add_widget(self.body)
         column.add_widget(scroll)

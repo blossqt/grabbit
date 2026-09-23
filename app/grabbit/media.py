@@ -471,6 +471,10 @@ class Aria2BridgeFD(FileDownloader):
             'always-resume': 'false',
             'remote-time': 'false',
         }
+        connections = (job.media or {}).get('connections')
+        if connections:
+            # The site asked for fewer at once last time (grabbit_mobile/engine.py).
+            options['max-connection-per-server'] = options['split'] = str(connections)
         self.report_destination(filename)
         started = time.time()
         gid = job.aria2_add(info_dict['url'], options)

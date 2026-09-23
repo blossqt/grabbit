@@ -51,6 +51,12 @@ NETWORK_SIGNS = ('timed out', 'timeout', 'connection', 'network', 'unreachable',
 # refused with fresh addresses means it.
 REFUSED_SIGNS = ('403', 'forbidden')
 RETRY_REFUSED = 2
+# A server that says it is being asked too much - often at the several
+# connections a download opens to it at once - is asked again after a pause,
+# over one connection: half a minute, then one, then two.
+THROTTLED_SIGNS = ('429', 'too many requests', 'too many connections')
+RETRY_THROTTLED = 3
+THROTTLED_WAIT = 30.0
 
 # What a download says while Wi-Fi only holds it back (hold).
 WIFI_NOTE = 'Waiting for Wi-Fi'
@@ -470,6 +476,10 @@ class MobileEngine:
     def _add_uri(self, task: Task, paused: bool = False):
         paused = self._hold_new(task, paused)
         options = {'dir': task.save_dir, 'gid': self._gid(task), 'continue': 'true'}
+        connections = task.media.get('connections')
+        if connections:
+            # Asked to slow down once already (THROTTLED_SIGNS).
+            options['max-connection-per-server'] = options['split'] = str(connections)
         if task.out:
             options['out'] = './' + task.out
         if task.headers:
@@ -651,14 +661,24 @@ class MobileEngine:
         self._pump_media()
 
     def _retry_wait(self, task: Task, message: str) -> float | None:
-        """Seconds until a failed video is tried again, or None to leave it failed."""
+        """Seconds until a failed download is tried again, or None to leave it
+        failed. A plain file is tried again only for what waiting can fix: a
+        video also after a refusal, since it reads its page again first and so
+        goes back with a new address."""
         lowered = message.lower()
         media = task.media
         if task.done > media.get('retry_done', -1) + 1_000_000:
             media['retries'] = 0
         media['retry_done'] = task.done
         tries = int(media.get('retries') or 0)
-        if any(sign in lowered for sign in REFUSED_SIGNS):
+        if any(sign in lowered for sign in THROTTLED_SIGNS):
+            if tries >= RETRY_THROTTLED:
+                return None
+            media['connections'] = 1
+            wait = THROTTLED_WAIT * 2 ** tries
+        elif task.kind != KIND_MEDIA and not any(sign in lowered for sign in NETWORK_SIGNS):
+            return None
+        elif any(sign in lowered for sign in REFUSED_SIGNS):
             if tries >= RETRY_REFUSED:
                 return None
             wait = 5.0
@@ -692,7 +712,10 @@ class MobileEngine:
             elif now >= when:
                 self._retry_at.pop(task_id, None)
                 task.progress_note = ''
-                self._queue_media(task)
+                if task.kind == KIND_MEDIA:
+                    self._queue_media(task)
+                else:
+                    self._add_uri(task)
             else:
                 task.progress_note = f'Trying again in {int(when - now) + 1} s'
 
@@ -829,9 +852,20 @@ class MobileEngine:
             else:
                 task.state = State.PAUSED
         elif state == 'error':
-            task.state = State.ERROR
-            task.error = status.get('errorMessage') or 'download failed'
+            message = status.get('errorMessage') or 'download failed'
             self._forget(task.gid)
+            wait = (self._retry_wait(task, message)
+                    if task.kind in (KIND_HTTP, KIND_IMAGE) else None)
+            if wait is None:
+                task.state = State.ERROR
+                task.error = message
+            else:
+                task.state = State.QUEUED
+                task.error = ''
+                task.down_speed = 0
+                task.progress_note = f'Trying again in {int(wait)} s'
+                task.add_log(f'{message} - trying again in {int(wait)} s')
+                self._retry_at[task.id] = time.monotonic() + wait
         elif state == 'complete':
             if task.kind == KIND_MAGNET:
                 self._metadata_ready(task)

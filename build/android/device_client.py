@@ -7,6 +7,7 @@ downloader - an ordinary app process - does the fetching.
 
     python device_client.py status
     python device_client.py add <url>
+    python device_client.py add-torrent <file.torrent> <where it came from>
     python device_client.py remove <name-part>
 """
 
@@ -55,6 +56,13 @@ def main():
             link = analyze_mod.Analysis(url=url, kind=analyze_mod.KIND_MAGNET, title=name)
         ask(sock, reader, {'op': 'add', 'analysis': wire.encode(link), 'choice': {}})
         print(f'asked for {url}')
+    elif command == 'add-torrent':
+        with open(sys.argv[2], 'rb') as handle:
+            data = handle.read()
+        link = analyze_mod.Analysis(url=sys.argv[3], kind=analyze_mod.KIND_TORRENT,
+                                    torrent_data=data)
+        ask(sock, reader, {'op': 'add', 'analysis': wire.encode(link), 'choice': {}})
+        print(f'asked for the torrent in {sys.argv[2]}')
     elif command == 'remove':
         snapshot = ask(sock, reader, {'op': 'snapshot'})
         ids = [t['id'] for t in snapshot['tasks'] if sys.argv[2] in (t['name'] or '')]

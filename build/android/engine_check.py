@@ -33,7 +33,7 @@ from grabbit import analyze as analyze_mod          # noqa: E402
 from grabbit import paths as shared_paths           # noqa: E402
 from grabbit.mediaitems import MediaItem, ProbeResult  # noqa: E402
 from grabbit.settings import Settings               # noqa: E402
-from grabbit.tasks import KIND_MEDIA, KIND_TORRENT, State, Task  # noqa: E402
+from grabbit.tasks import KIND_HTTP, KIND_MEDIA, KIND_TORRENT, State, Task  # noqa: E402
 from grabbit_mobile import paths as mobile_paths    # noqa: E402
 from grabbit_mobile import wire                     # noqa: E402
 from grabbit_mobile.background import Background, describe  # noqa: E402
@@ -163,6 +163,26 @@ def check_rules():
            waits[:RETRY_REFUSED] == [5.0] * RETRY_REFUSED and waits[-1] is None, str(waits))
     report('a failure waiting cannot fix fails at once',
            engine._retry_wait(Task(kind=KIND_MEDIA), 'Unsupported URL: https://example.com') is None)
+
+    busy = Task(kind=KIND_HTTP, name='big.iso')
+    waits = [engine._retry_wait(busy, 'The response status is not successful. status=429')
+             for _ in range(4)]
+    report('a server that says too many requests is asked again, slower, over one connection',
+           waits == [30.0, 60.0, 120.0, None] and busy.media.get('connections') == 1, str(waits))
+    report('a plain file is not retried after a refusal - the same address would be refused again',
+           engine._retry_wait(Task(kind=KIND_HTTP), 'status=403 Forbidden') is None)
+
+    class Client:
+        options = {}
+
+        def call(self, method, *args):
+            Client.options = args[-1]
+            return 'gid'
+
+    engine.client = Client()
+    engine._add_uri(busy)
+    report('and asks aria2 for one connection when it goes again',
+           Client.options.get('max-connection-per-server') == '1' and Client.options.get('split') == '1')
 
     offline = MobileEngine(Settings())
     offline.online = lambda: False
