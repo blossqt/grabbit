@@ -121,6 +121,13 @@ server turns away for asking too much at once. The gear beside Graph opens
 Settings: updates, downloads at once, the download folder, Wi-Fi only,
 seeding, and battery use.
 
+A finished download opens with a tap, in whatever the phone opens that kind
+of file with, and its share button brings up Android's share sheet; a torrent
+of several files lists them, each a tap from opening. Other apps get the files
+through `FileShare`, a content provider that hands over one file at a time and
+only ever reaches shared storage. Holding a download picks it out, as in
+Android's own lists; taps then pick others, to share or remove together.
+
 Building it needs WSL (Ubuntu), a JDK, and roughly 15 GB:
 
     bash build/android/fetch_sdk.sh        # NDK, SDK command-line tools, adb
