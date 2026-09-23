@@ -414,7 +414,10 @@ def check_live(url):
     # window finds it gone, starts it again, and carries on where it was.
     before = Controls.launches
     first = hosts[-1]
+    count = len(list(remote.store))
     first.stop()
+    # Asked for just as it goes: sent again once there is a downloader.
+    remote.add_analysis(file_link(f'{url}/small.bin'))
     report('the window notices when the downloader has gone', wait_until(lambda: not remote.connected, 10))
     report('starts it again, and is back in touch with it',
            wait_until(lambda: Controls.launches > before and remote.running, 30),
@@ -424,6 +427,9 @@ def check_live(url):
            large is not None and wait_until(lambda: large.state in (State.DOWNLOADING,
                                                                      State.COMPLETED), 20),
            large.status_text if large else 'gone')
+    report('a download asked for as the downloader went is not lost',
+           wait_until(lambda: len(list(remote.store)) == count + 1, 15),
+           f'{len(list(remote.store))} download(s)')
 
     remote.remove([large.id], delete_files=True)
     report('removing it from the window, file and all, is done there',

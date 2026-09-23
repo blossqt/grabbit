@@ -80,6 +80,7 @@ class RemoteEngine:
         self._handover = threading.Lock()
         self._launched = 0.0
         self._edited = 0.0              # when a tap last changed the copy here
+        self._unsent = None             # a request the line went down under
 
     # ---------------------------------------------------------- starting
     def start(self) -> bool:
@@ -250,10 +251,13 @@ class RemoteEngine:
 
     def _exchange(self, sock):
         """One turn: whatever was asked, then a snapshot while on screen."""
-        try:
-            item = self._requests.get(timeout=EVERY if self._active else 30.0)
-        except queue.Empty:
-            item = None
+        if self._unsent is not None:
+            item, self._unsent = self._unsent, None
+        else:
+            try:
+                item = self._requests.get(timeout=EVERY if self._active else 30.0)
+            except queue.Empty:
+                item = None
         while item is not None:
             request, callback = item
             try:
@@ -262,6 +266,11 @@ class RemoteEngine:
                 log.warning('the downloader could not %s: %s', request.get('op'), exc)
                 self._schedule(lambda text=str(exc): self.on_message('error', text))
                 result = None
+            except (OSError, ValueError):
+                # The line went down with this on it - a download asked for,
+                # as like as not. It goes first once there is a line again.
+                self._unsent = item
+                raise
             if callback is not None:
                 callback(result)
             try:
