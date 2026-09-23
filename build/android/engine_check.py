@@ -221,6 +221,28 @@ def check_rules():
            options.get('bt-seed-unverified') == 'true' and options.get('seed-ratio') == '0.600'
            and halfway.uploaded_base == 400, str({k: v for k, v in options.items() if 'seed' in k}))
 
+    # A video names each file as it begins it, so "delete it too" can find
+    # them all - even for one that failed before saying what it made.
+    from grabbit.media import MediaJob
+    from grabbit.tasks import task_paths
+    heard = []
+    clip = Task(kind=KIND_MEDIA, name='Clip', save_dir=str(DOWNLOADS))
+    job = MediaJob(clip, Settings(), {'emit': lambda *event: heard.append(event),
+                                      'aria2_add': None, 'aria2_status': None,
+                                      'aria2_control': None})
+    for part in ('Clip.f137.mp4', 'Clip.f140.m4a'):
+        job._progress_hook({'status': 'downloading', 'filename': str(DOWNLOADS / part),
+                            'downloaded_bytes': 10, 'total_bytes': 100})
+    engine.store.add(clip)
+    for _, event, payload in heard:
+        if event == 'file':
+            engine._on_media_event(clip.id, event, payload)
+    found = task_paths(clip)
+    report('removing a video takes every file it began, part files and all',
+           str(DOWNLOADS / 'Clip.f137.mp4.part') in found and str(DOWNLOADS / 'Clip.f140.m4a') in found,
+           f'{len(found)} path(s)')
+    engine.store.remove(clip.id)
+
     # A video paused, with no aria2 download changing: on disk all the same,
     # since the downloader may be ended at any moment without saving.
     class Quiet:

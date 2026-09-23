@@ -20,7 +20,7 @@ import time
 from grabbit import analyze as analyze_mod
 from grabbit.aria2rpc import Aria2Error, Aria2Process
 from grabbit.tasks import (KIND_HTTP, KIND_IMAGE, KIND_MAGNET, KIND_MEDIA, KIND_TORRENT,
-                           FINISHED_STATES, State, Task, TaskStore, task_paths)
+                           FINISHED_STATES, State, Task, TaskStore, note_file, task_paths)
 from grabbit.torrentmeta import parse_torrent, select_file_spec
 from grabbit.util import human_size, ipv6_available, safe_filename
 
@@ -175,6 +175,10 @@ class MobileEngine:
             'async-dns': 'false',
             'bt-save-metadata': 'true',
             'bt-load-saved-metadata': 'false',
+            # Grabbit keeps its own copy of every torrent (torrents_dir); left
+            # to itself aria2 writes another into the download folder, under a
+            # name nothing knows to delete.
+            'rpc-save-upload-metadata': 'false',
             'bt-detach-seed-only': 'true',
             'enable-dht': 'true',
             'dht-entry-point': 'dht.transmissionbt.com:6881',
@@ -621,6 +625,8 @@ class MobileEngine:
             task.progress_note = payload.get('note', '')
         elif event == 'log':
             task.add_log(payload.get('message', ''))
+        elif event == 'file':
+            note_file(task, payload.get('path', ''))
         elif event == 'finished':
             task.state = State.COMPLETED
             task.file_path = payload.get('filepath', '')

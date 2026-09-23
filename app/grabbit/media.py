@@ -651,6 +651,11 @@ class MediaJob(threading.Thread):
             raise JobPaused('paused')
         state = status.get('status')
         name = status.get('filename') or status.get('tmpfilename') or 'part'
+        if name not in self.parts and status.get('filename'):
+            # Each file as it is begun - the video, its sound - so that
+            # removing the download can take them with it, even if it never
+            # got as far as saying what it made (task_paths).
+            self._emit(self.task_id, 'file', {'path': status['filename']})
         part = self.parts.setdefault(name, {'done': 0, 'total': 0})
         if state in ('downloading', 'finished'):
             part['done'] = status.get('downloaded_bytes') or part['done']

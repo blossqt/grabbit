@@ -17,7 +17,7 @@ from . import media as media_mod
 from .aria2rpc import Aria2Client, Aria2Error, Aria2Process
 from .paths import find_tool, logs_dir, torrents_dir
 from .tasks import (KIND_HTTP, KIND_IMAGE, KIND_MAGNET, KIND_MEDIA, KIND_TORRENT,
-                    FINISHED_STATES, State, Task, TaskStore, task_paths)
+                    FINISHED_STATES, State, Task, TaskStore, note_file, task_paths)
 from .torrentmeta import parse_magnet, parse_torrent, select_file_spec
 from .util import ipv6_available, safe_filename, send_to_recycle_bin, site_name, unique_path
 
@@ -558,6 +558,8 @@ class Engine(QObject):
             task.down_speed = 0
         elif event == 'log':
             task.add_log(payload.get('message', ''))
+        elif event == 'file':
+            note_file(task, payload.get('path', ''))
         elif event == 'finished':
             task.state = State.COMPLETED
             task.file_path = payload.get('filepath', '')

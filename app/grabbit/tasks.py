@@ -228,6 +228,14 @@ class TaskStore:
         return iter(list(self._tasks.values()))
 
 
+def note_file(task: Task, path: str) -> None:
+    """Remember a file a media download began writing (MediaJob's 'file')."""
+    if path:
+        files = task.media.setdefault('files', [])
+        if path not in files:
+            files.append(path)
+
+
 def task_paths(task: Task, client=None) -> list:
     """Everything a task may have put on disk, aria2's control files included.
 
@@ -243,6 +251,10 @@ def task_paths(task: Task, client=None) -> list:
     found = []
     if task.file_path:
         found.append(task.file_path)
+    # A video's parts, as it began each one: all there is to go on when it
+    # failed, or was removed, before saying what it made.
+    for path in (task.media or {}).get('files', []):
+        found.extend([path, path + '.part', path + '.ytdl'])
     if client is not None and task.gid:
         try:
             for entry in client.call('aria2.getFiles', task.gid) or []:
