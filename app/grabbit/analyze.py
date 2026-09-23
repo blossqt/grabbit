@@ -46,18 +46,27 @@ class Analysis:
     content_type: str = ''
 
 
-def _request(url: str, method: str = 'GET', extra: dict | None = None):
-    headers = {'User-Agent': _UA, 'Accept': '*/*', **(extra or {})}
+def _request(url: str, method: str = 'GET', extra: dict | None = None, agent: str = _UA):
+    headers = {'User-Agent': agent, 'Accept': '*/*', **(extra or {})}
     return urllib.request.Request(url, headers=headers, method=method)
+
+
+# How a file's details are asked for, in turn, until one is answered: HEAD as
+# a browser; then the first byte, as a browser, for servers that hang up on a
+# HEAD; then the first byte as a plain program, for the few that turn away a
+# browser they can tell is not one (Hetzner's download servers do both).
+_ASKING = (('HEAD', _UA), ('GET', _UA), ('GET', 'Grabbit'))
 
 
 def http_head(url: str, timeout: float = 15) -> dict:
     """Content-Type / length / filename, without downloading the body."""
     info = {'status': 0, 'content_type': '', 'length': 0, 'filename': '', 'url': url}
-    for method in ('HEAD', 'GET'):
+    for attempt, (method, agent) in enumerate(_ASKING):
+        last = attempt == len(_ASKING) - 1
         try:
             extra = {'Range': 'bytes=0-0'} if method == 'GET' else None
-            with urllib.request.urlopen(_request(url, method, extra), timeout=timeout) as response:
+            with urllib.request.urlopen(_request(url, method, extra, agent),
+                                        timeout=timeout) as response:
                 headers = response.headers
                 info['status'] = response.status
                 info['url'] = response.url
@@ -73,16 +82,18 @@ def http_head(url: str, timeout: float = 15) -> dict:
                 if match:
                     raw = match.group(1) or match.group(2) or ''
                     info['filename'] = safe_filename(urllib.parse.unquote(raw.strip()))
+                info.pop('error', None)
                 return info
         except urllib.error.HTTPError as exc:
             if method == 'GET' or exc.code not in (403, 405, 501):
                 info['status'] = exc.code
                 info['error'] = f'HTTP {exc.code}'
-                if exc.code not in (403, 405, 501):
+                if exc.code not in (403, 405, 501) or last:
                     return info
         except Exception as exc:
             info['error'] = str(exc)
-            return info
+            if last:
+                return info
     return info
 
 

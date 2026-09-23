@@ -104,7 +104,7 @@ public class RestartReceiver extends BroadcastReceiver {
             return true;                    // nothing to compare: assume they are
         }
         String wanted = context.getString(id);
-        File marker = new File(context.getFilesDir(), "private.version");
+        File marker = new File(context.getFilesDir(), "app/private.version");
         try (InputStream in = new FileInputStream(marker)) {
             byte[] data = new byte[(int) Math.min(marker.length(), 256)];
             int read = in.read(data);

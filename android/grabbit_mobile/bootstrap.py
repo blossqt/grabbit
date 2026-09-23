@@ -100,13 +100,38 @@ def prepare_environment() -> None:
     os.environ.setdefault('XDG_CACHE_HOME', str(paths.cache_dir()))
     # Android keeps its certificates where OpenSSL never looks, so Python's
     # own HTTPS trusts no site at all: reading a plain file's link failed
-    # with CERTIFICATE_VERIFY_FAILED. Point it at certifi's bundle, which
-    # yt-dlp and aria2 are handed already - once, here, for every caller.
-    if not os.environ.get('SSL_CERT_FILE'):
-        bundle = ca_bundle()
-        if bundle:
-            os.environ['SSL_CERT_FILE'] = bundle
+    # with CERTIFICATE_VERIFY_FAILED. certifi's bundle, which yt-dlp and aria2
+    # are handed already, is made Python's default here (trust) - not through
+    # SSL_CERT_FILE, which an app's own OpenSSL ignores: app processes are
+    # forked from Android's zygote in secure mode (AT_SECURE), and OpenSSL
+    # reads no environment in that mode. The programs this starts - gallery-dl
+    # - are started afresh, out of that mode, and do read it.
+    bundle = ca_bundle()
+    if bundle:
+        os.environ.setdefault('SSL_CERT_FILE', bundle)
+        trust(bundle)
     adopt_gallery_dl()
+
+
+def trust(bundle: str) -> None:
+    """Make a certificate bundle the default for every SSL context Python
+    makes without one of its own - urllib's among them."""
+    import ssl
+    if getattr(ssl.create_default_context, 'grabbit_bundle', None) == bundle:
+        return
+    make = getattr(ssl.create_default_context, 'grabbit_make', ssl.create_default_context)
+
+    def create_default_context(purpose=ssl.Purpose.SERVER_AUTH, *, cafile=None, capath=None,
+                               cadata=None):
+        if cafile is None and capath is None and cadata is None:
+            cafile = bundle
+        return make(purpose, cafile=cafile, capath=capath, cadata=cadata)
+
+    create_default_context.grabbit_bundle = bundle
+    create_default_context.grabbit_make = make
+    ssl.create_default_context = create_default_context
+    # http.client, and so urllib, makes its contexts through this one.
+    ssl._create_default_https_context = create_default_context
 
 
 def adopt_gallery_dl() -> bool:
