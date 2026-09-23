@@ -37,6 +37,9 @@ class Card(BoxLayout):
     def set_fill(self, color):
         self._fill_color.rgba = color
 
+    def set_border(self, color):
+        self._border_color.rgba = color
+
     def _redraw(self, *_):
         self._rect.pos = self.pos
         self._rect.size = self.size
@@ -226,6 +229,29 @@ class Dialog(ModalView):
             action()
 
 
+class ShareButton(ButtonBehavior, Widget):
+    """Android's share symbol - three dots and the two lines between them -
+    drawn, as the kinds of download are: no font has it."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.bind(pos=self._redraw, size=self._redraw)
+
+    def _redraw(self, *_):
+        self.canvas.clear()
+        size = min(dp(17), self.width, self.height)
+        x, y = self.center_x - size / 2, self.center_y - size / 2
+        dots = [(0.76, 0.82), (0.24, 0.50), (0.76, 0.18)]
+        radius = size * 0.14
+        with self.canvas:
+            Color(*theme.DIM)
+            Line(points=[value for dx, dy in dots for value in (x + size * dx, y + size * dy)],
+                 width=max(1.1, size * 0.07))
+            for dx, dy in dots:
+                Ellipse(pos=(x + size * dx - radius, y + size * dy - radius),
+                        size=(2 * radius, 2 * radius))
+
+
 class ProgressTrack(Widget):
     """The desktop's progress column: a rounded track with a coloured fill.
 
@@ -299,6 +325,12 @@ class KindGlyph(Widget):
         self._color = theme.state_color(task.state)
         self._redraw()
 
+    def show_choice(self, chosen: bool):
+        """While downloads are being picked out: a ring, ticked once picked."""
+        self._kind = 'chosen' if chosen else 'unchosen'
+        self._color = theme.BLUE if chosen else theme.DIM
+        self._redraw()
+
     def _redraw(self, *_):
         self.canvas.clear()
         x, y = self.pos
@@ -350,6 +382,15 @@ class KindGlyph(Widget):
              width=stroke)
         Line(points=[x + size * 0.60, y + size * 0.88, x + size * 0.60, y + size * 0.68,
                      x + size * 0.78, y + size * 0.68], width=stroke)
+
+    def _draw_chosen(self, x, y, size, stroke):
+        Ellipse(pos=(x + size * 0.06, y + size * 0.06), size=(size * 0.88, size * 0.88))
+        Color(1, 1, 1, 1)
+        Line(points=[x + size * 0.28, y + size * 0.50, x + size * 0.44, y + size * 0.34,
+                     x + size * 0.72, y + size * 0.64], width=stroke * 1.1)
+
+    def _draw_unchosen(self, x, y, size, stroke):
+        Line(circle=(x + size * 0.5, y + size * 0.5, size * 0.42), width=stroke)
 
     def _draw_error(self, x, y, size, stroke):
         Line(circle=(x + size * 0.5, y + size * 0.5, size * 0.38), width=stroke)

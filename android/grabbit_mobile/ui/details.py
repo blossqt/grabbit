@@ -1,13 +1,17 @@
 """Everything about one download: the desktop's bottom panel, full screen.
 
 Same five tabs, same fields, same sources - General from the task, Files and
-Peers and Trackers from aria2, Log from what the job recorded.
+Peers and Trackers from aria2, Log from what the job recorded. Once a download
+has finished, Files lists what it left on the phone instead, and a tap opens
+any of it.
 """
 
 import os
 
 from kivy.clock import Clock
 from kivy.metrics import dp
+from kivy.graphics import Color, RoundedRectangle
+from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.label import Label
@@ -18,6 +22,7 @@ from grabbit.tasks import KIND_MEDIA, State
 from grabbit.torrentmeta import peer_client
 from grabbit.util import human_eta, human_size, human_speed, human_time
 
+from ..files import finished, finished_files
 from . import theme
 from .widgets import Card, Chip, share_by_words
 
@@ -70,14 +75,44 @@ class Rows(BoxLayout):
         self.add_widget(line)
 
 
+class FileLine(ButtonBehavior, BoxLayout):
+    """A finished file, to open with a tap: its name - cut short in the
+    middle, so the type at the end stays - and its size."""
+
+    def __init__(self, name: str, size: str, **kwargs):
+        super().__init__(size_hint_y=None, height=dp(38), spacing=dp(8),
+                         padding=[dp(8), 0], **kwargs)
+        with self.canvas.before:
+            self._shade = Color(*theme.TRANSPARENT)
+            self._rect = RoundedRectangle(radius=[dp(6)])
+        self.bind(pos=self._redraw, size=self._redraw,
+                  state=lambda *_: setattr(self._shade, 'rgba',
+                                           theme.HOVER if self.state == 'down' else theme.TRANSPARENT))
+        title = Label(text=name, color=theme.TEXT, font_size=dp(13), halign='left',
+                      valign='middle', shorten=True, shorten_from='center')
+        amount = Label(text=size, color=theme.DIM, font_size=dp(11), halign='right',
+                       valign='middle', size_hint_x=None, width=dp(66))
+        for label in (title, amount):
+            label.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
+            self.add_widget(label)
+
+    def _redraw(self, *_):
+        self._rect.pos = self.pos
+        self._rect.size = self.size
+
+
 class DetailsSheet(ModalView):
-    def __init__(self, engine, **kwargs):
+    """on_open_file(path) opens one of a finished download's files."""
+
+    def __init__(self, engine, on_open_file=None, **kwargs):
         super().__init__(size_hint=(0.96, 0.9), background_color=(0, 0, 0, 0.6),
                          background='', auto_dismiss=True, **kwargs)
         self.engine = engine
+        self.on_open_file = on_open_file
         self.task_id = ''
         self.tab = 'General'
         self._refresher = None
+        self._listed = None             # the finished files on show, as last listed
 
         frame = Card(orientation='vertical', padding=[dp(12), dp(10)], spacing=dp(8),
                      fill=theme.WINDOW)
@@ -112,9 +147,9 @@ class DetailsSheet(ModalView):
         self.add_widget(frame)
 
     # ------------------------------------------------------------------ show
-    def open_task(self, task_id: str):
+    def open_task(self, task_id: str, tab: str = 'General'):
         self.task_id = task_id
-        self.show_tab('General')
+        self.show_tab(tab)
         self.open()
         self._refresher = Clock.schedule_interval(lambda _: self.refresh(), 1.0)
 
@@ -126,6 +161,7 @@ class DetailsSheet(ModalView):
 
     def show_tab(self, name: str):
         self.tab = name
+        self._listed = None
         for key, chip in self.tab_chips.items():
             chip.set_selected(key == name)
         self.refresh()
@@ -136,6 +172,16 @@ class DetailsSheet(ModalView):
             self.dismiss()
             return
         self.title.text = task.name or task.source
+        if self.tab == 'Files' and finished(task) and self.on_open_file is not None:
+            found = finished_files(task)
+            # Drawn again only when the files change, so a finger on one is
+            # not left touching a line that has been replaced.
+            if self._listed != (task.id, found):
+                self._listed = (task.id, found)
+                self.rows.clear_widgets()
+                self._list_finished(found)
+            return
+        self._listed = None
         self.rows.clear_widgets()
         getattr(self, f'_show_{self.tab.lower()}')(task)
 
@@ -168,6 +214,23 @@ class DetailsSheet(ModalView):
             self.rows.pair(key + ':', value)
         if task.error:
             self.rows.pair('Error:', task.error)
+
+    def _list_finished(self, found):
+        if not found:
+            self.rows.line('The files are not where they were saved any more - '
+                           'moved or deleted since.', theme.DIM)
+            return
+        self.rows.line('Tap a file to open it.', theme.DIM, size=11)
+        # Inside a torrent's folder, each by its place in it.
+        base = os.path.dirname(os.path.commonpath(found)) if len(found) == 1 else os.path.commonpath(found)
+        for path in found:
+            try:
+                size = human_size(os.path.getsize(path))
+            except OSError:
+                size = ''
+            line = FileLine(os.path.relpath(path, base), size)
+            line.bind(on_release=lambda _, chosen=path: self.on_open_file(chosen))
+            self.rows.add_widget(line)
 
     def _show_files(self, task):
         widths = [0, 62, 62, 46]

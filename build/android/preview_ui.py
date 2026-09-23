@@ -11,6 +11,7 @@ of made-up tasks is enough to see every state at once.
                            gif or image), for a video served from this machine
     ... --dialog remove    with a dialog open (remove, or storage)
     ... --settings         with the settings page open
+    ... --choose           with two downloads picked out, as holding one does
     ... --width 360        as narrow as a smaller phone (412 by default)
 """
 
@@ -231,8 +232,11 @@ def reveal(widget):
     if parent is None:
         return
     content = parent.children[0]
-    span = max(1.0, content.width - parent.width)
-    parent.scroll_x = min(1.0, max(0.0, (widget.center_x - parent.width / 2) / span))
+    if content.width > parent.width:
+        span = content.width - parent.width
+        parent.scroll_x = min(1.0, max(0.0, (widget.center_x - parent.width / 2) / span))
+    else:
+        parent.scroll_to(widget, padding=10, animate=False)
     settle()
 
 
@@ -253,8 +257,14 @@ def tap(widget):
     touch = Tap('preview', 1, [x / Window.width, y / Window.height],
                 is_touch=True, type_id='touch')
     EventLoop.post_dispatch_input('begin', touch)
-    EventLoop.post_dispatch_input('end', touch)
+    lift(touch)
     settle(1)
+
+
+def lift(touch):
+    """The finger leaving the glass - timed, as Kivy's own providers time it."""
+    touch.update_time_end()
+    EventLoop.post_dispatch_input('end', touch)
 
 
 def wait_until(condition, seconds: float = 10.0) -> bool:
@@ -282,7 +292,7 @@ def drag(widget, start: float, end: float, steps: int = 8):
         touch.move([x / Window.width, y / Window.height])
         EventLoop.post_dispatch_input('update', touch)
         EventLoop.idle()
-    EventLoop.post_dispatch_input('end', touch)
+    lift(touch)
     settle(1)
 
 
@@ -496,6 +506,223 @@ def check_settings(app, report):
     report('and ‹ closes it', app.settings_page is None)
 
 
+class FakeHands:
+    """Stands in for FileShare and Touch: what would have gone to Android."""
+
+    def __init__(self):
+        self.opened, self.shared, self.buzzes = [], [], 0
+
+    def open(self, path):
+        self.opened.append(path)
+        return '' if os.path.isfile(path) else 'gone'
+
+    def share(self, paths):
+        self.shared.append(list(paths))
+        return ''
+
+    def held(self):
+        self.buzzes += 1
+
+
+def bencode(value) -> bytes:
+    if isinstance(value, int):
+        return b'i%de' % value
+    if isinstance(value, str):
+        value = value.encode()
+    if isinstance(value, bytes):
+        return b'%d:%s' % (len(value), value)
+    if isinstance(value, list):
+        return b'l' + b''.join(map(bencode, value)) + b'e'
+    return b'd' + b''.join(bencode(k) + bencode(v) for k, v in sorted(value.items())) + b'e'
+
+
+def hold(widget, seconds: float = 0.8, wander: float = 0.0):
+    """A finger resting on a widget - or, with wander, sliding along it."""
+    settle()
+    x, y = widget.to_window(*widget.center)
+    touch = Tap('preview', 7, [x / Window.width, y / Window.height],
+                is_touch=True, type_id='touch')
+    EventLoop.post_dispatch_input('begin', touch)
+    started = time.monotonic()
+    while time.monotonic() - started < seconds:
+        if wander:
+            moved = wander * (time.monotonic() - started) / seconds
+            touch.move([(x + moved) / Window.width, y / Window.height])
+            EventLoop.post_dispatch_input('update', touch)
+        EventLoop.idle()
+        time.sleep(0.02)
+    lift(touch)
+    settle(1)
+
+
+def check_finished(app, report):
+    """A finished download opens with a tap and shares from its row; holding
+    one picks it out, and the picked ones share or go together."""
+    from kivy.metrics import dp
+    from grabbit_mobile.ui.widgets import BUTTON_MARGIN, Dialog
+
+    hands = app.hands = FakeHands()
+    folder = tempfile.mkdtemp(prefix='grabbit-finished-')
+    try:
+        tasks = {task.name: task for task in app.engine.store}
+        video = tasks['did you know there are two types of tiktok photo mode.mp4']
+        photo = tasks['NASA - 01.jpg']
+        torrent = tasks['ubuntu-24.04.3-desktop-amd64.iso']
+        paused = tasks['Big Buck Bunny.mp3']
+        for task in (video, photo):
+            task.save_dir = folder
+            task.file_path = os.path.join(folder, task.name)
+            with open(task.file_path, 'wb') as handle:
+                handle.write(b'x' * 64)
+        # A torrent of three files, two of them chosen - and the third there
+        # too, as aria2 leaves the edges of the files beside chosen ones.
+        meta = {'info': {'name': 'Holiday', 'piece length': 16384, 'pieces': b'\0' * 20,
+                         'files': [{'length': 64, 'path': ['clip.mp4']},
+                                   {'length': 64, 'path': ['notes.txt']},
+                                   {'length': 64, 'path': ['extras', 'photo.jpg']}]}}
+        torrent.torrent_file = os.path.join(folder, 'holiday.torrent')
+        with open(torrent.torrent_file, 'wb') as handle:
+            handle.write(bencode(meta))
+        torrent.save_dir, torrent.select_files, torrent.name = folder, '1,3', 'Holiday'
+        chosen_files = [os.path.join(folder, 'Holiday', 'clip.mp4'),
+                        os.path.join(folder, 'Holiday', 'extras', 'photo.jpg')]
+        os.makedirs(os.path.join(folder, 'Holiday', 'extras'))
+        for path in chosen_files + [os.path.join(folder, 'Holiday', 'notes.txt')]:
+            with open(path, 'wb') as handle:
+                handle.write(b'x' * 64)
+        app.refresh()
+        settle()
+
+        rows = app._rows
+        with_share = sorted(task_id for task_id, row in rows.items()
+                            if row.share_button.parent is row.heading)
+        report('finished downloads carry a share button, and nothing else does',
+               with_share == sorted([video.id, photo.id, torrent.id]),
+               f'{len(with_share)} of {len(rows)} rows')
+
+        reveal(rows[video.id].title)
+        tap(rows[video.id].title)
+        report("tapping a finished download's name opens its file",
+               hands.opened[-1:] == [video.file_path], str(hands.opened[-1:]))
+        reveal(rows[photo.id].detail)
+        tap(rows[photo.id].detail)
+        report('and so does its status line, which says so',
+               hands.opened[-1:] == [photo.file_path] and 'tap to open' in rows[photo.id].detail.text,
+               rows[photo.id].detail.text)
+        reveal(rows[video.id].share_button)
+        tap(rows[video.id].share_button)
+        report('the share button shares that file', hands.shared[-1:] == [[video.file_path]],
+               str(hands.shared[-1:]))
+
+        count = len(hands.opened)
+        reveal(rows[torrent.id].title)
+        tap(rows[torrent.id].title)
+        wait_until(lambda: app.details is not None and app.details.parent is Window, 3)
+        settle(3)
+        from grabbit_mobile.ui.details import FileLine
+        lines = [w for w in reversed(app.details.rows.children) if isinstance(w, FileLine)]
+        report('a torrent of several files opens the list of the ones chosen',
+               app.details.tab == 'Files' and len(lines) == 2 and len(hands.opened) == count,
+               f'{len(lines)} files')
+        if lines:
+            tap(lines[-1])
+            report('and tapping one opens it', hands.opened[-1:] == chosen_files[-1:],
+                   str(hands.opened[-1:]))
+        app.details.dismiss()
+        wait_until(lambda: app.details.parent is None, 3)
+
+        # Picking out.
+        before = paused.state
+        reveal(rows[paused.id].detail)
+        hold(rows[paused.id].detail)
+        report('holding a download picks it out, with a buzz',
+               app.choosing and app.chosen == {paused.id} and hands.buzzes == 1
+               and app.choose_bar.parent is app.top_slot
+               and app.choose_actions.parent is app.bottom_slot,
+               f'{len(app.chosen)} picked')
+        report('and the finger that held it is not also a tap',
+               paused.state == before, f'{before} -> {paused.state}')
+        report('its ring is ticked, and the buttons on the rows make way',
+               rows[paused.id].glyph._kind == 'chosen' and rows[video.id].glyph._kind == 'unchosen'
+               and all(row.details_button.parent is None for row in rows.values()))
+        opened = len(hands.opened)
+        reveal(rows[video.id].title)
+        tap(rows[video.id].title)
+        report('a tap then picks another, rather than opening it',
+               app.chosen == {paused.id, video.id} and len(hands.opened) == opened
+               and app.chosen_label.text == '2 selected', app.chosen_label.text)
+        reveal(rows[video.id].detail)
+        tap(rows[video.id].detail)
+        report('and a second tap drops it again', app.chosen == {paused.id})
+
+        tap(app.choose_all_button)
+        report('Select all picks every download on show',
+               app.chosen == set(rows) and app.choose_all_button.text == 'Select none',
+               f'{len(app.chosen)} of {len(rows)}')
+        buttons = [app.choose_all_button, app.share_chosen_button, app.remove_chosen_button]
+        report('every button while picking has room for its word',
+               labels_clear(buttons, room=BUTTON_MARGIN), f'{Window.width}px wide')
+        tap(app.share_chosen_button)
+        report('Share shares every file the finished ones made, and stops picking',
+               sorted(hands.shared[-1]) == sorted([video.file_path, photo.file_path] + chosen_files)
+               and not app.choosing, f'{len(hands.shared[-1])} files')
+
+        count = len(list(app.engine.store))
+        reveal(rows[video.id].title)
+        hold(rows[video.id].title)
+        reveal(rows[photo.id].title)
+        tap(rows[photo.id].title)
+        tap(app.remove_chosen_button)
+        settle(6)
+        dialog = open_dialog()
+        texts = [b.text for b in reversed(dialog.buttons.children)] if dialog else []
+        report('Remove asks once, for all of them',
+               dialog is not None and 'Delete them too' in texts and 'Keep the files' in texts,
+               ' / '.join(texts))
+        if dialog is not None:
+            tap(next(b for b in dialog.buttons.children if b.text == 'Keep the files'))
+            wait_until(lambda: open_dialog() is None, 3)
+        report('and removes exactly those, and stops picking',
+               len(list(app.engine.store)) == count - 2 and video.id not in rows
+               and photo.id not in rows and not app.choosing,
+               f'{count} -> {len(list(app.engine.store))}')
+
+        reveal(rows[paused.id].title)
+        hold(rows[paused.id].title)
+        Window.dispatch('on_keyboard', 27, 0, None, [])
+        settle()
+        report('Back stops picking, and removes nothing',
+               not app.choosing and paused.id in rows and all(
+                   row.details_button.parent is row.heading for row in rows.values()))
+
+        reveal(rows[paused.id].title)
+        hold(rows[paused.id].title)
+        reveal(app._status_chips['seeding'])
+        tap(app._status_chips['seeding'])
+        report('a filter that hides the picked ones stops picking',
+               not app.choosing and app.status_filter == 'seeding')
+        reveal(app._status_chips['all'])
+        tap(app._status_chips['all'])
+
+        reveal(rows[paused.id].title)
+        hold(rows[paused.id].title, wander=dp(60))
+        report('a finger sliding along a download does not pick it', not app.choosing)
+
+        os.remove(chosen_files[0])
+        os.remove(chosen_files[1])
+        os.remove(os.path.join(folder, 'Holiday', 'notes.txt'))
+        opened = len(hands.opened)
+        reveal(rows[torrent.id].title)
+        tap(rows[torrent.id].title)
+        settle()
+        report('a download whose files are gone says so, rather than opening nothing',
+               len(hands.opened) == opened and 'moved or deleted' in app.message.text,
+               app.message.text)
+    finally:
+        app.hands = None
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def check(app):
     """Tap through everything and report it, the way the other tests do."""
     results = []
@@ -551,7 +778,7 @@ def check(app):
            soon == 1 and len(UPDATE_CHECKS) == 2, f'{soon} then {len(UPDATE_CHECKS)} check(s)')
 
     from kivy.metrics import dp
-    title = app.root_box.children[-1].children[-1]
+    title = app.top_bar.children[-1]
     inset = title.to_window(title.x, 0)[0]
     report("the title sits in from the edge, in line with the link box's text",
            inset >= dp(16), f'{inset:.0f}px')
@@ -625,6 +852,7 @@ def check(app):
     wait_until(lambda: app.details.parent is None)
     check_dialogs(app, report)
     check_settings(app, report)
+    check_finished(app, report)
 
     failures = [name for name, ok in results if not ok]
     print()
@@ -748,6 +976,13 @@ def main():
                         app.details.show_tab(name)
                     wanted = sys.argv[sys.argv.index('--tab') + 1] if '--tab' in sys.argv else 'General'
                     app.details.show_tab(wanted)
+                    Clock.schedule_once(
+                        lambda _: (Window.screenshot(name=shot), app.stop()), 0.8)
+                elif '--choose' in sys.argv:
+                    # Two downloads picked out, as holding one and tapping another leaves them.
+                    ids = [t.id for t in app.engine.store]
+                    app.start_choosing(ids[2])
+                    app.toggle_chosen(ids[4])
                     Clock.schedule_once(
                         lambda _: (Window.screenshot(name=shot), app.stop()), 0.8)
                 elif '--settings' in sys.argv:

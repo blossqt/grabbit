@@ -44,6 +44,7 @@ from grabbit.tasks import (KIND_IMAGE, KIND_MEDIA, RUNNING_STATES,  # noqa: E402
                            State)
 from grabbit.util import human_speed                        # noqa: E402
 from grabbit_mobile import paths                            # noqa: E402
+from grabbit_mobile.files import finished, finished_files   # noqa: E402
 from grabbit_mobile.remote import RemoteEngine              # noqa: E402
 from grabbit_mobile.ui import theme                         # noqa: E402
 from grabbit_mobile.ui.choose import ChoosePage             # noqa: E402
@@ -174,10 +175,21 @@ class GrabbitApp(App):
         self.selected_id = ''
         self.status_filter = 'all'
         self.kind_filter = 'all'
+        # Holding a download picks it out, and a tap then picks or drops
+        # others: the downloads picked, while that goes on (start_choosing).
+        self.choosing = False
+        self.chosen = set()
+        self.hands = None           # FileShare and Touch (java/), on a phone
 
         root = BoxLayout(orientation='vertical', padding=dp(8), spacing=dp(6))
         self.root_box = root
-        root.add_widget(self._build_top_bar())
+        # While downloads are being picked out, the title bar says how many
+        # and the footer becomes what to do with them.
+        self.top_bar = self._build_top_bar()
+        self.choose_bar = self._build_choose_bar()
+        self.top_slot = BoxLayout(size_hint_y=None, height=self.top_bar.height)
+        self.top_slot.add_widget(self.top_bar)
+        root.add_widget(self.top_slot)
         # A newer Grabbit, when a check finds one. Like the graph below, it
         # lives in a slot that is emptied rather than shrunk to nothing: a
         # zero-height layout still lays out its children, and they go on
@@ -227,7 +239,10 @@ class GrabbitApp(App):
                                halign='center', valign='middle')
         self.footer.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
         self.footer.bind(on_release=lambda *_: self.check_for_updates(manual=True))
-        root.add_widget(self.footer)
+        self.choose_actions = self._build_choose_actions()
+        self.bottom_slot = BoxLayout(size_hint_y=None, height=self.footer.height)
+        self.bottom_slot.add_widget(self.footer)
+        root.add_widget(self.bottom_slot)
 
         self.details = None         # made the first time one is opened
         self.settings_page = None   # while Settings is open
@@ -243,6 +258,8 @@ class GrabbitApp(App):
         self._insets_later = Clock.create_trigger(lambda *_: self._apply_insets(), 0.35)
         Window.bind(on_resize=lambda *_: self._insets_later(),
                     keyboard_height=lambda *_: self._insets_later())
+        # Back leaves picking downloads before it leaves the app.
+        Window.bind(on_keyboard=self._on_key)
         Clock.schedule_interval(lambda *_: self.refresh(), 1.0)
         # The first check comes as soon as the app is on screen (_on_screen);
         # after that twice a day while open, and each time it is opened again
@@ -352,6 +369,36 @@ class GrabbitApp(App):
             banner.add_widget(widget)
         return banner
 
+    def _build_choose_bar(self):
+        """The title bar while downloads are being picked out: leave, how
+        many, and all of them."""
+        bar = BoxLayout(size_hint_y=None, height=dp(34), spacing=dp(6), padding=[0, 0, dp(2), 0])
+        leave = FlatButton(text='×', font_size=dp(22), size_hint_x=None, width=dp(38),
+                           color=theme.TEXT, fill=theme.TRANSPARENT)
+        leave.bind(on_release=lambda *_: self.stop_choosing())
+        self.chosen_label = Label(text='', color=theme.TEXT, font_size=dp(16), bold=True,
+                                  halign='left', valign='middle', shorten=True,
+                                  shorten_from='right')
+        self.chosen_label.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
+        self.choose_all_button = FlatButton(text='Select all', size_hint_x=None, width=dp(108),
+                                            font_size=dp(13), color=theme.TEXT)
+        self.choose_all_button.bind(on_release=lambda *_: self.choose_all())
+        for widget in (leave, self.chosen_label, self.choose_all_button):
+            bar.add_widget(widget)
+        return bar
+
+    def _build_choose_actions(self):
+        """The footer while downloads are being picked out: what to do with them."""
+        row = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
+        self.share_chosen_button = FlatButton(text='Share', font_size=dp(15), color=theme.TEXT)
+        self.share_chosen_button.bind(on_release=lambda *_: self.share_chosen())
+        self.remove_chosen_button = FlatButton(text='Remove', font_size=dp(15),
+                                               color=theme.state_color(State.ERROR))
+        self.remove_chosen_button.bind(on_release=lambda *_: self.remove_chosen())
+        row.add_widget(self.share_chosen_button)
+        row.add_widget(self.remove_chosen_button)
+        return row
+
     def _build_add_row(self):
         row = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
         # Android's own text field on a phone, so holding it gives Android's
@@ -411,6 +458,8 @@ class GrabbitApp(App):
         # Start the downloader - or find it still running, downloads and all,
         # from before this window opened.
         self.engine.controls, self.engine.context = window_controls()
+        from grabbit_mobile.bootstrap import hands
+        self.hands = hands()
         if self.engine.controls is None:
             self._run_downloader_here()
         self.engine.start()
@@ -847,17 +896,20 @@ class GrabbitApp(App):
             except Exception:
                 Logger.exception('Settings: could not ask about battery use')
 
-    def open_details(self, task_id: str):
+    def open_details(self, task_id: str, tab: str = 'General'):
         if self.details is None:
-            self.details = DetailsSheet(self.engine)
-        self.details.open_task(task_id)
+            self.details = DetailsSheet(self.engine, on_open_file=self.open_file)
+        self.details.open_task(task_id, tab)
 
     def toggle_task(self, task_id: str):
-        """Start what is waiting, pause what is running, try again what failed."""
+        """Start what is waiting, pause what is running, try again what
+        failed, open what is finished."""
         task = self.engine.store.get(task_id)
         if task is None:
             return
-        if task.state in (State.PAUSED, State.ERROR):
+        if task.state == State.COMPLETED:
+            self.open_task(task_id)
+        elif task.state in (State.PAUSED, State.ERROR):
             self.engine.expect(task.name or task.source)
             self.engine.resume([task_id])
         elif task.state in (State.DOWNLOADING, State.SEEDING, State.QUEUED):
@@ -866,39 +918,183 @@ class GrabbitApp(App):
 
     def confirm_remove(self, task_id: str):
         """Stop a download, and ask before throwing away what it has."""
-        task = self.engine.store.get(task_id)
-        if task is None:
+        self._confirm_removing([task_id])
+
+    def _confirm_removing(self, ids, then=None):
+        """One question for any number of downloads; then() once they are gone."""
+        tasks = [task for task in map(self.engine.store.get, ids) if task is not None]
+        if not tasks:
             return
 
         def finish(delete_files):
-            self.engine.remove([task_id], delete_files=delete_files)
-            if self.selected_id == task_id:
+            gone = [task.id for task in tasks]
+            self.engine.remove(gone, delete_files=delete_files)
+            if self.selected_id in gone:
                 self.selected_id = ''
                 self.graph.select('')
+            if then is not None:
+                then()
             self._schedule_refresh()
 
-        Dialog('Remove this download?', task.name or task.source, [
+        names = [task.name or task.source for task in tasks]
+        if len(tasks) == 1:
+            title, keep, delete = 'Remove this download?', 'Keep the file', 'Delete it too'
+            about = names[0]
+        else:
+            title, keep, delete = f'Remove {len(tasks)} downloads?', 'Keep the files', 'Delete them too'
+            about = '\n'.join(names[:3]) + (f'\nand {len(names) - 3} more' if len(names) > 3 else '')
+        Dialog(title, about, [
             ('Cancel', 'plain', None),
-            ('Keep the file', 'plain', lambda: finish(False)),
-            ('Delete it too', 'danger', lambda: finish(True))]).open()
+            (keep, 'plain', lambda: finish(False)),
+            (delete, 'danger', lambda: finish(True))]).open()
+
+    # ----------------------------------------------------- finished downloads
+    def open_task(self, task_id: str):
+        """Open what a finished download made: its file, in whatever the phone
+        opens that kind with - or, for a torrent of several, the list of
+        them, to open one from."""
+        task = self.engine.store.get(task_id)
+        if task is None:
+            return
+        found = finished_files(task)
+        if len(found) == 1:
+            self.open_file(found[0])
+        elif found:
+            self.open_details(task_id, 'Files')
+        else:
+            self._say_handed('gone', task.name or task.source)
+
+    def open_file(self, path: str):
+        if self.hands is not None:
+            answer = self.hands.open(path)
+        else:
+            # Off a phone, the preview opens it the desktop's way.
+            from grabbit.util import open_path
+            answer = '' if open_path(path) else 'gone'
+        self._say_handed(answer, os.path.basename(path))
+
+    def share_tasks(self, ids):
+        """Android's share sheet, with every file the finished ones of these made."""
+        tasks = [task for task in map(self.engine.store.get, ids) if task is not None]
+        found = [path for task in tasks if finished(task) for path in finished_files(task)]
+        if not found:
+            if tasks:
+                self._say_handed('gone', tasks[0].name if len(tasks) == 1 else 'They')
+            return
+        answer = self.hands.share(found) if self.hands is not None else 'no-phone'
+        self._say_handed(answer, os.path.basename(found[0]))
+
+    def _say_handed(self, answer: str, name: str):
+        """Say why Android could not take a file, if it could not."""
+        if not answer:
+            return
+        kind = os.path.splitext(name)[1].lstrip('.').upper()
+        self._schedule_message('error', {
+            'gone': f'{name} has been moved or deleted',
+            'no-app': (f'Nothing on this phone opens {kind} files' if kind
+                       else 'Nothing on this phone opens this kind of file'),
+            'no-phone': 'Sharing needs the phone',
+        }.get(answer, 'Android would not take it'))
+
+    # ------------------------------------------------ picking out downloads
+    def start_choosing(self, task_id: str):
+        """A long press: pick this download out, and the ones tapped next."""
+        if self.engine.store.get(task_id) is None:
+            return
+        if self.choosing:
+            self.toggle_chosen(task_id)
+            return
+        if self.hands is not None:
+            self.hands.held()
+        self.choosing = True
+        self.chosen = {task_id}
+        self.top_slot.clear_widgets()
+        self.top_slot.add_widget(self.choose_bar)
+        self.bottom_slot.clear_widgets()
+        self.bottom_slot.add_widget(self.choose_actions)
+        self.bottom_slot.height = self.choose_actions.height
+        self.refresh()
+
+    def toggle_chosen(self, task_id: str):
+        self.chosen ^= {task_id}
+        if not self.chosen:
+            self.stop_choosing()
+            return
+        self.refresh()
+
+    def choose_all(self):
+        """Every download on show - or, when they all are already, none."""
+        shown = set(self._rows)
+        if shown and not shown <= self.chosen:
+            self.chosen = shown
+            self.refresh()
+        else:
+            self.stop_choosing()
+
+    def stop_choosing(self):
+        self.choosing = False
+        self.chosen = set()
+        self.top_slot.clear_widgets()
+        self.top_slot.add_widget(self.top_bar)
+        self.bottom_slot.clear_widgets()
+        self.bottom_slot.add_widget(self.footer)
+        self.bottom_slot.height = self.footer.height
+        self.refresh()
+
+    def share_chosen(self):
+        ids = list(self.chosen)
+        if not any(finished(task) for task in map(self.engine.store.get, ids) if task is not None):
+            self._schedule_message('info', 'Only a finished download can be shared')
+            return
+        self.stop_choosing()
+        self.share_tasks(ids)
+
+    def remove_chosen(self):
+        self._confirm_removing(list(self.chosen), then=self.stop_choosing)
+
+    def _on_key(self, _window, key, *_):
+        if key == 27 and self.choosing:
+            self.stop_choosing()
+            return True
+        return False
+
+    def _show_choosing(self):
+        """The count, and what the buttons would do to what is picked."""
+        tasks = [task for task in map(self.engine.store.get, self.chosen) if task is not None]
+        self.chosen_label.text = f'{len(tasks)} selected'
+        everything = bool(self._rows) and set(self._rows) <= self.chosen
+        self.choose_all_button.text = 'Select none' if everything else 'Select all'
+        self.share_chosen_button.color = (theme.TEXT if any(finished(t) for t in tasks)
+                                          else theme.DIM)
 
     # --------------------------------------------------------------- drawing
     def refresh(self):
         tasks = [t for t in self.engine.store
                  if matches(t, self.status_filter, self.kind_filter)]
-        seen = set()
+        seen = {task.id for task in tasks}
+        if self.choosing:
+            # Only what is on show stays picked: a button never acts on a
+            # download a filter, or its removal, has taken out of sight.
+            self.chosen &= seen
+            if not self.chosen:
+                self.stop_choosing()
+                return
         for task in tasks:
-            seen.add(task.id)
             row = self._rows.get(task.id)
             if row is None:
-                row = TaskRow(on_select=self.select_task, on_open=self.open_details,
-                              on_toggle=self.toggle_task, on_remove=self.confirm_remove)
+                row = TaskRow(on_select=self.select_task, on_details=self.open_details,
+                              on_toggle=self.toggle_task, on_remove=self.confirm_remove,
+                              on_open=self.open_task, on_share=lambda i: self.share_tasks([i]),
+                              on_hold=self.start_choosing, on_choose=self.toggle_chosen)
                 self._rows[task.id] = row
                 self.list.add_widget(row)
-            row.show(task, selected=(task.id == self.selected_id))
+            row.show(task, selected=(task.id == self.selected_id),
+                     choosing=(task.id in self.chosen) if self.choosing else None)
         for task_id in list(self._rows):
             if task_id not in seen:
                 self.list.remove_widget(self._rows.pop(task_id))
+        if self.choosing:
+            self._show_choosing()
 
         # The desktop puts a count beside each filter; so does this.
         for key, label in STATUS_FILTERS:

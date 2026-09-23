@@ -157,31 +157,42 @@ fi
 rm -rf "$STORAGE/build/venv"
 
 # RestartReceiver (java/) starts unfinished downloads again after the phone
-# restarts. p4a has no switch for a receiver, so it is written into the
-# manifest template: p4a's own, which a first build copies, and the copy in
-# the distribution, which every later build renders from. The check at the end
-# confirms it arrived.
-say 'declaring the restart receiver'
+# restarts; FileShare hands finished downloads to other apps, to open and to
+# share. p4a has no switch for either, so they are written into the manifest
+# template: p4a's own, which a first build copies, and the copy in the
+# distribution, which every later build renders from. Each goes in by itself,
+# as a template may already have the other. The checks at the end confirm
+# they arrived.
+say 'declaring the restart receiver and the file provider'
 python - "$STORAGE/dists/$DIST" <<'PY'
 import glob, os, sys
 import pythonforandroid
-RECEIVER = """        <receiver android:name="com.grabbit.downloader.RestartReceiver"
+ENTRIES = {
+    'RestartReceiver': """        <receiver android:name="com.grabbit.downloader.RestartReceiver"
                   android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
-"""
+""",
+    'FileShare': """        <provider android:name="com.grabbit.downloader.FileShare"
+                  android:authorities="com.grabbit.downloader.files"
+                  android:exported="false"
+                  android:grantUriPermissions="true" />
+""",
+}
 roots = [os.path.join(os.path.dirname(pythonforandroid.__file__), 'bootstraps'), sys.argv[1]]
 for root in roots:
     for path in glob.glob(os.path.join(root, '**', 'AndroidManifest.tmpl.xml'), recursive=True):
         with open(path, encoding='utf-8') as handle:
             text = handle.read()
-        if 'RestartReceiver' in text or '</application>' not in text:
+        missing = [name for name in ENTRIES if name not in text]
+        if not missing or '</application>' not in text:
             continue
+        added = ''.join(ENTRIES[name] for name in missing)
         with open(path, 'w', encoding='utf-8') as handle:
-            handle.write(text.replace('</application>', RECEIVER + '    </application>', 1))
-        print('   ' + path)
+            handle.write(text.replace('</application>', added + '    </application>', 1))
+        print(f'   {path}: {", ".join(missing)}')
 PY
 
 mkdir -p "$OUTDIR"
@@ -262,7 +273,7 @@ done
 # gallery-dl. grep -c rather than -q: -q stops reading at the first match, and
 # under pipefail the writer's broken pipe would fail the check it just passed.
 TOOLS="$ANDROID_ROOT/build-tools/35.0.0"
-for class in DownloadService ServiceEngine RestartReceiver; do
+for class in DownloadService ServiceEngine RestartReceiver FileShare Touch; do
   "$TOOLS/dexdump" "$APK" 2>/dev/null | grep -c "Lcom/grabbit/downloader/$class;" > /dev/null \
     || { echo "error: $class is not compiled into the APK" >&2; exit 1; }
 done
@@ -275,6 +286,9 @@ echo "   ServiceEngine, in a process of its own"
 echo "$MANIFEST" | grep -A8 'com.grabbit.downloader.RestartReceiver' | grep -c 'BOOT_COMPLETED' > /dev/null \
   || { echo "error: the manifest does not declare RestartReceiver for the phone restarting" >&2; exit 1; }
 echo "   RestartReceiver"
+echo "$MANIFEST" | grep -A6 'com.grabbit.downloader.FileShare' | grep -c 'com.grabbit.downloader.files' > /dev/null \
+  || { echo "error: the manifest does not declare FileShare, which opening and sharing downloads need" >&2; exit 1; }
+echo "   FileShare"
 PRIVATE="$(mktemp)"
 unzip -p "$APK" assets/private.tar > "$PRIVATE"
 LISTING="$(tar -tf "$PRIVATE")"

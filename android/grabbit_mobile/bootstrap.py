@@ -280,6 +280,51 @@ def window_controls():
         return None, None
 
 
+class Hands:
+    """What the window hands to Android: a finished download to open, files
+    to share, and the buzz of a long press. FileShare's and Touch's static
+    methods (java/), with the activity they take.
+
+    open and share answer '' when Android has it, or FileShare's word for why
+    not: 'gone', 'no-app' or 'failed'.
+    """
+
+    def __init__(self, files, touch, activity):
+        self._files, self._touch, self._activity = files, touch, activity
+
+    def open(self, path: str) -> str:
+        return self._files.open(self._activity, path)
+
+    def share(self, paths) -> str:
+        return self._files.share(self._activity, list(paths))
+
+    def held(self) -> None:
+        self._touch.held(self._activity)
+
+
+def hands():
+    """A Hands, or None off a phone - declared, and on the main thread, for
+    the reasons service_controls gives."""
+    try:
+        from jnius import JavaClass, JavaStaticMethod, MetaJavaClass, autoclass
+    except ImportError:
+        return None
+    try:
+        class FileShare(JavaClass, metaclass=MetaJavaClass):
+            __javaclass__ = 'com/grabbit/downloader/FileShare'
+            open = JavaStaticMethod('(Landroid/app/Activity;Ljava/lang/String;)Ljava/lang/String;')
+            share = JavaStaticMethod('(Landroid/app/Activity;[Ljava/lang/String;)Ljava/lang/String;')
+
+        class Touch(JavaClass, metaclass=MetaJavaClass):
+            __javaclass__ = 'com/grabbit/downloader/Touch'
+            held = JavaStaticMethod('(Landroid/app/Activity;)V')
+
+        return Hands(FileShare, Touch, autoclass('org.kivy.android.PythonActivity').mActivity)
+    except Exception:
+        log.exception('this build cannot hand files to other apps')
+        return None
+
+
 def has_all_files_access() -> bool | None:
     """Whether Android will let us write outside our own folder.
 
