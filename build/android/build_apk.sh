@@ -28,7 +28,9 @@ NAME=Grabbit
 # One version for both platforms: the shared package is where it is written.
 VERSION="${GRABBIT_VERSION:-$(sed -n "s/^APP_VERSION = '\(.*\)'/\1/p" "$ROOT/app/grabbit/__init__.py")}"
 ARCH=arm64-v8a
-API="${TARGET_API:-35}"
+# shellcheck source=versions.sh
+source "$HERE/versions.sh"
+API="$P4A_API"
 MINSDK="${MIN_SDK:-24}"
 # yt-dlp-ejs carries the JavaScript that QuickJS runs for YouTube's challenges;
 # without it a JS runtime on its own gets nowhere. mutagen is deliberately left
@@ -69,15 +71,9 @@ fi
 # ------------------------------------------------------- SDK and NDK
 export ANDROID_HOME="$ANDROID_ROOT"
 export ANDROID_SDK_ROOT="$ANDROID_ROOT"
-SDKMANAGER="$ANDROID_ROOT/cmdline-tools/latest/bin/sdkmanager"
-# p4a is tested against NDK 28; the newer one fetch_sdk.sh brings down builds
-# our own binaries happily but is past what p4a supports, so install 28 for it.
-P4A_NDK=28.2.13676358
-if [ ! -d "$ANDROID_ROOT/platforms/android-$API" ] || [ ! -d "$ANDROID_ROOT/ndk/$P4A_NDK" ]; then
-  say "installing SDK platform $API, build-tools and NDK $P4A_NDK"
-  yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
-  "$SDKMANAGER" "platforms;android-$API" "build-tools;35.0.0" "ndk;$P4A_NDK" >/dev/null
-fi
+# fetch_sdk.sh has normally installed these already; this is for a machine
+# where it ran before it did.
+install_p4a_sdk "$ANDROID_ROOT"
 
 NDK="$(ls -d "$ANDROID_ROOT"/ndk/28.* 2>/dev/null | sort -V | tail -1 || true)"
 [ -n "$NDK" ] || NDK="${ANDROID_NDK_HOME:-$(ls -d "$ANDROID_ROOT"/android-ndk-r* | sort -V | tail -1)}"
@@ -272,7 +268,7 @@ done
 # of its own with the type Android 14 insists on (see --service above) - and for
 # gallery-dl. grep -c rather than -q: -q stops reading at the first match, and
 # under pipefail the writer's broken pipe would fail the check it just passed.
-TOOLS="$ANDROID_ROOT/build-tools/35.0.0"
+TOOLS="$ANDROID_ROOT/build-tools/$P4A_BUILD_TOOLS"
 for class in DownloadService ServiceEngine RestartReceiver FileShare Touch; do
   "$TOOLS/dexdump" "$APK" 2>/dev/null | grep -c "Lcom/grabbit/downloader/$class;" > /dev/null \
     || { echo "error: $class is not compiled into the APK" >&2; exit 1; }

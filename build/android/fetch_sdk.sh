@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Fetches the Android pieces that need no root: the NDK (to cross-compile
 # aria2, QuickJS and FFmpeg for phones), platform-tools (adb) and the
-# command-line tools (sdkmanager, which needs a JDK and is used afterwards).
+# command-line tools (sdkmanager, which needs a JDK) - and, where there is a
+# JDK, what python-for-android builds the APK against (versions.sh).
 #
 # Everything lands in ~/android. Run it inside WSL:
 #   bash build/android/fetch_sdk.sh
 set -euo pipefail
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${ANDROID_HOME:-$HOME/android}"
 REPO=https://dl.google.com/android/repository
 mkdir -p "$ROOT/downloads"
@@ -82,6 +84,16 @@ if [ ! -d cmdline-tools/latest ]; then
   mkdir -p cmdline-tools
   mv cmdline-tools-tmp/cmdline-tools cmdline-tools/latest
   rmdir cmdline-tools-tmp
+fi
+
+# Here rather than in build_apk.sh, so that a CI run keeps them with the rest
+# of the toolchain: its cache is written between this script and that one.
+# shellcheck source=versions.sh
+source "$HERE/versions.sh"
+if command -v java >/dev/null 2>&1; then
+  install_p4a_sdk "$ROOT"
+else
+  echo "   no JDK yet: build_apk.sh installs the SDK platform and NDK it needs"
 fi
 
 NDK_DIR="$ROOT/$(ls -d android-ndk-r* 2>/dev/null | sort -V | tail -1 | xargs -n1 basename)"

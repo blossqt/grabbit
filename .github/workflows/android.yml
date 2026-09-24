@@ -60,12 +60,19 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Make room on the runner
-        # The image ships SDKs we do not use, and the NDK plus p4a's build
-        # tree need roughly 15 GB between them.
+        # The NDK plus p4a's build tree need roughly 15 GB between them. The
+        # image ships SDKs we do not use, but deleting them takes minutes -
+        # as long as the rest of a cached build - and today's runners have
+        # far more room than that to begin with, so they go only when the
+        # disk is short.
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
-          df -h /
+          free=$(df --output=avail -BG / | tail -1 | tr -dc '0-9')
+          echo "free: ${free} GB"
+          if [ "$free" -lt 40 ]; then
+            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                        /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+            df -h /
+          fi
 
       - uses: actions/setup-java@v5
         with:
@@ -76,26 +83,14 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install what the cross-compiles need
-        # autopoint and gettext are for aria2's autoreconf. libltdl-dev is for
-        # p4a's libffi recipe: its configure.ac asks for LT_SYS_SYMBOL_USCORE,
-        # which is not in any of the five files libtoolize copies - it is in
-        # ltdl.m4, and only this package puts that where aclocal looks.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            autoconf automake libtool libltdl-dev pkg-config cmake ninja-build ccache \
-            gettext autopoint texinfo libncurses-dev \
-            build-essential patch unzip zip curl git \
-            libffi-dev libssl-dev zlib1g-dev libbz2-dev liblzma-dev libsqlite3-dev
-
       # Three caches, each restored here and written back further down as
       # soon as the thing it holds is built. Writing them back at the end
       # instead - which is what a plain cache step does - would mean a
       # failure in the last half hour threw away the first two hours too.
 
-      # The Android SDK and NDK: ~2.5 GB, and unchanged between runs unless
-      # the fetch script changes.
+      # The Android SDK and NDK - ours and the ones p4a builds against - with
+      # their licences: a few GB, unchanged unless fetch_sdk.sh or
+      # versions.sh changes.
       - name: Restore the Android toolchain
         id: toolchain
         uses: actions/cache/restore@v4
@@ -107,7 +102,8 @@ jobs:
             ~/android/build-tools
             ~/android/cmdline-tools
             ~/android/platform-tools
-          key: ${{ env.TOOLCHAIN_KEY }}-${{ hashFiles('build/android/fetch_sdk.sh', 'build/android/build_apk.sh') }}
+            ~/android/licenses
+          key: ${{ env.TOOLCHAIN_KEY }}-${{ hashFiles('build/android/fetch_sdk.sh', 'build/android/versions.sh') }}
           restore-keys: ${{ env.TOOLCHAIN_KEY }}-
 
       # The four binaries the APK carries. Compiling them takes a good part
@@ -125,9 +121,10 @@ jobs:
 
       # CPython, SDL and Kivy are compiled from source the first time and
       # take most of an hour between them. Nothing in the app changes them,
-      # so keep the tree p4a builds them in. The key names this run and so
-      # never matches; the prefix below picks up the newest tree there is,
-      # and the step at the bottom leaves a newer one behind.
+      # so keep the tree p4a builds them in, under the scripts that shape it:
+      # while they stay the same, every build restores the whole tree and
+      # writes nothing back. When they change, the prefix finds the newest
+      # tree there is, and a whole one is written for the new scripts.
       - name: Restore python-for-android's build tree
         id: p4a
         uses: actions/cache/restore@v4
@@ -138,8 +135,27 @@ jobs:
             ~/android/p4a-build/build/other_builds
             ~/android/p4a-build/build/bootstrap_builds
             ~/android/p4a-build/dists
-          key: ${{ env.P4A_KEY }}-${{ github.run_id }}
+          key: ${{ env.P4A_KEY }}-${{ hashFiles('build/android/setup_p4a.sh', 'build/android/build_apk.sh', 'build/android/versions.sh', 'build/android/recipes/**') }}
           restore-keys: ${{ env.P4A_KEY }}-
+
+      - name: Install what the cross-compiles need
+        # Only when something will be compiled: the binaries, or p4a's build
+        # tree, missing from their caches. A build from both only packs.
+        #
+        # autopoint and gettext are for aria2's autoreconf. libltdl-dev is for
+        # p4a's libffi recipe: its configure.ac asks for LT_SYS_SYMBOL_USCORE,
+        # which is not in any of the five files libtoolize copies - it is in
+        # ltdl.m4, and only this package puts that where aclocal looks.
+        if: >-
+          steps.natives.outputs.cache-hit != 'true' || steps.p4a.outputs.cache-hit != 'true'
+          || inputs.rebuild_natives
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            autoconf automake libtool libltdl-dev pkg-config cmake ninja-build ccache \
+            gettext autopoint texinfo libncurses-dev \
+            build-essential patch unzip zip curl git \
+            libffi-dev libssl-dev zlib1g-dev libbz2-dev liblzma-dev libsqlite3-dev
 
       - name: Fetch the SDK and NDK
         id: sdk
@@ -156,7 +172,8 @@ jobs:
             ~/android/build-tools
             ~/android/cmdline-tools
             ~/android/platform-tools
-          key: ${{ env.TOOLCHAIN_KEY }}-${{ hashFiles('build/android/fetch_sdk.sh', 'build/android/build_apk.sh') }}
+            ~/android/licenses
+          key: ${{ env.TOOLCHAIN_KEY }}-${{ hashFiles('build/android/fetch_sdk.sh', 'build/android/versions.sh') }}
 
       - name: Cross-compile aria2
         if: steps.natives.outputs.cache-hit != 'true' || inputs.rebuild_natives
@@ -242,16 +259,15 @@ jobs:
         id: build
         run: bash build/android/build_apk.sh
 
-      # Written back even when the build failed, because what it holds is
-      # CPython, SDL and Kivy - none of which this app can break, and all of
-      # which p4a rebuilds by itself if a recipe did not finish.
-      #
-      # The run number on the end makes this a fresh entry every time, which
-      # the restore above then finds by prefix. Without it the first run to
-      # finish would own the key for good, and every later run would rebuild
-      # whatever that first one had not got to yet and then throw it away.
+      # Written back only when it was not restored whole, and under the
+      # scripts' key only once an APK came out of it: an entry cannot be
+      # replaced, so a half-built tree there would be restored, and rebuilt,
+      # by every run until the scripts next change. A failed build still
+      # keeps what it compiled - CPython, SDL and Kivy, which this app cannot
+      # break and p4a finishes by itself - under a name of its own, which
+      # the prefix finds next time.
       - name: Keep python-for-android's build tree
-        if: always() && steps.p4asetup.outcome == 'success'
+        if: steps.build.outcome == 'success' && steps.p4a.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: |
@@ -260,7 +276,19 @@ jobs:
             ~/android/p4a-build/build/other_builds
             ~/android/p4a-build/build/bootstrap_builds
             ~/android/p4a-build/dists
-          key: ${{ env.P4A_KEY }}-${{ github.run_id }}
+          key: ${{ env.P4A_KEY }}-${{ hashFiles('build/android/setup_p4a.sh', 'build/android/build_apk.sh', 'build/android/versions.sh', 'build/android/recipes/**') }}
+
+      - name: Keep what a failed build compiled
+        if: failure() && steps.p4asetup.outcome == 'success' && steps.p4a.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/android/p4a-venv
+            ~/android/p4a-build/packages
+            ~/android/p4a-build/build/other_builds
+            ~/android/p4a-build/build/bootstrap_builds
+            ~/android/p4a-build/dists
+          key: ${{ env.P4A_KEY }}-partial-${{ github.run_id }}
 
       - name: Name it after the commit
         id: apk
