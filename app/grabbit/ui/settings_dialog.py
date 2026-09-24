@@ -141,7 +141,8 @@ class SettingsDialog(QDialog):
         form.addRow('Extra trackers', self.trackers)
 
         # ------------------------------------------------------ videos/photos
-        form = _page(tabs, 'Videos & photos')
+        # && is how Qt writes one & in a tab's name; a single one it hides.
+        form = _page(tabs, 'Videos && Photos')
         self.quality = QComboBox()
         for value, label in VIDEO_QUALITIES:
             self.quality.addItem(label, value)

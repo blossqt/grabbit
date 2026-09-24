@@ -276,6 +276,19 @@ def main():
            edge.name() == icons.APP_ICON_COLOR and edge.alpha() == 255 and corner.alpha() == 0,
            f'edge {edge.name()} alpha {edge.alpha()}, corner alpha {corner.alpha()}')
 
+    # Qt hides a single & in a tab's name - it marks the key that picks the
+    # tab - so a name meant to show one has to be written with two.
+    from PySide6.QtWidgets import QTabWidget
+    from grabbit.ui.settings_dialog import SettingsDialog
+    dialog = SettingsDialog(engine.settings, window)
+    tabs = dialog.findChild(QTabWidget)
+    names = [tabs.tabText(i) for i in range(tabs.count())]
+    shown = [name.replace('&&', '\0').replace('&', '').replace('\0', '&') for name in names]
+    report('every Options tab shows its whole name, & included',
+           'Videos & Photos' in shown and all('&' not in n.replace('&&', '') for n in names),
+           ' | '.join(shown))
+    dialog.deleteLater()
+
     check_still(app)
 
     engine.shutdown()

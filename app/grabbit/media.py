@@ -31,7 +31,7 @@ INFO_FRESH_SECONDS = 3600  # media URLs go stale; re-extract after an hour
 
 # What to suggest when a site refuses an anonymous download. The phone, which
 # has no cookies to offer, clears it (grabbit_mobile/engine.py).
-REFUSED_HINT = ('Options › Videos & photos › "Use cookies from" '
+REFUSED_HINT = ('Options › Videos & Photos › "Use cookies from" '
                 '(Firefox works best) usually fixes this.')
 
 
