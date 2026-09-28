@@ -70,7 +70,11 @@ def play_link(url: str, settings, parent=None, on_state=None):
         if not ok:
             streamserver.server().forget(local_url)
             if parent is not None:
-                QMessageBox.warning(parent, 'Preview', 'No video player could be started.')
+                QMessageBox.warning(
+                    parent, 'Preview',
+                    "No video player on this PC could open the stream. Windows' own Media "
+                    'Player app cannot play one from another program; VLC or mpv can, and '
+                    'Grabbit uses either of them once it is installed.')
         else:
             log.info('previewing in %s', player_name)
             window = QApplication.activeWindow()

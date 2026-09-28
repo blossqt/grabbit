@@ -289,6 +289,29 @@ def main():
            ' | '.join(shown))
     dialog.deleteLater()
 
+    # Watch, with no mpv or VLC: a Store app - Windows 11's Media Player -
+    # cannot reach the stream server, so a stream goes to the desktop Windows
+    # Media Player instead; a file still opens in whatever opens its kind.
+    from unittest import mock
+    from grabbit import player
+    stream, file = 'http://127.0.0.1:1/token/clip.mp4', r'C:\clips\clip.mp4'
+    with mock.patch.object(player, 'find_player', return_value=None), \
+            mock.patch.object(player.os.path, 'isfile', return_value=True), \
+            mock.patch.object(player.subprocess, 'Popen') as launched, \
+            mock.patch.object(player.os, 'startfile', create=True) as opened:
+        with mock.patch.object(player, '_store_app_opens', return_value=True):
+            store_stream = player.play(stream, 'Clip')
+            store_file = player.play(file, 'Clip')
+        with mock.patch.object(player, '_store_app_opens', return_value=False):
+            desktop_stream = player.play(stream, 'Clip')
+    report('Watch sends a stream past a Store app to the desktop Media Player',
+           store_stream == (True, 'Windows Media Player')
+           and launched.call_args_list[0].args[0] == [player.LEGACY_PLAYER, stream], str(store_stream))
+    report('and a file on disk to whatever opens its kind, a playlist only for streams',
+           store_file == (True, 'default player') and opened.call_args_list[0].args[0] == file
+           and opened.call_args_list[1].args[0].endswith('.m3u') and desktop_stream[0],
+           ', '.join(str(c.args[0])[-20:] for c in opened.call_args_list))
+
     check_still(app)
 
     engine.shutdown()

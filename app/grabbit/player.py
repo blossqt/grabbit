@@ -2,7 +2,8 @@
 
 Preferred players are launched directly, because they can start paused and be
 given a window title. Anything else gets a one-line .m3u playlist opened with
-the system default, which is what Windows uses for playlists.
+the system default, which is what Windows uses for playlists - unless that
+default is a Store app, which cannot play a stream at all (LEGACY_PLAYER).
 """
 
 import logging
@@ -63,6 +64,23 @@ def _candidates():
                 yield os.path.basename(candidate), candidate, []
 
 
+# Windows 11 opens videos and playlists with its Media Player app, and a Store
+# app may not connect to this PC's own addresses - where the stream server is
+# (streamserver.py) - so a stream handed to one waits for ever. The desktop
+# Windows Media Player, which Windows still ships, may: it plays the stream.
+# Files on disk are another matter; a Store app opens those as well as any.
+LEGACY_PLAYER = os.path.join(os.environ.get('ProgramFiles', r'C:\Program Files'),
+                             'Windows Media Player', 'wmplayer.exe')
+
+
+def _store_app_opens(extension: str) -> bool:
+    """Whether Windows opens this kind of file with a Store app."""
+    choice = _from_registry(
+        rf'Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\{extension}\UserChoice',
+        'ProgId') or ''
+    return choice.startswith('AppX')
+
+
 def find_player() -> tuple[str, str, list] | None:
     for entry in _candidates():
         return entry
@@ -85,6 +103,26 @@ def play(url: str, title: str = '', start_paused: bool = True) -> tuple[bool, st
             return True, name
         except OSError as exc:
             log.warning('could not start %s: %s', exe, exc)
+
+    if not url.startswith(('http://', 'https://')):
+        # A file on disk: whatever the PC opens its kind with, handed the
+        # file itself - which a Store app can open, unlike a playlist of it.
+        try:
+            os.startfile(url)  # noqa: S606 - opens the user's own player
+            return True, 'default player'
+        except OSError as exc:
+            log.warning('could not open %s: %s', url, exc)
+            return False, ''
+
+    if _store_app_opens('.m3u'):
+        if os.path.isfile(LEGACY_PLAYER):
+            try:
+                subprocess.Popen([LEGACY_PLAYER, url], creationflags=CREATE_NO_WINDOW)
+                return True, 'Windows Media Player'
+            except OSError as exc:
+                log.warning('could not start %s: %s', LEGACY_PLAYER, exc)
+        log.warning('the default player is a Store app, which cannot open a stream')
+        return False, ''
 
     # No known player: let Windows decide via a tiny playlist file.
     try:
