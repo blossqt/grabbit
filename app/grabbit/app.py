@@ -3,6 +3,8 @@
 import logging
 import os
 import sys
+import threading
+import time
 from logging.handlers import RotatingFileHandler
 
 from PySide6.QtCore import QTimer
@@ -100,6 +102,7 @@ def self_test(answer: str) -> int:
         app = QApplication([sys.argv[0]])
         from .engine import Engine                    # noqa: F401
         from .ui.main_window import MainWindow        # noqa: F401
+        from . import media                           # noqa: F401 - yt-dlp, loaded late
         app.quit()
         with open(answer, 'w', encoding='utf-8') as handle:
             handle.write(APP_VERSION)
@@ -168,8 +171,26 @@ def main(argv=None) -> int:
 
     if arguments:
         QTimer.singleShot(400, lambda: window.handle_links(arguments))
+    threading.Thread(target=load_ytdlp, name='grabbit-load-ytdlp', daemon=True).start()
 
     return app.exec()
+
+
+def load_ytdlp():
+    """Load yt-dlp now that the window is up, so reading a link does not wait for it.
+
+    It is the largest thing Grabbit loads - most of a second, several straight
+    after Windows starts - and nothing needs it until a link is read or a
+    video is fetched, so the window opens without it and it comes in here.
+    Its sites are matched once too, which compiles every address pattern.
+    """
+    started = time.monotonic()
+    try:
+        from . import analyze, media                  # noqa: F401 - loading is the point
+        analyze.matching_extractor('https://grabbit.invalid/')
+    except Exception:
+        return        # the first link loads it instead, and reports what is wrong
+    log.info('yt-dlp loaded in %.2fs', time.monotonic() - started)
 
 
 if __name__ == '__main__':

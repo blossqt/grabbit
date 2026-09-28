@@ -38,6 +38,21 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
+def _listening(port: int) -> bool:
+    """Whether something takes connections on this loopback port yet.
+
+    Asked with a short timeout, because Windows does not turn a connection to
+    a port nobody listens on away at once: it tries again every half second
+    for two seconds. Asked plainly, aria2 listening a moment after the first
+    try would still cost that half second at every start.
+    """
+    try:
+        with socket.create_connection(('127.0.0.1', port), timeout=0.05):
+            return True
+    except OSError:
+        return False
+
+
 class Aria2Client:
     """Minimal JSON-RPC client. Safe to call from several threads."""
 
@@ -193,6 +208,9 @@ class Aria2Process:
                 except Exception:
                     pass
                 raise Aria2Error(f'aria2 exited immediately (code {self.process.returncode}): {output}')
+            if not _listening(self.port):
+                time.sleep(0.01)
+                continue
             try:
                 self.version = (client.call('aria2.getVersion') or {}).get('version', '')
                 self.client = client

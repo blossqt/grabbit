@@ -6,7 +6,6 @@ import os
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from .. import media as media_mod
 from .. import player as player_mod
 from .. import streamserver
 
@@ -24,6 +23,7 @@ class _Resolve(QRunnable):
 
     def run(self):
         try:
+            from .. import media as media_mod     # yt-dlp: only once something is watched
             self.signals.done.emit(media_mod.resolve_stream(self.url, self.settings), '')
         except Exception as exc:
             self.signals.done.emit(None, str(exc))

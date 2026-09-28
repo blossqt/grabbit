@@ -13,7 +13,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from . import media as media_mod
 from .aria2rpc import Aria2Client, Aria2Error, Aria2Process
 from .paths import find_tool, logs_dir, torrents_dir
 from .tasks import (KIND_HTTP, KIND_IMAGE, KIND_MAGNET, KIND_MEDIA, KIND_TORRENT,
@@ -228,7 +227,7 @@ class Engine(QObject):
                 if task.kind == KIND_MEDIA:
                     if task.state != State.PAUSED:
                         task.state = State.QUEUED
-                        self._queue_media(task)
+                        self._media_queue.append(task.id)
                 elif task.kind in (KIND_HTTP, KIND_IMAGE):
                     self._add_uri_task(task, paused=task.state == State.PAUSED)
                 elif task.kind == KIND_TORRENT and task.torrent_file and os.path.exists(task.torrent_file):
@@ -246,6 +245,8 @@ class Engine(QObject):
                 task.state = State.ERROR
                 task.error = str(exc)
         self.store.mark_dirty()
+        # Videos carry on once the window is up, as starting one loads yt-dlp.
+        QTimer.singleShot(0, self._pump_media)
 
     # ---------------------------------------------------------------- adding
     def _register(self, task: Task) -> Task:
@@ -501,6 +502,9 @@ class Engine(QObject):
             task = self.store.get(task_id)
             if not task or task.state in FINISHED_STATES or task.state == State.PAUSED:
                 continue
+            # media.py brings yt-dlp, the slowest thing Grabbit loads: loaded
+            # when a video is first fetched, the window opens without it.
+            from . import media as media_mod
             job = media_mod.MediaJob(task, self.settings, {
                 'emit': lambda tid, event, payload: self._media_event.emit(tid, event, payload),
                 'aria2_add': self._media_aria2_add,
