@@ -1,6 +1,8 @@
 r"""Publish a Grabbit release - the one both apps then offer as an update.
 
-    build\release.ps1                         publish the version in app\grabbit\__init__.py
+    build\release.ps1                         asks for the version and the notes
+                                              (right-click > Run with PowerShell)
+    build\release.ps1 --ask                   the same, from a terminal
     build\release.ps1 --version 1.3.0         set a new version first, then publish it
     build\release.ps1 --notes "What's new"    with release notes (or --notes-file notes.md)
     build\release.ps1 --no-build              use the Windows build already in dist\Grabbit
@@ -484,6 +486,48 @@ def fetch_apk(version: str, sha: str, dry_run: bool) -> Path:
 
 # -------------------------------------------------------------------- notes
 
+def next_version(current: str, previous: str | None) -> str:
+    """The app's own number if it is not out yet, else one past the last release."""
+    if not previous or updates.is_newer(current, previous):
+        return current
+    major, minor, patch = (int(part) for part in previous.lstrip('vV').split('.'))
+    return f'{major}.{minor}.{patch + 1}'
+
+
+def ask_version(current: str, previous: str | None) -> str:
+    """--ask: the number, with the next one offered."""
+    offered = next_version(current, previous)
+    print(f'\nThe last release is {previous or "none"}.')
+    while True:
+        try:
+            answer = input(f'Version to release [{offered}]: ').strip().lstrip('vV') or offered
+        except EOFError:
+            fail('no version given')
+        if not re.fullmatch(r'\d+\.\d+\.\d+', answer):
+            print(f'   {answer} is not a version like {offered}')
+        elif previous and not updates.is_newer(answer, previous):
+            print(f'   {answer} is not newer than {previous}')
+        else:
+            return answer
+
+
+def ask_notes(previous: str | None) -> str:
+    """--ask: the notes, a line per point; none at all lists the changes since
+    the last release, as it does without --notes."""
+    print('\nRelease notes: a line for each point, then an empty line to finish.')
+    print(f'Press Enter straight away to list the changes since {previous or "the start"}.')
+    lines = []
+    while True:
+        try:
+            line = input('   ').strip()
+        except EOFError:
+            break
+        if not line:
+            break
+        lines.append(line if line.startswith(('-', '*')) else f'- {line}')
+    return '\n'.join(lines)
+
+
 def default_notes(previous: str | None) -> str:
     span = f'{previous}..HEAD' if previous else 'HEAD'
     if previous:
@@ -508,6 +552,9 @@ def main() -> int:
     parser.add_argument('--yes', action='store_true', help='publish without asking first')
     parser.add_argument('--make-update-key', action='store_true',
                         help='make the key releases are signed with - once, ever')
+    parser.add_argument('--ask', action='store_true',
+                        help='ask for the version and the notes (release.ps1 run with nothing '
+                             'after it does this)')
     args = parser.parse_args()
 
     if args.make_update_key:
@@ -518,6 +565,10 @@ def main() -> int:
     os.chdir(ROOT)
 
     version = project_version()
+    if args.ask:
+        previous = latest_published()
+        args.version = ask_version(version, previous)
+        args.notes = args.notes or ask_notes(previous)
     if args.version:
         if not re.fullmatch(r'\d+\.\d+\.\d+', args.version):
             fail(f'{args.version} is not a version like 1.3.0')

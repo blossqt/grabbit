@@ -208,7 +208,9 @@ Check for updates**, or touch the version line at the bottom. **Settings ›
 Interface** on the desktop, and **Check by itself** on the phone, turn the
 automatic checks off.
 
-To publish a release:
+To publish a release, right-click `build\release.ps1` and choose **Run with
+PowerShell**: it asks for the version, offering the next one, and for the
+notes, and keeps its window open at the end. Or from a terminal:
 
     powershell -ExecutionPolicy Bypass -File build\release.ps1 --version 1.3.0 --notes "What's new"
 
