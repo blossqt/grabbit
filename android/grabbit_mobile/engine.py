@@ -342,8 +342,11 @@ class MobileEngine:
                                   mirrors=entry.urls, checksum=entry.checksum)
             elif kind in (analyze_mod.KIND_GALLERY, analyze_mod.KIND_PLAYLIST,
                           analyze_mod.KIND_MEDIA):
-                for item in result.probe.items:
-                    if item.optional:
+                # Which of a post's photos and videos were ticked, by their
+                # place in it; everything it holds when nothing says.
+                picked = choice.get('items')
+                for position, item in enumerate(result.probe.items):
+                    if item.optional or (picked is not None and position not in picked):
                         continue
                     if item.kind == 'image' and item.direct_url:
                         self.add_image(item, result.probe)

@@ -4,10 +4,13 @@ The desktop shows a card for every pasted link, holding the choices that link
 allows; this is that card, full screen. A video can be kept as a video at a
 chosen quality, as its sound, as a GIF, or as one picture - chosen by
 scrubbing through it, with the frame under the slider read straight from the
-stream (grabbit.frames), so nothing is downloaded to find it.
+stream (grabbit.frames), so nothing is downloaded to find it. A post of several
+photos and videos, or a playlist, shows them all in a grid, to untick the ones
+not wanted.
 """
 
 import logging
+import queue
 import threading
 import urllib.request
 from io import BytesIO
@@ -15,14 +18,17 @@ from io import BytesIO
 from kivy.clock import Clock
 from kivy.core.image import Image as CoreImage
 from kivy.core.window import Window
-from kivy.graphics import Color, Ellipse, RoundedRectangle
+from kivy.graphics import Color, Ellipse, InstructionGroup, Line, RoundedRectangle, Triangle
 from kivy.metrics import dp
 from kivy.properties import NumericProperty
+from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.floatlayout import FloatLayout
+from kivy.uix.gridlayout import GridLayout
 from kivy.uix.image import Image
 from kivy.uix.label import Label
 from kivy.uix.modalview import ModalView
+from kivy.uix.scrollview import ScrollView
 from kivy.uix.stacklayout import StackLayout
 from kivy.uix.widget import Widget
 
@@ -53,6 +59,16 @@ def media_items(analysis) -> list:
         return []
     return [item for item in probe.items
             if not item.optional and not (item.kind == 'image' and item.direct_url)]
+
+
+def post_items(analysis) -> list:
+    """(place, item) for each photo or video in a post or playlist - what is
+    ticked or not in its grid. A slideshow's soundtrack is left to the PC."""
+    probe = getattr(analysis, 'probe', None)
+    if probe is None or analysis.kind not in (analyze_mod.KIND_GALLERY,
+                                              analyze_mod.KIND_PLAYLIST):
+        return []
+    return [(place, item) for place, item in enumerate(probe.items) if not item.optional]
 
 
 def summary(analysis) -> tuple:
@@ -133,18 +149,165 @@ def drawable(data: bytes) -> bytes:
     return data if data.startswith((PNG, JPEG)) else _to_jpeg(data)
 
 
-def _to_jpeg(data: bytes) -> bytes:
+def small(data: bytes, side: int) -> bytes:
+    """A picture no bigger than a tile needs: its shorter side at most `side`
+    pixels. Some sites only offer the full photo, and a grid of those, drawn
+    whole, would take the memory of a hundred screens."""
+    return _to_jpeg(data, side)
+
+
+def _to_jpeg(data: bytes, side: int = 0) -> bytes:
     import subprocess
     from grabbit.paths import find_tool
     from grabbit.util import CREATE_NO_WINDOW
     ffmpeg = find_tool('ffmpeg')
     if not ffmpeg:
         return data
-    result = subprocess.run([ffmpeg, '-v', 'error', '-i', 'pipe:0', '-frames:v', '1',
+    shrink = ['-vf', f"scale=w='if(lt(iw,ih),min({side},iw),-2)':h='if(lt(iw,ih),-2,min({side},ih))'"
+              ] if side else []
+    result = subprocess.run([ffmpeg, '-v', 'error', '-i', 'pipe:0', '-frames:v', '1', *shrink,
                              '-f', 'image2pipe', '-c:v', 'mjpeg', '-q:v', '3', 'pipe:1'],
                             input=data, capture_output=True, timeout=30,
                             creationflags=CREATE_NO_WINDOW)
     return result.stdout or data
+
+
+class Tile(ButtonBehavior, FloatLayout):
+    """One photo or video of a post, ticked to be saved or not - a touch
+    turns it over. Square, its picture cropped to fill it, and dimmed while
+    it is not wanted, as the PC's grid does it."""
+
+    def __init__(self, place, item, on_toggle, **kwargs):
+        super().__init__(size_hint_y=None, **kwargs)
+        self.place = place
+        self.item = item
+        self.chosen = True
+        self._on_toggle = on_toggle
+        radius = [dp(8)]
+        with self.canvas.before:
+            Color(*theme.BASE)
+            self._ground = RoundedRectangle(radius=radius)
+            self._picture_color = Color(1, 1, 1, 0)
+            self._picture = RoundedRectangle(radius=radius)
+            self._veil_color = Color(0, 0, 0, 0)
+            self._veil = RoundedRectangle(radius=radius)
+        with self.canvas.after:
+            self._edge_color = Color(*theme.BLUE)
+            self._edge = Line(width=dp(1.2))
+            self._mark = InstructionGroup()
+        if item.kind in ('video', 'audio'):
+            self.badge = Label(text=human_duration(item.duration) if item.duration else '',
+                               color=(1, 1, 1, 1), font_size=dp(11), size_hint=(None, None),
+                               height=dp(18))
+            self.badge.bind(texture_size=lambda label, size: setattr(
+                label, 'width', size[0] + dp(22)))
+            with self.badge.canvas.before:
+                Color(0, 0, 0, 0.6)
+                self._pill = RoundedRectangle(radius=[dp(9)])
+                Color(1, 1, 1, 1)
+                self._play = Triangle()
+            self.badge.bind(pos=self._place_badge, size=self._place_badge)
+            self.badge.padding = [dp(16), 0, dp(6), 0]
+            self.add_widget(self.badge)
+        self.bind(width=lambda _, width: setattr(self, 'height', width),
+                  pos=self._redraw, size=self._redraw)
+
+    def _place_badge(self, *_):
+        badge = self.badge
+        self._pill.pos, self._pill.size = badge.pos, badge.size
+        x, middle = badge.x + dp(7), badge.center_y
+        self._play.points = [x, middle - dp(4), x, middle + dp(4), x + dp(7), middle]
+
+    def _redraw(self, *_):
+        for shape in (self._ground, self._picture, self._veil):
+            shape.pos, shape.size = self.pos, self.size
+        if hasattr(self, 'badge'):
+            self.badge.pos = (self.x + dp(6), self.y + dp(6))
+        self._show_choice()
+
+    def show_picture(self, data: bytes):
+        """The picture, cropped to the middle square of it."""
+        try:
+            texture = texture_from(data)
+        except Exception as exc:
+            log.info('a tile could not be shown: %s', exc)
+            return
+        width, height = texture.size
+        side = min(width, height)
+        self._picture.texture = texture.get_region((width - side) / 2, (height - side) / 2,
+                                                   side, side)
+        self._picture_color.a = 1
+
+    def on_release(self):
+        self.set_chosen(not self.chosen)
+        self._on_toggle()
+
+    def set_chosen(self, chosen: bool):
+        self.chosen = chosen
+        self._show_choice()
+
+    def _show_choice(self):
+        self._veil_color.a = 0 if self.chosen else 0.45
+        self._edge_color.a = 1 if self.chosen else 0
+        self._edge.rounded_rectangle = (self.x, self.y, self.width, self.height, dp(8))
+        # The mark in the corner: a ring, ticked and filled in once chosen.
+        # (Not self.right and self.top: mid-layout, they still say the old size.)
+        size = dp(22)
+        x, y = self.x + self.width - size - dp(6), self.y + self.height - size - dp(6)
+        self._mark.clear()
+        if self.chosen:
+            self._mark.add(Color(*theme.BLUE))
+            self._mark.add(Ellipse(pos=(x, y), size=(size, size)))
+            self._mark.add(Color(1, 1, 1, 1))
+            self._mark.add(Line(points=[x + size * 0.28, y + size * 0.50, x + size * 0.44,
+                                        y + size * 0.35, x + size * 0.72, y + size * 0.64],
+                                width=dp(1.1)))
+        else:
+            self._mark.add(Color(0, 0, 0, 0.35))
+            self._mark.add(Ellipse(pos=(x, y), size=(size, size)))
+            self._mark.add(Color(1, 1, 1, 0.9))
+            self._mark.add(Line(circle=(x + size / 2, y + size / 2, size / 2 - dp(1)),
+                                width=dp(1.1)))
+
+
+class TileLoader:
+    """Fetches the tiles' pictures, a few at a time and in order, off the
+    interface thread; each is shrunk to the tile before it is drawn."""
+
+    WORKERS = 3
+
+    def __init__(self, side: int):
+        self.side = side
+        self.closed = False
+        self._waiting = queue.Queue()
+        for number in range(self.WORKERS):
+            threading.Thread(target=self._work, name=f'grabbit-tiles-{number}',
+                             daemon=True).start()
+
+    def want(self, tile):
+        item = tile.item
+        url = item.thumbnail or item.preview or (item.direct_url if item.kind == 'image' else '')
+        if url:
+            self._waiting.put((tile, url, item.headers or {}))
+
+    def _work(self):
+        while True:
+            job = self._waiting.get()
+            if job is None or self.closed:
+                return
+            tile, url, headers = job
+            try:
+                data = small(fetch_picture(url, headers), self.side)
+            except Exception as exc:
+                log.info('no picture for a tile, %s: %s', url[:80], exc)
+                continue
+            if not self.closed:
+                Clock.schedule_once(lambda _, t=tile, d=data: t.show_picture(d))
+
+    def close(self):
+        self.closed = True
+        for _ in range(self.WORKERS):
+            self._waiting.put(None)
 
 
 class Scrubber(Widget):
@@ -299,6 +462,8 @@ class ChoosePage(ModalView):
         self.frame_format = getattr(settings, 'frame_format', '') or 'png'
         self.frame_at = 0.0
         self.fps = 0.0
+        self.tiles = []
+        self._tile_loader = None
 
         top, bottom = insets
         self.column = BoxLayout(orientation='vertical', spacing=dp(10),
@@ -347,7 +512,8 @@ class ChoosePage(ModalView):
         self.choices = BoxLayout(orientation='vertical', spacing=dp(8), size_hint_y=None)
         self.choices.bind(minimum_height=self.choices.setter('height'))
         self.column.add_widget(self.choices)
-        self.column.add_widget(Widget())             # everything else sits at the top
+        self.filler = Widget()                       # everything else sits at the top
+        self.column.add_widget(self.filler)
 
         buttons = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(10))
         cancel = FlatButton(text='Cancel', font_size=dp(15), color=theme.TEXT, fill=theme.HOVER)
@@ -380,8 +546,11 @@ class ChoosePage(ModalView):
         failed = analysis.kind == analyze_mod.KIND_ERROR
         self.about.color = theme.state_color(State.ERROR) if failed else theme.DIM
         self.picture_note.text = ''
+        pieces = post_items(analysis)
         url, headers = picture_url(analysis)
-        if url:
+        if len(pieces) > 1:
+            self._show_grid(pieces)             # the pictures are in the grid
+        elif url:
             self.picture_note.text = ''
             threading.Thread(target=self._load_picture, args=(url, headers),
                              name='grabbit-thumbnail', daemon=True).start()
@@ -408,7 +577,55 @@ class ChoosePage(ModalView):
             self.choose_kind(self.kind)
         elif failed and analysis.url.lower().startswith(('http://', 'https://')):
             self.go.text = 'Save as a file'
+        if self.tiles:
+            self.choices.add_widget(self.tick_row)
         self._enable(not failed or analysis.url.lower().startswith(('http://', 'https://')))
+        if self.tiles:
+            self._count_ticked()
+
+    # --------------------------------------------------------------- grid
+    def _show_grid(self, pieces):
+        """Every photo and video of a post in place of its one picture, three
+        across and scrolling, each ticked to begin with."""
+        self.column.remove_widget(self.picture_card)
+        grid = GridLayout(cols=3, spacing=dp(6), size_hint_y=None)
+        grid.bind(minimum_height=grid.setter('height'))
+        self.tiles = [Tile(place, item, on_toggle=self._count_ticked) for place, item in pieces]
+        for tile in self.tiles:
+            grid.add_widget(tile)
+        self.grid_scroller = ScrollView(do_scroll_x=False, bar_width=dp(3),
+                                        bar_color=theme.DIM, bar_inactive_color=theme.BORDER)
+        self.grid_scroller.add_widget(grid)
+        place = self.column.children.index(self.filler)
+        self.column.remove_widget(self.filler)
+        self.column.add_widget(self.grid_scroller, index=place)
+
+        # How many are ticked, and a way to tick or untick them all at once.
+        self.tick_row = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(8))
+        self.ticked_label = Label(text='', color=theme.TEXT, font_size=dp(14),
+                                  halign='left', valign='middle')
+        self.ticked_label.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
+        self.tick_all_button = FlatButton(text='Deselect', font_size=dp(14), color=theme.TEXT,
+                                          size_hint_x=None, width=dp(108))
+        self.tick_all_button.bind(on_release=lambda *_: self.tick_all())
+        self.tick_row.add_widget(self.ticked_label)
+        self.tick_row.add_widget(self.tick_all_button)
+
+        self._tile_loader = TileLoader(side=int(max(Window.width / 2, dp(120))))
+        for tile in self.tiles:
+            self._tile_loader.want(tile)
+
+    def tick_all(self):
+        everything = all(tile.chosen for tile in self.tiles)
+        for tile in self.tiles:
+            tile.set_chosen(not everything)
+        self._count_ticked()
+
+    def _count_ticked(self):
+        ticked = sum(1 for tile in self.tiles if tile.chosen)
+        self.ticked_label.text = f'{ticked} of {len(self.tiles)} selected'
+        self.tick_all_button.text = 'Deselect' if ticked == len(self.tiles) else 'Select all'
+        self._enable(ticked > 0)
 
     @staticmethod
     def _glyph_for(kind):
@@ -571,6 +788,12 @@ class ChoosePage(ModalView):
     # ------------------------------------------------------------- answer
     def choice(self) -> dict:
         """What was chosen, in the terms the engine takes."""
+        chosen = self._how()
+        if self.tiles:
+            chosen['items'] = [tile.place for tile in self.tiles if tile.chosen]
+        return chosen
+
+    def _how(self) -> dict:
         if not getattr(self, 'items', None):
             return {}
         if self.kind == 'audio':
@@ -600,3 +823,6 @@ class ChoosePage(ModalView):
         if self._reader is not None:
             self._reader.close()
             self._reader = None
+        if self._tile_loader is not None:
+            self._tile_loader.close()
+            self._tile_loader = None

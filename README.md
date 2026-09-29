@@ -103,7 +103,9 @@ cross-compiled for arm64 where it is compiled at all, with a Kivy interface
 instead of Qt and QuickJS in place of Deno, which has no Android target.
 Pasting or sharing a link opens a page once the link has been read, with the
 choices the desktop's card offers: quality and file type, the sound alone, a
-GIF, or one frame picked with a slider. The link box itself is Android's own
+GIF, or one frame picked with a slider. A post of several photos and videos,
+or a playlist, shows them all in a grid, ticked, to untick the ones not
+wanted. The link box itself is Android's own
 text field, so holding it gives Android's own copy and paste menu.
 
 The downloads run in a process of their own, apart from the window: a second

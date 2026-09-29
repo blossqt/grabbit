@@ -8,7 +8,8 @@ of made-up tasks is enough to see every state at once.
     ... --shot out.png     render once, save it, and quit
     ... --update           with the banner a newer release would show
     ... --page video       with the page a pasted link opens (video, audio,
-                           gif or image), for a video served from this machine
+                           gif or image), for a video served from this machine,
+                           or for a post of several slides (post)
     ... --dialog remove    with a dialog open (remove, or storage)
     ... --settings         with the settings page open
     ... --choose           with two downloads picked out, as holding one does
@@ -90,6 +91,28 @@ class SampleSite:
         return analyze_mod.Analysis(url=url or self.url, kind=analyze_mod.KIND_MEDIA,
                                     title=item.title, probe=probe)
 
+    def post(self, url=None):
+        """A post of several slides, as Instagram's are read: four photos, a
+        video third, and a soundtrack that is only ever offered on the PC."""
+        items = []
+        for place in range(5):
+            if place == 2:
+                items.append(MediaItem(key='clip', kind='video', title='A clip', index=3,
+                                       thumbnail=self.thumbnail, duration=self.duration,
+                                       url=self.url, heights=[720, 480]))
+            else:
+                items.append(MediaItem(key=f'photo{place + 1}', kind='image', index=place + 1,
+                                       title=f'Photo {place + 1}', thumbnail=self.thumbnail,
+                                       direct_url=self.thumbnail, ext='jpg',
+                                       width=1080, height=1350))
+        items.append(MediaItem(key='sound', kind='audio', title='Soundtrack', index=6,
+                               direct_url=self.url, optional=True))
+        probe = ProbeResult(url=url or self.url, kind='gallery', site='Instagram',
+                            title='Five slides', uploader='nasa', items=items,
+                            thumbnail=self.thumbnail)
+        return analyze_mod.Analysis(url=url or self.url, kind=analyze_mod.KIND_GALLERY,
+                                    title=probe.title, probe=probe)
+
     def close(self):
         self.server.shutdown()
         shutil.rmtree(self.folder, ignore_errors=True)
@@ -99,6 +122,7 @@ class FakeEngine:
     """Enough of RemoteEngine for the interface to draw itself."""
 
     site = None             # a SampleSite, when the page is being looked at
+    post = False            # a web link stands for its post of several slides
     controls = context = None       # DownloadService, on a phone
 
     def __init__(self, settings, on_change=None, on_message=None, controls=None,
@@ -138,7 +162,7 @@ class FakeEngine:
             if url.startswith('magnet:') or self.site is None:
                 on_done(analyze_mod.analyze(url, self.settings))
             else:
-                on_done(self.site.analysis(url))
+                on_done(self.site.post(url) if self.post else self.site.analysis(url))
         threading.Thread(target=work, daemon=True).start()
 
     def add_analysis(self, result, choice=None):
@@ -394,6 +418,77 @@ def check_page(app, report):
         app.input.text = ''
     finally:
         app.engine.site = None
+        site.close()
+
+
+def check_post(app, report):
+    """A post of several slides: a grid of them, to untick what is not wanted."""
+    from grabbit_mobile.engine import MobileEngine
+    site = SampleSite()
+    app.engine.site, app.engine.post = site, True
+    try:
+        app.input.text = site.url
+        tap(app.download_button)
+        page = app.page
+        wait_until(lambda: page.analysis is not None, 10)
+        tiles = page.tiles
+        report('a post of several slides shows each of them, all ticked',
+               [t.item.key for t in tiles] == ['photo1', 'photo2', 'clip', 'photo4', 'photo5']
+               and all(t.chosen for t in tiles) and page.picture_card.parent is None,
+               f'{len(tiles)} tiles')
+        report('saying how many are ticked', page.ticked_label.text == '5 of 5 selected'
+               and page.tick_all_button.text == 'Deselect', page.ticked_label.text)
+        wait_until(lambda: all(t._picture_color.a == 1 for t in tiles), 15)
+        report('with their pictures, shrunk to the tile',
+               all(t._picture.texture is not None and max(t._picture.texture.size) <= Window.width
+                   for t in tiles),
+               ', '.join('x'.join(map(str, t._picture.texture.size)) for t in tiles
+                         if t._picture.texture is not None)[:60])
+        settle()
+        row = tiles[:3]
+        report('three square tiles to a row, inside the page',
+               all(abs(t.width - t.height) < 1 for t in tiles)
+               and len({round(t.y) for t in row}) == 1
+               and row[2].to_window(row[2].right, 0)[0] <= Window.width - page.column.padding[2] + 1,
+               f'{tiles[0].width:.0f}px')
+        report('the video among them is marked as one, with its length',
+               hasattr(tiles[2], 'badge') and tiles[2].badge.text == '0:20'
+               and not hasattr(tiles[0], 'badge'), getattr(tiles[2], 'badge', None) and tiles[2].badge.text)
+
+        tap(tiles[1])
+        wait_until(lambda: not tiles[1].chosen, 2)
+        report('a touch unticks one', not tiles[1].chosen and tiles[0].chosen
+               and page.ticked_label.text == '4 of 5 selected'
+               and page.tick_all_button.text == 'Select all', page.ticked_label.text)
+        tap(page.tick_all_button)
+        report('Select all ticks them all again', all(t.chosen for t in tiles))
+        tap(page.tick_all_button)
+        report('Deselect unticks them all, and nothing is left to download',
+               not any(t.chosen for t in tiles) and page.go.disabled, page.ticked_label.text)
+        for tile in (tiles[0], tiles[2], tiles[4]):
+            tap(tile)
+            wait_until(lambda: tile.chosen, 2)
+        tap(page.go)
+        wait_until(lambda: page.parent is None, 3)
+        result, choice = app.engine.added[-1]
+        picked = [result.probe.items[place].key for place in choice.get('items', [])]
+        report('Download queues only the ticked ones', picked == ['photo1', 'clip', 'photo5']
+               and choice.get('quality'), str(choice))
+
+        # And the downloader keeps to that: a stand-in for each download it would start.
+        engine = MobileEngine(app.settings)
+        started = []
+        engine.add_image = lambda item, probe: started.append(item.key)
+        engine.add_media = lambda item, probe, choice=None: started.append(item.key)
+        engine._add_analysis(result, choice)
+        report('and the downloader fetches just those', started == picked, ', '.join(started))
+        started.clear()
+        engine._add_analysis(result, {})
+        report('while a post nobody picked from is fetched whole, as before',
+               started == ['photo1', 'photo2', 'clip', 'photo4', 'photo5'], ', '.join(started))
+        app.input.text = ''
+    finally:
+        app.engine.site, app.engine.post = None, False
         site.close()
 
 
@@ -803,6 +898,7 @@ def check(app):
     report("the link box is the one that becomes Android's own field on a phone",
            isinstance(app.input, LinkBox), type(app.input).__name__)
     check_page(app, report)
+    check_post(app, report)
 
     reveal(app._status_chips['completed'])
     tap(app._status_chips['completed'])
@@ -910,15 +1006,21 @@ def show_page(app, kind: str, shot: str | None):
     save a picture of it once the thumbnail or frame is in."""
     site = SampleSite()
     app.engine.site = site
+    app.engine.post = kind == 'post'
     app.inspect(site.url)
     page = app.page
     wait_until(lambda: page.analysis is not None, 10)
-    page.type_row.choose(kind)
+    if kind == 'post':
+        wait_until(lambda: all(t._picture_color.a == 1 for t in page.tiles), 15)
+        page.tiles[1].set_chosen(False)
+        page._count_ticked()
+    else:
+        page.type_row.choose(kind)
     if kind == 'image':
         page.scrubber.value = site.duration * 0.4
         page._want_frame(page.scrubber.value)
         wait_until(lambda: page._frame_texture is not None and page.picture.color[3] == 1, 40)
-    else:
+    elif kind != 'post':
         wait_until(lambda: page.picture.opacity == 1, 10)
     if shot:
         settle()
