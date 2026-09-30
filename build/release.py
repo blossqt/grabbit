@@ -75,7 +75,24 @@ def fail(message: str):
     sys.exit(1)
 
 
+def forget_typed_ahead():
+    """Throw away whatever was typed into the window before a question.
+
+    A console keeps every key pressed until something reads it, so an Enter
+    pressed during the build - minutes before the question - would answer
+    it the moment it was asked, and a release would stop unasked."""
+    if os.name != 'nt' or not sys.stdin or not sys.stdin.isatty():
+        return
+    try:
+        import msvcrt
+        while msvcrt.kbhit():
+            msvcrt.getwch()
+    except Exception:
+        pass
+
+
 def ask(question: str) -> bool:
+    forget_typed_ahead()
     try:
         return input(f'{question} [y/N] ').strip().lower() in ('y', 'yes')
     except EOFError:
@@ -534,7 +551,10 @@ def default_notes(previous: str | None) -> str:
         run('git', 'fetch', '--quiet', '--tags', 'origin', check=False)
         if run('git', 'rev-parse', '--verify', '--quiet', previous, check=False).returncode != 0:
             span = 'HEAD'
-    subjects = run('git', 'log', span, '--no-merges', '--format=- %s', '-n', '60').stdout.strip()
+    subjects = run('git', 'log', span, '--no-merges', '--format=- %s', '-n', '60').stdout
+    # Not the commit that only sets the version: it says nothing about what changed.
+    subjects = '\n'.join(line for line in subjects.strip().splitlines()
+                         if not re.fullmatch(r'- Grabbit \d+\.\d+\.\d+', line))
     return 'What changed:\n\n' + (subjects or '- (no changes recorded)')
 
 
@@ -641,8 +661,13 @@ def main() -> int:
         os.unlink(handle.name)
 
     # The apps ask exactly this - fetch the manifest, check its signature - so
-    # ask it too.
-    answer = updates.check('windows', current='0.0.0')
+    # ask it too. GitHub takes a minute or so to point "latest" at the new
+    # release everywhere, so give it that long before saying it has not.
+    for _ in range(12):
+        answer = updates.check('windows', current='0.0.0')
+        if answer.latest == version:
+            break
+        time.sleep(10)
     if answer.latest == version:
         say(f'published - every copy older than {version} will now offer it')
     else:
