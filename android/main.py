@@ -26,6 +26,11 @@ if 'ANDROID_ARGUMENT' in os.environ:
     _find_library = ctypes.util.find_library
     ctypes.util.find_library = lambda name: 'libc.so' if name == 'c' else _find_library(name)
 
+    # Each frame waits for the screen's next refresh as it is shown, so the
+    # screen, not Kivy's clock, paces anything that moves (ui/motion.py).
+    from kivy.config import Config
+    Config.set('graphics', 'vsync', '1')
+
 from kivy.app import App                                    # noqa: E402
 from kivy.base import EventLoop                             # noqa: E402
 from kivy.clock import Clock                                # noqa: E402
@@ -46,7 +51,7 @@ from grabbit.util import human_speed                        # noqa: E402
 from grabbit_mobile import paths                            # noqa: E402
 from grabbit_mobile.files import finished, finished_files   # noqa: E402
 from grabbit_mobile.remote import RemoteEngine              # noqa: E402
-from grabbit_mobile.ui import theme                         # noqa: E402
+from grabbit_mobile.ui import motion, theme                 # noqa: E402
 from grabbit_mobile.ui.choose import ChoosePage             # noqa: E402
 from grabbit_mobile.ui.details import DetailsSheet          # noqa: E402
 from grabbit_mobile.ui.graph import SpeedGraph              # noqa: E402
@@ -306,6 +311,12 @@ class GrabbitApp(App):
         # the app's own colour rather than black.
         from grabbit_mobile.bootstrap import paint_window
         paint_window(theme.PALETTE['window'])
+        # As many frames a second as the screen can show - 90 or 120 on many
+        # phones, which leave an app at 60 unless it asks.
+        from grabbit_mobile.bootstrap import fastest_screen
+        rate = fastest_screen()
+        motion.pace(rate or 60)
+        Logger.info(f'Frames: up to {rate or 60:.0f} a second')
 
     def _report_start(self):
         """Say in the log how long opening took.
@@ -737,6 +748,8 @@ class GrabbitApp(App):
             return
         self.update_label.text = f'Grabbit {answer.latest} is out'
         self.update_note.text = f'You have {APP_VERSION}'
+        if self.update_banner.parent is None:
+            motion.fade_in(self.update_banner)
         self.update_slot.add_widget(self.update_banner)
         self.update_slot.height = self.update_banner.height
 
@@ -1016,6 +1029,8 @@ class GrabbitApp(App):
         self.bottom_slot.clear_widgets()
         self.bottom_slot.add_widget(self.choose_actions)
         self.bottom_slot.height = self.choose_actions.height
+        motion.fade_in(self.choose_bar)
+        motion.fade_in(self.choose_actions)
         self.refresh()
 
     def toggle_chosen(self, task_id: str):
@@ -1042,6 +1057,8 @@ class GrabbitApp(App):
         self.bottom_slot.clear_widgets()
         self.bottom_slot.add_widget(self.footer)
         self.bottom_slot.height = self.footer.height
+        motion.fade_in(self.top_bar)
+        motion.fade_in(self.footer)
         self.refresh()
 
     def share_chosen(self):

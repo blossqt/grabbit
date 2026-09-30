@@ -16,6 +16,7 @@ from grabbit import APP_VERSION
 
 from . import theme
 from .choose import OptionRow
+from .motion import Entrance
 from .widgets import FlatButton
 
 SWITCH = [(False, 'Off'), (True, 'On')]
@@ -35,7 +36,7 @@ def friendly_folder(path: str) -> str:
     return path
 
 
-class SettingsPage(ModalView):
+class SettingsPage(Entrance, ModalView):
     """app is the GrabbitApp: its settings, its engine and its update checks."""
 
     def __init__(self, app, insets=(0, 0), **kwargs):

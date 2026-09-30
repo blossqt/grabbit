@@ -492,6 +492,69 @@ def check_post(app, report):
         site.close()
 
 
+def check_motion(app, report):
+    """Ripples under fingers, pages and dialogs moving in, frames kept up."""
+    from kivy.graphics import Scale, Translate
+    from grabbit_mobile.ui import motion
+
+    button = app.download_button
+    touch = Tap('preview', 7, [c / s for c, s in zip(button.to_window(*button.center), Window.size)],
+                is_touch=True, type_id='touch')
+    EventLoop.post_dispatch_input('begin', touch)
+    wait_until(lambda: button.ripple.glow == 1, 1)
+    report('a finger on a button starts a ripple under it',
+           button.ripple.glow == 1 and len(button.ripple.group.children) > 0)
+    lift(touch)
+    wait_until(lambda: button.ripple.glow == 0, 2)
+    report('which fades once the finger lifts, leaving nothing drawn',
+           button.ripple.glow == 0 and not button.ripple.group.children)
+
+    frames = []
+    counting = lambda *_: frames.append(time.monotonic())     # noqa: E731
+    Window.bind(on_flip=counting)
+    app.open_settings()
+    page = app.settings_page
+    settle(1)
+    slide = next(i for i in page.canvas.before.children if isinstance(i, Translate))
+    report('a page comes in from the right, faded', page.opacity < 1 and slide.x > 0,
+           f'opacity {page.opacity:.2f}, {slide.x:.0f}px along')
+    wait_until(lambda: page._anim_alpha == 1, 2)
+    settle(2)
+    report('and settles in place', page.opacity == 1 and slide.x == 0)
+    Window.unbind(on_flip=counting)
+    busy = motion._pace.busy if motion._pace else 0
+    report('while it moves, frames are not held to 60 a second',
+           busy > 60 and Clock._max_fps == busy, f'up to {Clock._max_fps:.0f} a second')
+    report('and are drawn one after another, at the rate the screen takes',
+           len(frames) >= 8, f'{len(frames)} frames in {motion.ENTER}s')
+    wait_until(lambda: Clock._max_fps == 60, 3)
+    report('once nothing moves, Kivy goes back to its easy pace', Clock._max_fps == 60)
+    page.dismiss()
+    wait_until(lambda: page.parent is None, 2)
+
+    task = next(iter(app.engine.store))
+    app.confirm_remove(task.id)
+    dialog = open_dialog()
+    settle(1)
+    grow = next(i for i in dialog.children[0].canvas.before.children if isinstance(i, Scale))
+    report('a dialog grows in from slightly smaller', grow.x < 1 and dialog.children[0].opacity < 1,
+           f'{grow.x:.2f} of its size')
+    wait_until(lambda: dialog._anim_alpha == 1, 2)
+    settle(2)
+    report('to its full size', grow.x == 1)
+    dialog.dismiss()
+    wait_until(lambda: dialog.parent is None, 2)
+
+    bar = next(row.bar for row in app._rows.values() if row.bar.fraction < 0.6)
+    start = bar.fraction
+    bar.show(min(1.0, start + 0.3), bar.tint)
+    settle(2)
+    report('a progress bar glides to a new figure rather than jumping',
+           start < bar.shown < bar.fraction, f'{start:.2f} -> {bar.shown:.2f} -> {bar.fraction:.2f}')
+    wait_until(lambda: bar.shown == bar.fraction, 2)
+    report('and gets there', bar.shown == bar.fraction)
+
+
 def open_dialog():
     from grabbit_mobile.ui.widgets import Dialog
     return next((child for child in Window.children if isinstance(child, Dialog)), None)
@@ -960,6 +1023,7 @@ def check(app):
     check_dialogs(app, report)
     check_settings(app, report)
     check_finished(app, report)
+    check_motion(app, report)
 
     failures = [name for name, ok in results if not ok]
     print()

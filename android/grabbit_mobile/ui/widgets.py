@@ -5,10 +5,12 @@ be described in canvas instructions. They are here so the screens can read as
 layout rather than as drawing.
 """
 
+from kivy.animation import Animation
 from kivy.core.text import Label as CoreLabel
 from kivy.core.window import Window
 from kivy.metrics import dp
 from kivy.graphics import Color, Ellipse, Line, RoundedRectangle, Triangle
+from kivy.properties import NumericProperty
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
@@ -19,6 +21,7 @@ from kivy.uix.widget import Widget
 from grabbit.tasks import KIND_IMAGE, KIND_MAGNET, KIND_MEDIA, KIND_TORRENT, State
 
 from . import theme
+from .motion import CHANGE, Entrance, blend, ripple
 
 
 class Card(BoxLayout):
@@ -35,10 +38,10 @@ class Card(BoxLayout):
         self.bind(pos=self._redraw, size=self._redraw)
 
     def set_fill(self, color):
-        self._fill_color.rgba = color
+        blend(self._fill_color, color, widget=self)
 
     def set_border(self, color):
-        self._border_color.rgba = color
+        blend(self._border_color, color, widget=self)
 
     def _redraw(self, *_):
         self._rect.pos = self.pos
@@ -46,8 +49,22 @@ class Card(BoxLayout):
         self._line.rounded_rectangle = (self.x, self.y, self.width, self.height, self._radius)
 
 
+def recolor(label, color):
+    """A label's text to a new colour, over a moment once it is on screen."""
+    Animation.cancel_all(label, 'color')
+    if label.get_root_window() is None:
+        label.color = color
+    else:
+        Animation(color=color, d=CHANGE, t='out_quad').start(label)
+
+
 class TapLabel(ButtonBehavior, Label):
-    """Text that does something when touched, and looks no different."""
+    """Text that does something when touched, and looks no different - but
+    for the ripple under the finger."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.ripple = ripple(self, radius=dp(6))
 
 
 class Chip(ButtonBehavior, Label):
@@ -65,6 +82,10 @@ class Chip(ButtonBehavior, Label):
             self._rect = RoundedRectangle(radius=[dp(15)])
         self.bind(pos=self._redraw, size=self._redraw, texture_size=self._resize)
         self._apply()
+        self.ripple = ripple(self, radius=self._corner)
+
+    def _corner(self):
+        return dp(15)
 
     def _resize(self, *_):
         if self.size_hint_x is None:
@@ -85,8 +106,8 @@ class Chip(ButtonBehavior, Label):
             self._apply()
 
     def _apply(self):
-        self._color.rgba = theme.HOVER if self.selected else theme.TRANSPARENT
-        self.color = theme.TEXT if self.selected else theme.DIM
+        blend(self._color, theme.HOVER if self.selected else theme.TRANSPARENT, widget=self)
+        recolor(self, theme.TEXT if self.selected else theme.DIM)
 
 
 def share_by_words(chips, room=dp(20)):
@@ -113,18 +134,21 @@ class Option(Chip):
         self._apply()
         self._redraw()
 
+    def _corner(self):
+        return min(dp(17), self.height / 2)
+
     def _redraw(self, *_):
         super()._redraw()
-        radius = min(dp(17), self.height / 2)
+        radius = self._corner()
         self._rect.radius = [radius]
         if self._outline is not None:
             self._outline.rounded_rectangle = (self.x, self.y, self.width, self.height, radius)
 
     def _apply(self):
-        self._color.rgba = theme.BLUE if self.selected else theme.TRANSPARENT
-        self.color = (1, 1, 1, 1) if self.selected else theme.TEXT
+        blend(self._color, theme.BLUE if self.selected else theme.TRANSPARENT, widget=self)
+        recolor(self, (1, 1, 1, 1) if self.selected else theme.TEXT)
         if self._outline is not None:
-            self._outline_color.rgba = theme.BLUE if self.selected else theme.BORDER
+            blend(self._outline_color, theme.BLUE if self.selected else theme.BORDER, widget=self)
 
 
 class FlatButton(Button):
@@ -143,9 +167,10 @@ class FlatButton(Button):
             self._color = Color(*fill)
             self._rect = RoundedRectangle(radius=[self._radius])
         self.bind(pos=self._redraw, size=self._redraw)
+        self.ripple = ripple(self, radius=self._radius)
 
     def set_fill(self, color):
-        self._color.rgba = color
+        blend(self._color, color, widget=self)
 
     def _redraw(self, *_):
         self._rect.pos = self.pos
@@ -164,7 +189,7 @@ BUTTON_STYLES = {
 }
 
 
-class Dialog(ModalView):
+class Dialog(Entrance, ModalView):
     """A question in a rounded card over the dimmed app.
 
     Every dialog in the app is one of these, so they all look like the rest
@@ -179,6 +204,7 @@ class Dialog(ModalView):
     """
 
     ROOM = dp(16)          # each side of a label, for its button to count as fitting
+    entrance = 'card'
 
     def __init__(self, title, message='', buttons=(), **kwargs):
         super().__init__(size_hint=(None, None), background='', background_color=theme.TRANSPARENT,
@@ -248,6 +274,7 @@ class IconButton(ButtonBehavior, Widget):
         super().__init__(**kwargs)
         self.kind, self.extent, self.color = kind, extent, color
         self.bind(pos=self._redraw, size=self._redraw)
+        self.ripple = ripple(self, circle=True)
 
     def _redraw(self, *_):
         self.canvas.clear()
@@ -286,7 +313,12 @@ class ProgressTrack(Widget):
     Not called ProgressBar: Kivy styles widgets by class name, and its own
     ProgressBar rule would be applied to this one and then ask it for
     attributes it does not have.
+
+    The fill glides up to each new figure - they come a second apart - rather
+    than jumping there; `shown` is where it has got to.
     """
+
+    shown = NumericProperty(0.0)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -299,11 +331,20 @@ class ProgressTrack(Widget):
             self._track = RoundedRectangle(radius=[dp(3)])
             self._fill_color = Color(*self.tint)
             self._fill = RoundedRectangle(radius=[dp(3)])
-        self.bind(pos=self._redraw, size=self._redraw)
+        self.bind(pos=self._redraw, size=self._redraw, shown=self._redraw)
 
-    def show(self, fraction: float, tint):
-        self.fraction = max(0.0, min(1.0, fraction or 0.0))
+    def show(self, fraction: float, tint, glide: bool = True):
+        """glide: this is the same download as before, moving on - not a
+        different one, whose figure has nothing to do with the last."""
+        fraction = max(0.0, min(1.0, fraction or 0.0))
         self.tint = tint
+        if fraction != self.fraction or not glide:
+            Animation.cancel_all(self, 'shown')
+            if glide and fraction > self.shown and self.get_root_window() is not None:
+                Animation(shown=fraction, d=0.4, t='out_quad').start(self)
+            else:
+                self.shown = fraction
+            self.fraction = fraction
         self._redraw()
 
     def _redraw(self, *_):
@@ -313,7 +354,7 @@ class ProgressTrack(Widget):
         self._track.radius = [radius]
         self._fill_color.rgba = self.tint
         # A sliver of colour at the very start still reads as "begun".
-        width = max(self.height, self.width * self.fraction) if self.fraction else 0
+        width = max(self.height, self.width * self.shown) if self.shown else 0
         self._fill.pos = self.pos
         self._fill.size = (width, self.height)
         self._fill.radius = [radius]

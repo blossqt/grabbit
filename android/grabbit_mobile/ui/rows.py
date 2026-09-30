@@ -20,6 +20,7 @@ from grabbit.util import human_eta, human_size, human_speed
 
 from ..files import finished
 from . import theme
+from .motion import Ripple
 from .widgets import Card, IconButton, KindGlyph, ProgressTrack
 
 ROW_HEIGHT = dp(84)
@@ -82,6 +83,10 @@ class TaskRow(Card):
         self._fill = theme.ALT
         self._on_hold, self._on_choose = on_hold, on_choose
         self._hold = None           # (touch, timer) while a long press is waited for
+        # The whole card ripples under a finger, as a row of Android's own
+        # lists does - but for its buttons, which ripple by themselves.
+        self.ripple = Ripple(self, radius=dp(10))
+        self._pressing = None
 
         self.heading = BoxLayout(size_hint_y=None, height=dp(26), spacing=dp(8))
         self.glyph = KindGlyph()
@@ -125,6 +130,7 @@ class TaskRow(Card):
     def show(self, task, selected: bool = False, choosing=None):
         """selected: the graph's download. choosing: None as usual, or - while
         downloads are being picked out - whether this one is."""
+        same = task.id == self.task_id
         self.task_id = task.id
         self.finished = finished(task)
         self.choosing = choosing
@@ -133,7 +139,7 @@ class TaskRow(Card):
         else:
             self.glyph.show_choice(choosing)
         self.title.text = task.name or task.source
-        self.bar.show(task.progress, theme.state_color(task.state))
+        self.bar.show(task.progress, theme.state_color(task.state), glide=same)
         self.detail.text = detail_line(task, hints=choosing is None)
         self.detail.color = theme.state_color(task.state) if task.state in (
             State.ERROR, State.COMPLETED, State.SEEDING) else theme.DIM
@@ -177,6 +183,10 @@ class TaskRow(Card):
     def on_touch_down(self, touch):
         if not self.collide_point(*touch.pos) or touch.is_mouse_scrolling:
             return super().on_touch_down(touch)
+        buttons = (self.share_button, self.details_button, self.remove_button)
+        if not any(b.parent is not None and b.collide_point(*touch.pos) for b in buttons):
+            self._pressing = touch
+            self.ripple.press(touch.pos)
         if self.choosing is not None:
             # While picking, the whole card is one thing to tap.
             touch.grab(self)
@@ -186,6 +196,9 @@ class TaskRow(Card):
         return handled
 
     def on_touch_up(self, touch):
+        if touch is self._pressing:
+            self._pressing = None
+            self.ripple.release()
         if self._hold is not None and self._hold[0] is touch:
             self._hold[1].cancel()
             self._hold = None

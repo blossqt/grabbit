@@ -38,6 +38,7 @@ from grabbit.tasks import State
 from grabbit.util import human_duration, human_size, site_name
 
 from . import theme
+from .motion import Entrance, blend, ripple
 from .widgets import Card, FlatButton, Option
 
 log = logging.getLogger(__name__)
@@ -211,6 +212,7 @@ class Tile(ButtonBehavior, FloatLayout):
             self.add_widget(self.badge)
         self.bind(width=lambda _, width: setattr(self, 'height', width),
                   pos=self._redraw, size=self._redraw)
+        self.ripple = ripple(self, radius=dp(8))
 
     def _place_badge(self, *_):
         badge = self.badge
@@ -247,8 +249,8 @@ class Tile(ButtonBehavior, FloatLayout):
         self._show_choice()
 
     def _show_choice(self):
-        self._veil_color.a = 0 if self.chosen else 0.45
-        self._edge_color.a = 1 if self.chosen else 0
+        blend(self._veil_color, (0, 0, 0, 0 if self.chosen else 0.45), widget=self)
+        blend(self._edge_color, (*theme.BLUE[:3], 1 if self.chosen else 0), widget=self)
         self._edge.rounded_rectangle = (self.x, self.y, self.width, self.height, dp(8))
         # The mark in the corner: a ring, ticked and filled in once chosen.
         # (Not self.right and self.top: mid-layout, they still say the old size.)
@@ -436,7 +438,7 @@ class OptionWrap(_Choosing, StackLayout):
         self._fill(options, chosen, on_choose, equal=False)
 
 
-class ChoosePage(ModalView):
+class ChoosePage(Entrance, ModalView):
     """Full screen: the link, what it is, and the choices it allows.
 
     Opened as soon as Download is touched, reading the link; show() fills it in

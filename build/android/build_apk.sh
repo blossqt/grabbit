@@ -269,7 +269,7 @@ done
 # gallery-dl. grep -c rather than -q: -q stops reading at the first match, and
 # under pipefail the writer's broken pipe would fail the check it just passed.
 TOOLS="$ANDROID_ROOT/build-tools/$P4A_BUILD_TOOLS"
-for class in DownloadService ServiceEngine RestartReceiver FileShare Touch; do
+for class in DownloadService ServiceEngine RestartReceiver FileShare Touch Screen; do
   "$TOOLS/dexdump" "$APK" 2>/dev/null | grep -c "Lcom/grabbit/downloader/$class;" > /dev/null \
     || { echo "error: $class is not compiled into the APK" >&2; exit 1; }
 done

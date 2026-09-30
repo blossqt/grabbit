@@ -325,6 +325,24 @@ def hands():
         return None
 
 
+def fastest_screen() -> float:
+    """Ask for the screen's fastest refresh rate (Screen, java/), and say what
+    it is - 0 off a phone, or when it cannot be read."""
+    try:
+        from jnius import JavaClass, JavaStaticMethod, MetaJavaClass, autoclass
+    except ImportError:
+        return 0.0
+    try:
+        class Screen(JavaClass, metaclass=MetaJavaClass):
+            __javaclass__ = 'com/grabbit/downloader/Screen'
+            fastest = JavaStaticMethod('(Landroid/app/Activity;)F')
+
+        return float(Screen.fastest(autoclass('org.kivy.android.PythonActivity').mActivity))
+    except Exception:
+        log.exception('could not ask for the fastest refresh rate')
+        return 0.0
+
+
 def has_all_files_access() -> bool | None:
     """Whether Android will let us write outside our own folder.
 

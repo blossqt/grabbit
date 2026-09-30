@@ -10,7 +10,6 @@ import os
 
 from kivy.clock import Clock
 from kivy.metrics import dp
-from kivy.graphics import Color, RoundedRectangle
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
@@ -23,6 +22,7 @@ from grabbit.util import human_eta, human_size, human_speed, human_time
 
 from ..files import finished, finished_files
 from . import theme
+from .motion import Entrance, ripple
 from .widgets import Card, Chip, IconButton, share_by_words
 
 TABS = ['General', 'Files', 'Peers', 'Trackers', 'Log']
@@ -81,12 +81,7 @@ class FileLine(ButtonBehavior, BoxLayout):
     def __init__(self, name: str, size: str, **kwargs):
         super().__init__(size_hint_y=None, height=dp(38), spacing=dp(8),
                          padding=[dp(8), 0], **kwargs)
-        with self.canvas.before:
-            self._shade = Color(*theme.TRANSPARENT)
-            self._rect = RoundedRectangle(radius=[dp(6)])
-        self.bind(pos=self._redraw, size=self._redraw,
-                  state=lambda *_: setattr(self._shade, 'rgba',
-                                           theme.HOVER if self.state == 'down' else theme.TRANSPARENT))
+        self.ripple = ripple(self, radius=dp(6))
         title = Label(text=name, color=theme.TEXT, font_size=dp(13), halign='left',
                       valign='middle', shorten=True, shorten_from='center')
         amount = Label(text=size, color=theme.DIM, font_size=dp(11), halign='right',
@@ -95,16 +90,14 @@ class FileLine(ButtonBehavior, BoxLayout):
             label.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
             self.add_widget(label)
 
-    def _redraw(self, *_):
-        self._rect.pos = self.pos
-        self._rect.size = self.size
 
-
-class DetailsSheet(ModalView):
+class DetailsSheet(Entrance, ModalView):
     """on_open_file(path) opens one of a finished download's files."""
 
+    entrance = 'card'
+
     def __init__(self, engine, on_open_file=None, **kwargs):
-        super().__init__(size_hint=(0.96, 0.9), background_color=(0, 0, 0, 0.6),
+        super().__init__(size_hint=(0.96, 0.9), background_color=theme.TRANSPARENT,
                          background='', auto_dismiss=True, **kwargs)
         self.engine = engine
         self.on_open_file = on_open_file
