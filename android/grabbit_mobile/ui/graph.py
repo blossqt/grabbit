@@ -42,14 +42,14 @@ class Plot(Widget):
         if self.width < dp(8) or self.height < dp(8):
             return
         with self.canvas:
-            Color(*theme.rgba(theme.PALETTE['border'], 0.55))
+            Color(*theme.OUTLINE_VARIANT)
             for fraction in (0.0, 0.25, 0.5, 0.75, 1.0):
                 y = self.y + self.height * fraction
                 Line(points=[self.x, y, self.right, y], width=1.0,
                      dash_length=1 if fraction == 0 else 4,
                      dash_offset=0 if fraction == 0 else 4)
-            self._draw_area(self.down, theme.BLUE)
-            self._draw_line(self.up, theme.GREEN)
+            self._draw_area(self.down, theme.PRIMARY)
+            self._draw_line(self.up, theme.SUCCESS)
 
     def _points(self, values):
         count = len(values)
@@ -90,7 +90,8 @@ class SpeedGraph(Card):
     """Header, axis and plot - the desktop pane, narrower."""
 
     def __init__(self, store=None, samples: int = 120, **kwargs):
-        super().__init__(orientation='vertical', padding=[dp(10), dp(8)], spacing=dp(2), **kwargs)
+        super().__init__(orientation='vertical', padding=[dp(16), dp(12), dp(16), dp(10)],
+                         spacing=dp(2), radius=theme.MEDIUM, fill=theme.SURFACE_CONTAINER, **kwargs)
         self.store = store
         self._samples = samples
         self._history = {GLOBAL: SpeedHistory(samples)}
@@ -98,10 +99,10 @@ class SpeedGraph(Card):
 
         header = BoxLayout(size_hint_y=None, height=dp(34), spacing=dp(6))
         titles = BoxLayout(orientation='vertical')
-        self.caption = Label(text='All downloads', color=theme.TEXT, font_size=dp(13),
-                             bold=True, halign='left', valign='middle', shorten=True,
+        self.caption = Label(text='All downloads', color=theme.ON_SURFACE,
+                             font_size=theme.TITLE_SMALL, halign='left', valign='middle', shorten=True,
                              shorten_from='right')
-        self.subtitle = Label(text='', color=theme.DIM, font_size=dp(11),
+        self.subtitle = Label(text='', color=theme.ON_SURFACE_VARIANT, font_size=theme.BODY_SMALL,
                               halign='left', valign='middle', shorten=True)
         for label in (self.caption, self.subtitle):
             label.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
@@ -109,9 +110,9 @@ class SpeedGraph(Card):
         titles.add_widget(self.subtitle)
 
         speeds = BoxLayout(orientation='vertical', size_hint_x=None, width=dp(104))
-        self.down_label = Label(text='↓ 0 B/s', color=theme.BLUE, font_size=dp(12),
+        self.down_label = Label(text='↓ 0 B/s', color=theme.PRIMARY, font_size=theme.BODY_SMALL,
                                 halign='right', valign='middle')
-        self.up_label = Label(text='↑ 0 B/s', color=theme.GREEN, font_size=dp(12),
+        self.up_label = Label(text='↑ 0 B/s', color=theme.SUCCESS, font_size=theme.BODY_SMALL,
                               halign='right', valign='middle')
         for label in (self.down_label, self.up_label):
             label.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
@@ -129,7 +130,7 @@ class SpeedGraph(Card):
         # two lines lands on top of the heading. They sit where pos_hint puts
         # them, just inside the top and bottom of the plot.
         for fraction in (0.96, 0.5, 0.04):
-            label = Label(text='', color=theme.DIM, font_size=dp(10),
+            label = Label(text='', color=theme.ON_SURFACE_VARIANT, font_size=dp(10),
                           size_hint=(None, None), height=dp(14),
                           pos_hint={'right': 1, 'center_y': fraction})
             label.bind(texture_size=lambda widget, size: setattr(widget, 'size', size))
@@ -142,7 +143,7 @@ class SpeedGraph(Card):
 
         footer = BoxLayout(size_hint_y=None, height=dp(14))
         for text, align in (('2 min ago', 'left'), ('now', 'right')):
-            label = Label(text=text, color=theme.DIM, font_size=dp(10),
+            label = Label(text=text, color=theme.ON_SURFACE_VARIANT, font_size=dp(10),
                           halign=align, valign='middle')
             label.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
             footer.add_widget(label)

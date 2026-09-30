@@ -20,7 +20,7 @@ import logging
 
 from kivy.clock import Clock
 from kivy.core.window import Window
-from kivy.graphics import Color, Line, RoundedRectangle
+from kivy.graphics import Color, RoundedRectangle
 from kivy.metrics import dp
 from kivy.properties import StringProperty
 from kivy.uix.boxlayout import BoxLayout
@@ -56,11 +56,10 @@ class LinkBox(BoxLayout):
     def __init__(self, hint='Paste a link', **kwargs):
         super().__init__(**kwargs)
         self.hint = hint
+        # Shaped like Android's own search bars: a pill, filled, no outline.
         with self.canvas.before:
-            Color(*theme.BASE)
-            self._fill = RoundedRectangle(radius=[dp(8)])
-            Color(*theme.BORDER)
-            self._line = Line(width=1.0)
+            Color(*theme.SURFACE_CONTAINER_HIGH)
+            self._fill = RoundedRectangle()
         self.bind(pos=self._redraw, size=self._redraw)
         pieces = _android()
         self.native = _NativeField(self, *pieces) if pieces else None
@@ -73,14 +72,15 @@ class LinkBox(BoxLayout):
     def _redraw(self, *_):
         self._fill.pos = self.pos
         self._fill.size = self.size
-        self._line.rounded_rectangle = (self.x, self.y, self.width, self.height, dp(8))
+        self._fill.radius = [self.height / 2]
 
     def _stand_in(self):
         field = TextInput(hint_text=self.hint, multiline=False, background_normal='',
                           background_active='', background_color=theme.TRANSPARENT,
-                          foreground_color=theme.TEXT, hint_text_color=theme.DIM,
-                          cursor_color=theme.BLUE, font_size=dp(14),
-                          padding=[dp(10), dp(12)])
+                          foreground_color=theme.ON_SURFACE,
+                          hint_text_color=theme.ON_SURFACE_VARIANT,
+                          cursor_color=theme.PRIMARY, font_size=theme.BODY_LARGE,
+                          padding=[dp(20), dp(17)])
         field.bind(text=lambda _, value: setattr(self, 'text', value),
                    on_text_validate=lambda *_: self.dispatch('on_submit'))
         self.bind(text=lambda _, value: setattr(field, 'text', value)
@@ -199,20 +199,22 @@ class _NativeField:
                 Color = public_class('android.graphics.Color')
                 EditorInfo = public_class('android.view.inputmethod.EditorInfo')
                 InputType = public_class('android.text.InputType')
-                # The device's own dark theme, so the menu, the handles and the
-                # cursor look exactly as they do in any other app here. Looked
-                # up by name: android.R.style would have pyjnius read all of
-                # Android's styles to find the one.
-                style = activity.getResources().getIdentifier('Theme.DeviceDefault', 'style', 'android')
+                # The device's own theme, dark or light as the app is, so the
+                # menu, the handles and the cursor look exactly as they do in
+                # any other app here. Looked up by name: android.R.style would
+                # have pyjnius read all of Android's styles to find the one.
+                style = activity.getResources().getIdentifier(
+                    'Theme.DeviceDefault' if theme.DARK else 'Theme.DeviceDefault.Light',
+                    'style', 'android')
                 themed = public_class('android.view.ContextThemeWrapper')(activity, style)
                 edit = public_class('android.widget.EditText')(themed)
                 edit.setSingleLine(True)
                 edit.setHint(_chars(box.hint))
-                edit.setTextColor(Color.parseColor(theme.PALETTE['text']))
-                edit.setHintTextColor(Color.parseColor(theme.PALETTE['dim']))
+                edit.setTextColor(Color.parseColor(theme.hex_of(theme.ON_SURFACE)))
+                edit.setHintTextColor(Color.parseColor(theme.hex_of(theme.ON_SURFACE_VARIANT)))
                 edit.setBackgroundColor(Color.TRANSPARENT)      # Kivy draws the box
-                edit.setTextSize(1, 14.0)                        # 14dp, as the rest of the app
-                edit.setPadding(int(dp(10)), 0, int(dp(10)), 0)
+                edit.setTextSize(1, 16.0)                        # 16dp, Material's body large
+                edit.setPadding(int(dp(20)), 0, int(dp(20)), 0)
                 edit.setGravity(public_class('android.view.Gravity').CENTER_VERTICAL)
                 edit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI)
                 edit.setImeOptions(EditorInfo.IME_ACTION_GO | EditorInfo.IME_FLAG_NO_EXTRACT_UI)

@@ -35,12 +35,13 @@ from kivy.app import App                                    # noqa: E402
 from kivy.base import EventLoop                             # noqa: E402
 from kivy.clock import Clock                                # noqa: E402
 from kivy.core.window import Window                         # noqa: E402
+from kivy.graphics import Color, Rectangle                  # noqa: E402
 from kivy.logger import Logger                              # noqa: E402
 from kivy.metrics import dp                                 # noqa: E402
 from kivy.uix.boxlayout import BoxLayout                    # noqa: E402
-from kivy.uix.button import Button                          # noqa: E402
 from kivy.uix.label import Label                            # noqa: E402
 from kivy.uix.scrollview import ScrollView                  # noqa: E402
+from kivy.uix.widget import Widget                          # noqa: E402
 from kivy.utils import platform                             # noqa: E402
 
 from grabbit import APP_VERSION, updates                    # noqa: E402
@@ -57,8 +58,8 @@ from grabbit_mobile.ui.details import DetailsSheet          # noqa: E402
 from grabbit_mobile.ui.graph import SpeedGraph              # noqa: E402
 from grabbit_mobile.ui.linkbox import LinkBox               # noqa: E402
 from grabbit_mobile.ui.rows import TaskRow                  # noqa: E402
-from grabbit_mobile.ui.widgets import (Card, Chip, Dialog, FlatButton, IconButton,  # noqa: E402
-                                       TapLabel)
+from grabbit_mobile.ui.widgets import (HAIRLINE, Card, Chip, Dialog, FlatButton,  # noqa: E402
+                                       Handle, IconButton, TapLabel)
 
 IMPORTED = time.monotonic()
 
@@ -121,14 +122,12 @@ def process_age() -> float | None:
         return None
 
 
-class DragHandle(Button):
-    """The splitter handle from the desktop, as something to drag on glass."""
+class DragHandle(Handle):
+    """The splitter from the desktop, as Material's drag handle on glass."""
 
     def __init__(self, on_drag=None, **kwargs):
         # Tall enough to find with a thumb.
-        super().__init__(text='———', size_hint_y=None, height=dp(24), font_size=dp(12),
-                         color=theme.DIM, background_normal='', background_down='',
-                         background_color=theme.TRANSPARENT, **kwargs)
+        super().__init__(size_hint_y=None, height=dp(24), **kwargs)
         self._on_drag = on_drag
         self._last = None
 
@@ -168,7 +167,7 @@ class GrabbitApp(App):
         # The phone's own font, with Android's fallbacks behind it (ui/fonts.py).
         from grabbit_mobile.ui.fonts import use_system_font
         use_system_font(paths.data_dir() / 'fonts.json')
-        Window.clearcolor = theme.WINDOW
+        Window.clearcolor = theme.SURFACE
         self.settings = Settings.load()
         # The downloads run in a process of their own, which outlives this
         # window - closing it, swiping Grabbit away, leaves them running
@@ -189,7 +188,7 @@ class GrabbitApp(App):
         self.chosen = set()
         self.hands = None           # FileShare and Touch (java/), on a phone
 
-        root = BoxLayout(orientation='vertical', padding=dp(8), spacing=dp(6))
+        root = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(8))
         self.root_box = root
         # While downloads are being picked out, the title bar says how many
         # and the footer becomes what to do with them.
@@ -228,21 +227,22 @@ class GrabbitApp(App):
 
         # One line, ellipsised: a shared TikTok title is long enough to wrap
         # twice and push itself out of its own row.
-        self.message = Label(text='Starting…', color=theme.DIM, font_size=dp(11),
+        self.message = Label(text='Starting…', color=theme.ON_SURFACE_VARIANT,
+                             font_size=theme.BODY_SMALL,
                              size_hint_y=None, height=dp(18), halign='left',
                              valign='middle', shorten=True, shorten_from='right')
         self.message.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
         root.add_widget(self.message)
 
         self.scroll = ScrollView()
-        self.list = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(6))
+        self.list = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(8))
         self.list.bind(minimum_height=self.list.setter('height'))
         self.scroll.add_widget(self.list)
         root.add_widget(self.scroll)
 
         # It carries this copy's version, and touching it asks whether there
         # is a newer one - the phone's Help › Check for updates.
-        self.footer = TapLabel(text='', color=theme.DIM, font_size=dp(11),
+        self.footer = TapLabel(text='', color=theme.ON_SURFACE_VARIANT, font_size=theme.LABEL_SMALL,
                                size_hint_y=None, height=dp(20), shorten=True,
                                halign='center', valign='middle')
         self.footer.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
@@ -310,7 +310,7 @@ class GrabbitApp(App):
         # keyboard as it slides in, around a surface Android has moved - is
         # the app's own colour rather than black.
         from grabbit_mobile.bootstrap import paint_window
-        paint_window(theme.PALETTE['window'])
+        paint_window(theme.hex_of(theme.SURFACE), light=not theme.DARK)
         # As many frames a second as the screen can show - 90 or 120 on many
         # phones, which leave an app at 60 unless it asks.
         from grabbit_mobile.bootstrap import fastest_screen
@@ -337,22 +337,22 @@ class GrabbitApp(App):
     def _build_top_bar(self):
         # The title starts where the text in the link box does, clear of the
         # screen's rounded corner rather than hard against it.
-        bar = BoxLayout(size_hint_y=None, height=dp(34), spacing=dp(8),
-                        padding=[dp(10), 0, dp(2), 0])
+        bar = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(4),
+                        padding=[dp(4), 0, 0, 0])
         # The name is always as wide as it is - on a narrower phone the speeds
         # beside it give way, rather than the name wrapping onto two lines.
-        name = Label(text='Grabbit', color=theme.TEXT, font_size=dp(18), bold=True,
+        name = Label(text='Grabbit', color=theme.ON_SURFACE, font_size=theme.TITLE_LARGE,
                      size_hint_x=None)
         name.bind(texture_size=lambda widget, value: setattr(widget, 'width', value[0]))
         name.texture_update()
-        self.speed_label = Label(text='↓ 0 B/s   ↑ 0 B/s', color=theme.DIM, font_size=dp(11),
+        self.speed_label = Label(text='↓ 0 B/s   ↑ 0 B/s', color=theme.ON_SURFACE_VARIANT,
+                                 font_size=theme.BODY_SMALL,
                                  halign='right', valign='middle', shorten=True,
                                  shorten_from='right')
         self.speed_label.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
-        self.graph_chip = Chip(text='Graph')
+        self.graph_chip = IconButton('graph', toggle=True, width=dp(48))
         self.graph_chip.bind(on_release=lambda *_: self.show_graph(not self.graph_shown))
-        self.settings_button = FlatButton(text='⚙', font_size=dp(20), size_hint_x=None,
-                                          width=dp(38), color=theme.DIM, fill=theme.TRANSPARENT)
+        self.settings_button = IconButton('settings', width=dp(48))
         self.settings_button.bind(on_release=lambda *_: self.open_settings())
         bar.add_widget(name)
         bar.add_widget(self.speed_label)
@@ -363,21 +363,21 @@ class GrabbitApp(App):
     def _build_update_banner(self):
         """The desktop's update banner, in one row: what is out on one line and
         what this copy is under it, so neither is cut short on a narrow phone."""
-        banner = Card(size_hint_y=None, height=dp(44), spacing=dp(6),
-                      padding=[dp(12), dp(5), dp(5), dp(5)])
+        banner = Card(size_hint_y=None, height=dp(64), spacing=dp(4), radius=theme.MEDIUM,
+                      fill=theme.SECONDARY_CONTAINER, padding=[dp(16), dp(10), dp(8), dp(10)])
         words = BoxLayout(orientation='vertical')
-        self.update_label = Label(text='', color=theme.TEXT, font_size=dp(13), halign='left',
+        self.update_label = Label(text='', color=theme.ON_SECONDARY_CONTAINER,
+                                  font_size=theme.TITLE_SMALL, halign='left',
                                   valign='bottom', shorten=True, shorten_from='right')
-        self.update_note = Label(text='', color=theme.DIM, font_size=dp(11), halign='left',
+        self.update_note = Label(text='', color=theme.ON_SECONDARY_CONTAINER,
+                                 font_size=theme.BODY_SMALL, halign='left',
                                  valign='top', shorten=True, shorten_from='right')
         for label in (self.update_label, self.update_note):
             label.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
             words.add_widget(label)
-        get = FlatButton(text='Get it', size_hint_x=None, width=dp(68), font_size=dp(13),
-                         color=(1, 1, 1, 1), fill=theme.BLUE)
+        get = FlatButton(text='Get it', style='filled', size_hint_x=None)
         get.bind(on_release=lambda *_: self._get_update())
-        self.update_later = FlatButton(text='Later', size_hint_x=None, width=dp(60),
-                                       font_size=dp(13), color=theme.DIM)
+        self.update_later = FlatButton(text='Later', style='text', size_hint_x=None)
         self.update_later.bind(on_release=lambda *_: self._decline_update())
         for widget in (words, get, self.update_later):
             banner.add_widget(widget)
@@ -386,16 +386,15 @@ class GrabbitApp(App):
     def _build_choose_bar(self):
         """The title bar while downloads are being picked out: leave, how
         many, and all of them."""
-        bar = BoxLayout(size_hint_y=None, height=dp(34), spacing=dp(6), padding=[0, 0, dp(2), 0])
-        leave = IconButton('close', extent=dp(13), color=theme.TEXT, size_hint_x=None,
-                           width=dp(38))
+        bar = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(4), padding=[-dp(4), 0, 0, 0])
+        leave = IconButton('close', color=theme.ON_SURFACE, width=dp(48))
         leave.bind(on_release=lambda *_: self.stop_choosing())
-        self.chosen_label = Label(text='', color=theme.TEXT, font_size=dp(16), bold=True,
+        self.chosen_label = Label(text='', color=theme.ON_SURFACE, font_size=theme.TITLE_LARGE,
                                   halign='left', valign='middle', shorten=True,
                                   shorten_from='right')
         self.chosen_label.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
-        self.choose_all_button = FlatButton(text='Select all', size_hint_x=None, width=dp(108),
-                                            font_size=dp(13), color=theme.TEXT)
+        self.choose_all_button = FlatButton(text='Select all', style='text', size_hint_x=None,
+                                            width=dp(96))
         self.choose_all_button.bind(on_release=lambda *_: self.choose_all())
         for widget in (leave, self.chosen_label, self.choose_all_button):
             bar.add_widget(widget)
@@ -403,24 +402,22 @@ class GrabbitApp(App):
 
     def _build_choose_actions(self):
         """The footer while downloads are being picked out: what to do with them."""
-        row = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
-        self.share_chosen_button = FlatButton(text='Share', font_size=dp(15), color=theme.TEXT)
+        row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(8))
+        self.share_chosen_button = FlatButton(text='Share', style='tonal')
         self.share_chosen_button.bind(on_release=lambda *_: self.share_chosen())
-        self.remove_chosen_button = FlatButton(text='Remove', font_size=dp(15),
-                                               color=theme.state_color(State.ERROR))
+        self.remove_chosen_button = FlatButton(text='Remove', style='danger-tonal')
         self.remove_chosen_button.bind(on_release=lambda *_: self.remove_chosen())
         row.add_widget(self.share_chosen_button)
         row.add_widget(self.remove_chosen_button)
         return row
 
     def _build_add_row(self):
-        row = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
+        row = BoxLayout(size_hint_y=None, height=dp(56), spacing=dp(8))
         # Android's own text field on a phone, so holding it gives Android's
         # own copy and paste menu (ui/linkbox.py).
         self.input = LinkBox(hint='Paste a link')
         self.input.bind(on_submit=lambda *_: self.download())
-        button = FlatButton(text='Download', size_hint_x=None, width=dp(112),
-                            font_size=dp(14), color=(1, 1, 1, 1), fill=theme.BLUE)
+        button = FlatButton(text='Download', style='filled', size_hint_x=None, height=dp(56))
         self.download_button = button
         button.bind(on_release=lambda *_: self.download())
         row.add_widget(self.input)
@@ -428,8 +425,8 @@ class GrabbitApp(App):
         return row
 
     def _build_filters(self):
-        strip = ScrollView(size_hint_y=None, height=dp(34), do_scroll_y=False, bar_width=0)
-        row = BoxLayout(size_hint_x=None, spacing=dp(6), height=dp(30))
+        strip = ScrollView(size_hint_y=None, height=dp(40), do_scroll_y=False, bar_width=0)
+        row = BoxLayout(size_hint_x=None, spacing=dp(8), height=dp(40))
         row.bind(minimum_width=row.setter('width'))
         self._status_chips = {}
         self._kind_chips = {}
@@ -440,7 +437,14 @@ class GrabbitApp(App):
             self._status_chips[key] = chip
             row.add_widget(chip)
 
-        divider = Label(text='|', color=theme.BORDER, size_hint_x=None, width=dp(10))
+        # A hairline between the two groups, as tall as a chip.
+        divider = Widget(size_hint_x=None, width=dp(9))
+        with divider.canvas:
+            Color(*theme.OUTLINE_VARIANT)
+            rule = Rectangle()
+        divider.bind(pos=lambda widget, _: setattr(rule, 'pos', (widget.center_x - HAIRLINE,
+                                                                 widget.center_y - dp(12))))
+        rule.size = (2 * HAIRLINE, dp(24))
         row.add_widget(divider)
 
         for key, label in KIND_FILTERS:
@@ -461,7 +465,7 @@ class GrabbitApp(App):
         from grabbit_mobile.bootstrap import safe_insets
         top, bottom = safe_insets(Window.height)
         self._insets = (top, bottom)
-        self.root_box.padding = [dp(8), dp(8) + top, dp(8), dp(8) + bottom]
+        self.root_box.padding = [dp(12), dp(8) + top, dp(12), dp(8) + bottom]
 
     # ------------------------------------------------------------- plumbing
     def _start_engine(self):
@@ -642,7 +646,7 @@ class GrabbitApp(App):
     def _schedule_message(self, level, text):
         def show(*_):
             self.message.text = text
-            self.message.color = theme.state_color(State.ERROR) if level == 'error' else theme.DIM
+            self.message.color = theme.ERROR if level == 'error' else theme.ON_SURFACE_VARIANT
         Clock.schedule_once(show, 0)
 
     # -------------------------------------------------------------- actions
@@ -914,7 +918,8 @@ class GrabbitApp(App):
 
     def open_details(self, task_id: str, tab: str = 'General'):
         if self.details is None:
-            self.details = DetailsSheet(self.engine, on_open_file=self.open_file)
+            self.details = DetailsSheet(self.engine, on_open_file=self.open_file,
+                                        insets=self._insets)
         self.details.open_task(task_id, tab)
 
     def toggle_task(self, task_id: str):
@@ -1084,8 +1089,9 @@ class GrabbitApp(App):
         self.chosen_label.text = f'{len(tasks)} selected'
         everything = bool(self._rows) and set(self._rows) <= self.chosen
         self.choose_all_button.text = 'Deselect' if everything else 'Select all'
-        self.share_chosen_button.color = (theme.TEXT if any(finished(t) for t in tasks)
-                                          else theme.DIM)
+        self.share_chosen_button.color = (theme.ON_SECONDARY_CONTAINER
+                                          if any(finished(t) for t in tasks)
+                                          else theme.DISABLED_TEXT)
 
     # --------------------------------------------------------------- drawing
     def refresh(self):

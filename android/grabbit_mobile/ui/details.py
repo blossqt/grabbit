@@ -1,4 +1,5 @@
-"""Everything about one download: the desktop's bottom panel, full screen.
+"""Everything about one download: the desktop's bottom panel, as a Material
+bottom sheet rising over the list.
 
 Same five tabs, same fields, same sources - General from the task, Files and
 Peers and Trackers from aria2, Log from what the job recorded. Once a download
@@ -23,7 +24,7 @@ from grabbit.util import human_eta, human_size, human_speed, human_time
 from ..files import finished, finished_files
 from . import theme
 from .motion import Entrance, ripple
-from .widgets import Card, Chip, IconButton, share_by_words
+from .widgets import Card, Handle, IconButton, Tabs
 
 TABS = ['General', 'Files', 'Peers', 'Trackers', 'Log']
 
@@ -39,9 +40,9 @@ class Rows(BoxLayout):
     def pair(self, key: str, value: str):
         """One label-and-value line, as the General tab has."""
         line = BoxLayout(size_hint_y=None, spacing=dp(8))
-        name = Label(text=key, color=theme.DIM, font_size=dp(12), halign='right',
-                     valign='top', size_hint_x=None, width=dp(104))
-        content = Label(text=value or '—', color=theme.TEXT, font_size=dp(12),
+        name = Label(text=key, color=theme.ON_SURFACE_VARIANT, font_size=theme.BODY_SMALL,
+                     halign='right', valign='top', size_hint_x=None, width=dp(104))
+        content = Label(text=value or '—', color=theme.ON_SURFACE, font_size=theme.BODY_SMALL,
                         halign='left', valign='top')
         for label in (name, content):
             label.bind(size=lambda widget, v: setattr(widget, 'text_size', (v[0], None)))
@@ -53,7 +54,7 @@ class Rows(BoxLayout):
         self.add_widget(line)
 
     def line(self, text: str, color=None, size=12):
-        label = Label(text=text, color=color or theme.TEXT, font_size=dp(size),
+        label = Label(text=text, color=color or theme.ON_SURFACE, font_size=dp(size),
                       halign='left', valign='top', size_hint_y=None)
         label.bind(size=lambda widget, v: setattr(widget, 'text_size', (v[0], None)))
         label.bind(texture_size=lambda widget, s: setattr(widget, 'height', s[1] + dp(4)))
@@ -64,7 +65,7 @@ class Rows(BoxLayout):
         line = BoxLayout(size_hint_y=None, height=dp(22), spacing=dp(6))
         for text, width in zip(values, widths):
             label = Label(text=str(text), font_size=dp(11),
-                          color=color or (theme.DIM if header else theme.TEXT),
+                          color=color or (theme.ON_SURFACE_VARIANT if header else theme.ON_SURFACE),
                           halign='left' if width == 0 else 'right', valign='middle',
                           shorten=True, shorten_from='right',
                           size_hint_x=(1 if width == 0 else None),
@@ -81,24 +82,26 @@ class FileLine(ButtonBehavior, BoxLayout):
     def __init__(self, name: str, size: str, **kwargs):
         super().__init__(size_hint_y=None, height=dp(38), spacing=dp(8),
                          padding=[dp(8), 0], **kwargs)
-        self.ripple = ripple(self, radius=dp(6))
-        title = Label(text=name, color=theme.TEXT, font_size=dp(13), halign='left',
-                      valign='middle', shorten=True, shorten_from='center')
-        amount = Label(text=size, color=theme.DIM, font_size=dp(11), halign='right',
-                       valign='middle', size_hint_x=None, width=dp(66))
+        self.ripple = ripple(self, radius=dp(theme.SMALL), color=theme.ON_SURFACE)
+        title = Label(text=name, color=theme.ON_SURFACE, font_size=theme.BODY_MEDIUM,
+                      halign='left', valign='middle', shorten=True, shorten_from='center')
+        amount = Label(text=size, color=theme.ON_SURFACE_VARIANT, font_size=theme.BODY_SMALL,
+                       halign='right', valign='middle', size_hint_x=None, width=dp(66))
         for label in (title, amount):
             label.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
             self.add_widget(label)
 
 
 class DetailsSheet(Entrance, ModalView):
-    """on_open_file(path) opens one of a finished download's files."""
+    """on_open_file(path) opens one of a finished download's files. insets
+    is (top, bottom): the sheet keeps its last line clear of the gesture bar."""
 
-    entrance = 'card'
+    entrance = 'sheet'
 
-    def __init__(self, engine, on_open_file=None, **kwargs):
-        super().__init__(size_hint=(0.96, 0.9), background_color=theme.TRANSPARENT,
-                         background='', auto_dismiss=True, **kwargs)
+    def __init__(self, engine, on_open_file=None, insets=(0, 0), **kwargs):
+        super().__init__(size_hint=(1, 0.9), background_color=theme.TRANSPARENT,
+                         background='', overlay_color=theme.with_alpha(theme.SCRIM, 0.32),
+                         auto_dismiss=True, **kwargs)
         self.engine = engine
         self.on_open_file = on_open_file
         self.task_id = ''
@@ -106,29 +109,25 @@ class DetailsSheet(Entrance, ModalView):
         self._refresher = None
         self._listed = None             # the finished files on show, as last listed
 
-        frame = Card(orientation='vertical', padding=[dp(12), dp(10)], spacing=dp(8),
-                     fill=theme.WINDOW)
-        header = BoxLayout(size_hint_y=None, height=dp(30), spacing=dp(8))
-        self.title = Label(text='', color=theme.TEXT, font_size=dp(15), bold=True,
+        # Rounded at the top only: the sheet comes up out of the bottom edge.
+        top = theme.EXTRA_LARGE
+        frame = Card(orientation='vertical', radius=(top, top, 0, 0), spacing=dp(4),
+                     padding=[dp(16), 0, dp(16), dp(12) + insets[1]],
+                     fill=theme.SURFACE_CONTAINER_LOW)
+        frame.add_widget(Handle(size_hint_y=None, height=dp(28)))
+        header = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(8))
+        self.title = Label(text='', color=theme.ON_SURFACE, font_size=theme.TITLE_MEDIUM,
                            halign='left', valign='middle', shorten=True, shorten_from='right')
         self.title.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
-        close = IconButton('close', extent=dp(13), size_hint_x=None, width=dp(38))
+        close = IconButton('close')
         close.bind(on_release=lambda *_: self.dismiss())
         header.add_widget(self.title)
         header.add_widget(close)
         frame.add_widget(header)
 
-        tabs = BoxLayout(size_hint_y=None, height=dp(32), spacing=dp(4))
-        self.tab_chips = {}
-        for name in TABS:
-            chip = Chip(text=name, selected=(name == self.tab))
-            chip.font_size = dp(12)
-            chip.bind(on_release=lambda widget, n=name: self.show_tab(n))
-            self.tab_chips[name] = chip
-            tabs.add_widget(chip)
-        # Five of them across the sheet: "Trackers" needs more of it than "Log".
-        share_by_words(self.tab_chips.values())
-        frame.add_widget(tabs)
+        self.tabs = Tabs(TABS, self.tab, self.show_tab)
+        self.tab_chips = self.tabs.buttons
+        frame.add_widget(self.tabs)
 
         self.scroll = ScrollView()
         self.rows = Rows()
@@ -136,11 +135,18 @@ class DetailsSheet(Entrance, ModalView):
         frame.add_widget(self.scroll)
         self.add_widget(frame)
 
+    def _align_center(self, *_):
+        """Along the bottom edge, rather than in the middle where Kivy puts a view."""
+        if self._is_open:
+            self.center_x = self._window.center[0]
+            self.y = 0
+
     # ------------------------------------------------------------------ show
     def open_task(self, task_id: str, tab: str = 'General'):
         self.task_id = task_id
         self.show_tab(tab)
         self.open()
+        self._align_center()
         self._refresher = Clock.schedule_interval(lambda _: self.refresh(), 1.0)
 
     def on_dismiss(self):
@@ -152,8 +158,7 @@ class DetailsSheet(Entrance, ModalView):
     def show_tab(self, name: str):
         self.tab = name
         self._listed = None
-        for key, chip in self.tab_chips.items():
-            chip.set_selected(key == name)
+        self.tabs.select(name)
         self.refresh()
 
     def refresh(self):
@@ -208,9 +213,9 @@ class DetailsSheet(Entrance, ModalView):
     def _list_finished(self, found):
         if not found:
             self.rows.line('The files are not where they were saved any more - '
-                           'moved or deleted since.', theme.DIM)
+                           'moved or deleted since.', theme.ON_SURFACE_VARIANT)
             return
-        self.rows.line('Tap a file to open it.', theme.DIM, size=11)
+        self.rows.line('Tap a file to open it.', theme.ON_SURFACE_VARIANT, size=11)
         # Inside a torrent's folder, each by its place in it.
         base = os.path.dirname(os.path.commonpath(found)) if len(found) == 1 else os.path.commonpath(found)
         for path in found:
@@ -240,7 +245,7 @@ class DetailsSheet(Entrance, ModalView):
                         [os.path.basename(entry.get('path') or '') or '?',
                          human_size(length), human_size(done),
                          'skipped' if skipped else f'{(done / length * 100) if length else 0:.0f}%'],
-                        widths, color=theme.DIM if skipped else None)
+                        widths, color=theme.ON_SURFACE_VARIANT if skipped else None)
                 if not files:
                     if task.file_path:
                         self.rows.columns([os.path.basename(task.file_path),
@@ -248,7 +253,7 @@ class DetailsSheet(Entrance, ModalView):
                                            '100%' if task.state == State.COMPLETED else ''],
                                           widths)
                     else:
-                        self.rows.line('No file list for this download.', theme.DIM)
+                        self.rows.line('No file list for this download.', theme.ON_SURFACE_VARIANT)
             Clock.schedule_once(paint, 0)
 
         if task.gid:
@@ -258,7 +263,7 @@ class DetailsSheet(Entrance, ModalView):
 
     def _show_peers(self, task):
         if not task.is_torrent:
-            self.rows.line('Peers are a torrent thing.', theme.DIM)
+            self.rows.line('Peers are a torrent thing.', theme.ON_SURFACE_VARIANT)
             return
         widths = [0, 86, 40, 70, 70]
 
@@ -279,14 +284,14 @@ class DetailsSheet(Entrance, ModalView):
                          human_speed(int(peer.get('downloadSpeed') or 0)) or '—',
                          human_speed(int(peer.get('uploadSpeed') or 0)) or '—'], widths)
                 if not peers:
-                    self.rows.line('No peers connected right now.', theme.DIM)
+                    self.rows.line('No peers connected right now.', theme.ON_SURFACE_VARIANT)
             Clock.schedule_once(paint, 0)
 
         self.engine.fetch_peers(task, show)
 
     def _show_trackers(self, task):
         if not task.is_torrent:
-            self.rows.line('Trackers are a torrent thing.', theme.DIM)
+            self.rows.line('Trackers are a torrent thing.', theme.ON_SURFACE_VARIANT)
             return
 
         def show(status):
@@ -299,7 +304,7 @@ class DetailsSheet(Entrance, ModalView):
                     for url in (tier if isinstance(tier, list) else [tier]):
                         self.rows.line(url, size=11)
                 if not announce:
-                    self.rows.line('No trackers (DHT and peer exchange only).', theme.DIM)
+                    self.rows.line('No trackers (DHT and peer exchange only).', theme.ON_SURFACE_VARIANT)
             Clock.schedule_once(paint, 0)
 
         self.engine.fetch_status(task, ['bittorrent'], show)
@@ -313,7 +318,7 @@ class DetailsSheet(Entrance, ModalView):
                     return
                 self.rows.clear_widgets()
                 if not entries and task.kind != KIND_MEDIA:
-                    self.rows.line('No messages for this download.', theme.DIM)
+                    self.rows.line('No messages for this download.', theme.ON_SURFACE_VARIANT)
                     return
                 for entry in entries:
                     self.rows.line(entry, size=11)

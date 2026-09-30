@@ -29,7 +29,6 @@ from kivy.uix.image import Image
 from kivy.uix.label import Label
 from kivy.uix.modalview import ModalView
 from kivy.uix.scrollview import ScrollView
-from kivy.uix.stacklayout import StackLayout
 from kivy.uix.widget import Widget
 
 from grabbit import analyze as analyze_mod
@@ -39,7 +38,7 @@ from grabbit.util import human_duration, human_size, site_name
 
 from . import theme
 from .motion import Entrance, blend, ripple
-from .widgets import Card, FlatButton, Option
+from .widgets import Card, ChipWrap, FlatButton, IconButton, SegmentedRow, top_bar
 
 log = logging.getLogger(__name__)
 
@@ -186,14 +185,14 @@ class Tile(ButtonBehavior, FloatLayout):
         self._on_toggle = on_toggle
         radius = [dp(8)]
         with self.canvas.before:
-            Color(*theme.BASE)
+            Color(*theme.SURFACE_CONTAINER_HIGHEST)
             self._ground = RoundedRectangle(radius=radius)
             self._picture_color = Color(1, 1, 1, 0)
             self._picture = RoundedRectangle(radius=radius)
             self._veil_color = Color(0, 0, 0, 0)
             self._veil = RoundedRectangle(radius=radius)
         with self.canvas.after:
-            self._edge_color = Color(*theme.BLUE)
+            self._edge_color = Color(*theme.PRIMARY)
             self._edge = Line(width=dp(1.2))
             self._mark = InstructionGroup()
         if item.kind in ('video', 'audio'):
@@ -250,7 +249,8 @@ class Tile(ButtonBehavior, FloatLayout):
 
     def _show_choice(self):
         blend(self._veil_color, (0, 0, 0, 0 if self.chosen else 0.45), widget=self)
-        blend(self._edge_color, (*theme.BLUE[:3], 1 if self.chosen else 0), widget=self)
+        blend(self._edge_color, theme.with_alpha(theme.PRIMARY, 1 if self.chosen else 0),
+              widget=self)
         self._edge.rounded_rectangle = (self.x, self.y, self.width, self.height, dp(8))
         # The mark in the corner: a ring, ticked and filled in once chosen.
         # (Not self.right and self.top: mid-layout, they still say the old size.)
@@ -258,9 +258,9 @@ class Tile(ButtonBehavior, FloatLayout):
         x, y = self.x + self.width - size - dp(6), self.y + self.height - size - dp(6)
         self._mark.clear()
         if self.chosen:
-            self._mark.add(Color(*theme.BLUE))
+            self._mark.add(Color(*theme.PRIMARY))
             self._mark.add(Ellipse(pos=(x, y), size=(size, size)))
-            self._mark.add(Color(1, 1, 1, 1))
+            self._mark.add(Color(*theme.ON_PRIMARY))
             self._mark.add(Line(points=[x + size * 0.28, y + size * 0.50, x + size * 0.44,
                                         y + size * 0.35, x + size * 0.72, y + size * 0.64],
                                 width=dp(1.1)))
@@ -326,11 +326,10 @@ class Scrubber(Widget):
         self._on_rest = on_rest
         self._rest = None
         with self.canvas:
-            Color(*theme.BAR)
+            Color(*theme.SECONDARY_CONTAINER)
             self._track = RoundedRectangle(radius=[dp(2)])
-            Color(*theme.BLUE)
+            Color(*theme.PRIMARY)
             self._fill = RoundedRectangle(radius=[dp(2)])
-            Color(1, 1, 1, 1)
             self._knob = Ellipse()
         self.bind(pos=self._redraw, size=self._redraw, value=self._redraw,
                   duration=self._redraw)
@@ -392,50 +391,17 @@ class Scrubber(Widget):
 
 
 def _heading(text):
-    label = Label(text=text, color=theme.DIM, font_size=dp(12), bold=True,
-                  size_hint_y=None, height=dp(22), halign='left', valign='bottom')
+    label = Label(text=text, color=theme.ON_SURFACE_VARIANT, font_size=theme.TITLE_SMALL,
+                  size_hint_y=None, height=dp(28), halign='left', valign='bottom')
     label.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
     return label
 
 
-class _Choosing:
-    """A group of Options where exactly one is chosen."""
-
-    def _fill(self, options, chosen, on_choose, equal):
-        self.chosen = chosen
-        self._on_choose = on_choose
-        self.buttons = {}
-        for value, label in options:
-            button = Option(text=label, selected=(value == chosen))
-            if equal:
-                button.size_hint_x = 1        # an equal share of the row
-            button.bind(on_release=lambda _, v=value: self.choose(v))
-            self.buttons[value] = button
-            self.add_widget(button)
-
-    def choose(self, value):
-        self.chosen = value
-        for option, button in self.buttons.items():
-            button.set_selected(option == value)
-        if self._on_choose:
-            self._on_choose(value)
-
-
-class OptionRow(_Choosing, BoxLayout):
-    """Options sharing one row equally: Video, Audio, GIF, Image."""
-
-    def __init__(self, options, chosen, on_choose, **kwargs):
-        super().__init__(size_hint_y=None, height=dp(34), spacing=dp(6), **kwargs)
-        self._fill(options, chosen, on_choose, equal=True)
-
-
-class OptionWrap(_Choosing, StackLayout):
-    """Options as wide as their words, wrapping onto more lines: the qualities."""
-
-    def __init__(self, options, chosen, on_choose, **kwargs):
-        super().__init__(size_hint_y=None, spacing=dp(8), **kwargs)
-        self.bind(minimum_height=self.setter('height'))
-        self._fill(options, chosen, on_choose, equal=False)
+# A few choices that share one row (Video, Audio, GIF, Image), and choices as
+# wide as their words that wrap (the qualities): Material's segmented button
+# and its chips.
+OptionRow = SegmentedRow
+OptionWrap = ChipWrap
 
 
 class ChoosePage(Entrance, ModalView):
@@ -448,7 +414,7 @@ class ChoosePage(Entrance, ModalView):
     """
 
     def __init__(self, url, settings, on_choose, insets=(0, 0), **kwargs):
-        super().__init__(size_hint=(1, 1), background='', background_color=theme.WINDOW,
+        super().__init__(size_hint=(1, 1), background='', background_color=theme.SURFACE,
                          overlay_color=(0, 0, 0, 0), auto_dismiss=True, **kwargs)
         self.url = url
         self.settings = settings
@@ -472,23 +438,17 @@ class ChoosePage(Entrance, ModalView):
                                 padding=[dp(18), dp(10) + top, dp(18), dp(14) + bottom])
         self.add_widget(self.column)
 
-        header = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(4))
-        back = FlatButton(text='‹', font_size=dp(30), size_hint_x=None, width=dp(40),
-                          color=theme.TEXT, fill=theme.TRANSPARENT)
-        back.bind(on_release=lambda *_: self.dismiss())
-        self.heading = Label(text='Download', color=theme.TEXT, font_size=dp(18), bold=True,
-                             halign='left', valign='middle')
-        self.heading.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
-        header.add_widget(back)
-        header.add_widget(self.heading)
+        header, self.heading = top_bar('Download', self.dismiss, height=dp(56))
         self.column.add_widget(header)
 
         # The picture: the link's thumbnail, or the frame being chosen.
-        self.picture_card = Card(radius=12, fill=theme.BASE, size_hint_y=None)
+        self.picture_card = Card(radius=theme.LARGE, fill=theme.SURFACE_CONTAINER,
+                                 size_hint_y=None)
         self.picture_box = FloatLayout()
         self.picture = Image(fit_mode='contain', opacity=0,
                              size_hint=(1, 1), pos_hint={'x': 0, 'y': 0})
-        self.picture_note = Label(text='', color=theme.DIM, font_size=dp(13),
+        self.picture_note = Label(text='', color=theme.ON_SURFACE_VARIANT,
+                                  font_size=theme.BODY_MEDIUM,
                                   size_hint=(1, 1), pos_hint={'x': 0, 'y': 0},
                                   halign='center', valign='middle')
         self.picture_note.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
@@ -498,12 +458,13 @@ class ChoosePage(Entrance, ModalView):
         self.column.add_widget(self.picture_card)
         self.column.bind(width=self._size_picture)
 
-        self.title = Label(text=url, color=theme.TEXT, font_size=dp(15), bold=True,
+        self.title = Label(text=url, color=theme.ON_SURFACE, font_size=theme.TITLE_MEDIUM,
                            size_hint_y=None, halign='left', valign='top',
                            max_lines=2, shorten=True, shorten_from='right')
         self.title.bind(width=lambda widget, width: setattr(widget, 'text_size', (width, None)),
                         texture_size=lambda widget, size: setattr(widget, 'height', size[1]))
-        self.about = Label(text='Reading the link…', color=theme.DIM, font_size=dp(12),
+        self.about = Label(text='Reading the link…', color=theme.ON_SURFACE_VARIANT,
+                           font_size=theme.BODY_MEDIUM,
                            size_hint_y=None, halign='left', valign='top')
         self.about.bind(width=lambda widget, width: setattr(widget, 'text_size', (width, None)),
                         texture_size=lambda widget, size: setattr(widget, 'height', size[1]))
@@ -518,10 +479,9 @@ class ChoosePage(Entrance, ModalView):
         self.column.add_widget(self.filler)
 
         buttons = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(10))
-        cancel = FlatButton(text='Cancel', font_size=dp(15), color=theme.TEXT, fill=theme.HOVER)
+        cancel = FlatButton(text='Cancel', style='outlined')
         cancel.bind(on_release=lambda *_: self.dismiss())
-        self.go = FlatButton(text='Download', font_size=dp(15), color=(1, 1, 1, 1),
-                             fill=theme.BLUE)
+        self.go = FlatButton(text='Download', style='filled')
         self.go.bind(on_release=lambda *_: self.confirm())
         buttons.add_widget(cancel)
         buttons.add_widget(self.go)
@@ -535,8 +495,6 @@ class ChoosePage(Entrance, ModalView):
 
     def _enable(self, enabled: bool):
         self.go.disabled = not enabled
-        self.go.set_fill(theme.BLUE if enabled else theme.HOVER)
-        self.go.color = (1, 1, 1, 1) if enabled else theme.DIM
 
     # --------------------------------------------------------------- fill
     def show(self, analysis):
@@ -546,7 +504,7 @@ class ChoosePage(Entrance, ModalView):
         self.title.text = title
         self.about.text = about
         failed = analysis.kind == analyze_mod.KIND_ERROR
-        self.about.color = theme.state_color(State.ERROR) if failed else theme.DIM
+        self.about.color = theme.ERROR if failed else theme.ON_SURFACE_VARIANT
         self.picture_note.text = ''
         pieces = post_items(analysis)
         url, headers = picture_url(analysis)
@@ -570,7 +528,7 @@ class ChoosePage(Entrance, ModalView):
             self.kind = 'audio' if audio_only else self._kind_from(self.quality)
             self.heights = sorted({h for i in self.items for h in (i.heights or [])},
                                   reverse=True)
-            self.choices.add_widget(_heading('SAVE AS'))
+            self.choices.add_widget(_heading('Save as'))
             self.type_row = OptionRow(offered, self.kind, self.choose_kind)
             self.choices.add_widget(self.type_row)
             self.detail = BoxLayout(orientation='vertical', spacing=dp(8), size_hint_y=None)
@@ -596,7 +554,8 @@ class ChoosePage(Entrance, ModalView):
         for tile in self.tiles:
             grid.add_widget(tile)
         self.grid_scroller = ScrollView(do_scroll_x=False, bar_width=dp(3),
-                                        bar_color=theme.DIM, bar_inactive_color=theme.BORDER)
+                                        bar_color=theme.ON_SURFACE_VARIANT,
+                                        bar_inactive_color=theme.OUTLINE_VARIANT)
         self.grid_scroller.add_widget(grid)
         place = self.column.children.index(self.filler)
         self.column.remove_widget(self.filler)
@@ -604,11 +563,11 @@ class ChoosePage(Entrance, ModalView):
 
         # How many are ticked, and a way to tick or untick them all at once.
         self.tick_row = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(8))
-        self.ticked_label = Label(text='', color=theme.TEXT, font_size=dp(14),
+        self.ticked_label = Label(text='', color=theme.ON_SURFACE, font_size=theme.BODY_MEDIUM,
                                   halign='left', valign='middle')
         self.ticked_label.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
-        self.tick_all_button = FlatButton(text='Deselect', font_size=dp(14), color=theme.TEXT,
-                                          size_hint_x=None, width=dp(108))
+        self.tick_all_button = FlatButton(text='Deselect', style='text', size_hint_x=None,
+                                          width=dp(96))
         self.tick_all_button.bind(on_release=lambda *_: self.tick_all())
         self.tick_row.add_widget(self.ticked_label)
         self.tick_row.add_widget(self.tick_all_button)
@@ -650,22 +609,23 @@ class ChoosePage(Entrance, ModalView):
             offered = [('best', 'Best')] + [(str(h), f'{h}p') for h in self.heights[:7]]
             if self.quality not in dict(offered):
                 self.quality = 'best'
-            self.detail.add_widget(_heading('QUALITY'))
+            self.detail.add_widget(_heading('Quality'))
             self.quality_row = OptionWrap(offered, self.quality, self._set('quality'))
             self.detail.add_widget(self.quality_row)
-            self.detail.add_widget(_heading('FILE TYPE'))
-            self.container_row = OptionWrap(CONTAINERS, self.container, self._set('container'))
+            self.detail.add_widget(_heading('File type'))
+            self.container_row = OptionRow(CONTAINERS, self.container, self._set('container'))
             self.detail.add_widget(self.container_row)
         elif kind == 'audio':
-            self.detail.add_widget(_heading('FILE TYPE'))
-            self.audio_row = OptionWrap(AUDIO, self.audio, self._set('audio'))
+            self.detail.add_widget(_heading('File type'))
+            self.audio_row = OptionRow(AUDIO, self.audio, self._set('audio'))
             self.detail.add_widget(self.audio_row)
         elif kind == 'gif':
             seconds = int(getattr(self.settings, 'gif_max_seconds', 30) or 0)
             note = Label(text=(f'The first {seconds} seconds' if seconds else 'The whole video')
                          + f', {getattr(self.settings, "gif_width", 480)} pixels wide, '
                            f'{getattr(self.settings, "gif_fps", 15)} frames a second.',
-                         color=theme.DIM, font_size=dp(13), size_hint_y=None,
+                         color=theme.ON_SURFACE_VARIANT, font_size=theme.BODY_MEDIUM,
+                         size_hint_y=None,
                          halign='left', valign='top')
             note.bind(width=lambda widget, width: setattr(widget, 'text_size', (width, None)),
                       texture_size=lambda widget, size: setattr(widget, 'height', size[1]))
@@ -681,7 +641,7 @@ class ChoosePage(Entrance, ModalView):
     # ---------------------------------------------------------- one frame
     def _build_scrubber(self):
         item = self.items[0]
-        self.detail.add_widget(_heading('CHOOSE THE FRAME'))
+        self.detail.add_widget(_heading('Choose the frame'))
         self.scrubber = Scrubber(on_rest=self._want_frame)
         self.scrubber.duration = float(item.duration or 0)
         self.scrubber.value = min(self.frame_at, self.scrubber.duration or self.frame_at)
@@ -689,18 +649,16 @@ class ChoosePage(Entrance, ModalView):
         self.detail.add_widget(self.scrubber)
 
         steps = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(8))
-        back = FlatButton(text='‹', font_size=dp(22), size_hint_x=None, width=dp(48),
-                          color=theme.TEXT)
+        back = IconButton('previous', color=theme.ON_SURFACE, width=dp(48))
         back.bind(on_release=lambda *_: self._step(-1))
-        self.clock = Label(text='', color=theme.TEXT, font_size=dp(14))
-        forward = FlatButton(text='›', font_size=dp(22), size_hint_x=None, width=dp(48),
-                             color=theme.TEXT)
+        self.clock = Label(text='', color=theme.ON_SURFACE, font_size=theme.BODY_MEDIUM)
+        forward = IconButton('next', color=theme.ON_SURFACE, width=dp(48))
         forward.bind(on_release=lambda *_: self._step(1))
         self.step_back, self.step_forward = back, forward
         for widget in (back, self.clock, forward):
             steps.add_widget(widget)
         self.detail.add_widget(steps)
-        self.detail.add_widget(_heading('FILE TYPE'))
+        self.detail.add_widget(_heading('File type'))
         self.frame_row = OptionRow(frames.IMAGE_TYPES, self.frame_format,
                                    self._set('frame_format'))
         self.detail.add_widget(self.frame_row)

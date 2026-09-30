@@ -587,15 +587,21 @@ def check_dialogs(app, report):
     if dialog is None:
         return
     buttons = list(reversed(dialog.buttons.children))
-    report('its three choices stack, full width, the main one on top and Cancel last',
-           dialog.buttons.orientation == 'vertical'
-           and [b.text for b in buttons] == ['Delete it too', 'Keep the file', 'Cancel'],
-           ' / '.join(b.text for b in buttons))
+    texts = [b.text for b in buttons]
+    edge = card.right - card.padding[2]
+    if dialog.buttons.orientation == 'horizontal':
+        report('its three choices share a row at the bottom right, Cancel first, as Material has them',
+               texts == ['Cancel', 'Keep the file', 'Delete it too']
+               and abs(buttons[-1].right - edge) < 1, ' | '.join(texts))
+    else:
+        report('its three choices stack on the right, the main one on top and Cancel last',
+               texts == ['Delete it too', 'Keep the file', 'Cancel']
+               and all(abs(b.right - edge) < 1 for b in buttons), ' / '.join(texts))
     report("and every label keeps clear of its button's edges", labels_clear(buttons))
     inside = all(dialog.x + card.padding[0] - 1 <= b.x and b.right <= dialog.right - card.padding[2] + 1
                  for b in buttons)
     report('inside the card, with its padding around them', inside)
-    tap(buttons[-1])
+    tap(next(b for b in buttons if b.text == 'Cancel'))
     closed = wait_until(lambda: open_dialog() is None, 3)
     report('Cancel closes it and removes nothing',
            closed and len(list(app.engine.store)) == count)

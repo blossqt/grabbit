@@ -23,15 +23,17 @@ from . import theme
 from .motion import Ripple
 from .widgets import Card, IconButton, KindGlyph, ProgressTrack
 
-ROW_HEIGHT = dp(84)
+ROW_HEIGHT = dp(96)
 
 # A long press, as Android times one: how long a finger rests, and how far it
 # may wander meanwhile.
 HOLD = 0.5
 WANDER = dp(12)
 
-# A picked-out download: the accent, faintly, with its border drawn in it.
-CHOSEN_FILL = theme.rgba(theme.ACCENT, 0.16)
+# A card on the list; the graph's download, and a picked-out one, in the
+# colour Material gives what is chosen.
+FILL = theme.SURFACE_CONTAINER
+CHOSEN_FILL = theme.SECONDARY_CONTAINER
 
 
 def detail_line(task, hints: bool = True) -> str:
@@ -75,22 +77,24 @@ class TaskRow(Card):
     def __init__(self, on_select=None, on_details=None, on_toggle=None, on_remove=None,
                  on_open=None, on_share=None, on_hold=None, on_choose=None, **kwargs):
         super().__init__(orientation='vertical', size_hint_y=None, height=ROW_HEIGHT,
-                         padding=[dp(10), dp(8)], spacing=dp(5), fill=theme.ALT, **kwargs)
+                         padding=[dp(16), dp(8), dp(6), dp(12)], spacing=dp(6),
+                         radius=theme.MEDIUM, fill=FILL, **kwargs)
         self.task_id = ''
         self.finished = False
         # None as usual; while downloads are being picked out, whether this one is.
         self.choosing = None
-        self._fill = theme.ALT
+        self._fill = FILL
         self._on_hold, self._on_choose = on_hold, on_choose
         self._hold = None           # (touch, timer) while a long press is waited for
         # The whole card ripples under a finger, as a row of Android's own
         # lists does - but for its buttons, which ripple by themselves.
-        self.ripple = Ripple(self, radius=dp(10))
+        self.ripple = Ripple(self, radius=dp(theme.MEDIUM), color=theme.ON_SURFACE)
         self._pressing = None
 
-        self.heading = BoxLayout(size_hint_y=None, height=dp(26), spacing=dp(8))
+        self.heading = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(12))
         self.glyph = KindGlyph()
-        self.title = Button(text='', color=theme.TEXT, font_size=dp(14), halign='left',
+        self.title = Button(text='', color=theme.ON_SURFACE, font_size=theme.BODY_LARGE,
+                            halign='left',
                             valign='middle', shorten=True, shorten_from='right',
                             background_normal='', background_down='',
                             background_color=theme.TRANSPARENT)
@@ -100,21 +104,22 @@ class TaskRow(Card):
         self.title.bind(on_release=lambda button: self._tap(
             button, on_open if self.finished else on_select))
 
-        def icon(kind, extent, action):
-            button = IconButton(kind, extent=dp(extent), size_hint_x=None, width=dp(32))
+        def icon(kind, action):
+            button = IconButton(kind)
             button.bind(on_release=lambda pressed: self._tap(pressed, action))
             return button
 
-        self.share_button = icon('share', 18, on_share)
-        self.details_button = icon('info', 18, on_details)
-        self.remove_button = icon('close', 12, on_remove)
+        self.share_button = icon('share', on_share)
+        self.details_button = icon('info', on_details)
+        self.remove_button = icon('close', on_remove)
         self.heading.add_widget(self.glyph)
         self.heading.add_widget(self.title)
 
         self.bar = ProgressTrack()
         # The detail line is also the start/pause control: a button, so it
         # behaves inside a scrolling list.
-        self.detail = Button(text='', color=theme.DIM, font_size=dp(11), halign='left',
+        self.detail = Button(text='', color=theme.ON_SURFACE_VARIANT, font_size=theme.BODY_SMALL,
+                             halign='left',
                              valign='middle', size_hint_y=None, height=dp(20),
                              shorten=True, shorten_from='right',
                              background_normal='', background_down='',
@@ -142,15 +147,11 @@ class TaskRow(Card):
         self.bar.show(task.progress, theme.state_color(task.state), glide=same)
         self.detail.text = detail_line(task, hints=choosing is None)
         self.detail.color = theme.state_color(task.state) if task.state in (
-            State.ERROR, State.COMPLETED, State.SEEDING) else theme.DIM
-        if choosing is None:
-            fill = theme.HOVER if selected else theme.ALT
-        else:
-            fill = CHOSEN_FILL if choosing else theme.ALT
+            State.ERROR, State.COMPLETED, State.SEEDING) else theme.ON_SURFACE_VARIANT
+        fill = CHOSEN_FILL if (selected if choosing is None else choosing) else FILL
         if fill != self._fill:
             self._fill = fill
             self.set_fill(fill)
-            self.set_border(theme.BLUE if fill is CHOSEN_FILL else theme.BORDER)
         self._arrange()
 
     def _arrange(self):

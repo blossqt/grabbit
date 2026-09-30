@@ -599,31 +599,27 @@ def _window_insets(autoclass, insets) -> tuple:
     return top, bottom
 
 
-def paint_window(colour: str) -> None:
-    """Give the window behind the app the app's own background colour.
+def paint_window(colour: str, light: bool = False) -> None:
+    """Give the window behind the app the app's own background colour, and
+    the system bars too - with dark icons on them when that colour is light.
 
     SDL draws the app on a surface, and anything of the window it does not
     cover - a strip Android leaves while it moves things for the keyboard,
     the space behind a system bar - shows the window's background, which is
-    black unless something says otherwise.
+    black unless something says otherwise. Look (java/) does it, since
+    reaching the bars' icons from here would mean reading all of View.
     """
     try:
-        from android.runnable import run_on_ui_thread
-        from jnius import autoclass
+        from jnius import JavaClass, JavaStaticMethod, MetaJavaClass, autoclass
     except ImportError:
         return        # not on a phone
+    try:
+        class Look(JavaClass, metaclass=MetaJavaClass):
+            __javaclass__ = 'com/grabbit/downloader/Look'
+            paint = JavaStaticMethod('(Landroid/app/Activity;IZ)V')
 
-    @run_on_ui_thread
-    def paint():
-        try:
-            value = public_class('android.graphics.Color').parseColor(colour)
-            window = autoclass('org.kivy.android.PythonActivity').mActivity.getWindow()
-            # The window's background is what its decor view draws, so this
-            # colours that too - without asking for the view, a View.
-            window.setBackgroundDrawable(public_class('android.graphics.drawable.ColorDrawable')(value))
-            window.setStatusBarColor(value)
-            window.setNavigationBarColor(value)
-        except Exception:
-            log.exception('could not colour the window')
-
-    paint()
+        value = int(colour.lstrip('#'), 16) | 0xff000000
+        Look.paint(autoclass('org.kivy.android.PythonActivity').mActivity,
+                   value - (1 << 32), bool(light))
+    except Exception:
+        log.exception('could not colour the window')

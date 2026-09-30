@@ -1,9 +1,11 @@
-"""How the interface moves: a ripple under a finger, pages that slide in and
-dialogs that grow in, colours that change over a moment rather than at once -
-and frames as fast as the screen can show them while any of that goes on.
+"""How the interface moves: a ripple under a finger, pages that slide in,
+dialogs that grow in and sheets that rise, colours that change over a moment
+rather than at once - and frames as fast as the screen can show them while
+any of that goes on.
 
-Kivy draws nothing of this by itself. Everything here is shared, so every
-button, page and dialog moves the same way.
+The timings and curves are Material 3's. Kivy draws nothing of this by
+itself; everything here is shared, so every button, page and dialog moves
+the same way.
 """
 
 import math
@@ -18,16 +20,36 @@ from kivy.graphics import (Color, Ellipse, InstructionGroup, PopMatrix, PushMatr
 from kivy.metrics import dp
 from kivy.properties import NumericProperty
 
-# Android's own timings, near enough: quick to answer, a little slower to settle.
-ENTER = 0.24            # a page or dialog coming in
-LEAVE = 0.18            # and going
-CHANGE = 0.15           # a colour, as something is chosen
+
+def _bezier(x1, y1, x2, y2):
+    """A CSS-style cubic-bezier easing: progress in time to progress on screen."""
+    def ease(x):
+        if x <= 0:
+            return 0.0
+        if x >= 1:
+            return 1.0
+        low, high = 0.0, 1.0
+        for _ in range(20):
+            t = (low + high) / 2
+            if 3 * (1 - t) ** 2 * t * x1 + 3 * (1 - t) * t * t * x2 + t ** 3 < x:
+                low = t
+            else:
+                high = t
+        t = (low + high) / 2
+        return 3 * (1 - t) ** 2 * t * y1 + 3 * (1 - t) * t * t * y2 + t ** 3
+    return ease
 
 
-def decelerate(progress: float) -> float:
-    """Fast at first, easing into place - for things arriving. Run backwards,
-    as a leaving page runs it, it is the matching speeding-up exit."""
-    return 1 - (1 - progress) ** 3
+# Material 3's curves: emphasized for what arrives and leaves, standard for
+# what changes where it is.
+EMPHASIZED_DECELERATE = _bezier(0.05, 0.7, 0.1, 1.0)
+EMPHASIZED_ACCELERATE = _bezier(0.3, 0.0, 0.8, 0.15)
+STANDARD = _bezier(0.2, 0.0, 0.0, 1.0)
+
+# And its durations.
+ENTER = 0.35            # a page, dialog or sheet coming in
+LEAVE = 0.2             # and going
+CHANGE = 0.2            # a colour, as something is chosen
 
 
 # ------------------------------------------------------------------ frames
@@ -78,21 +100,25 @@ def pace(rate: float):
 
 # ------------------------------------------------------------------ ripple
 class Ripple(EventDispatcher):
-    """Android's touch ripple: from where the finger lands, a circle of light
-    spreads across the shape, and fades once the finger lifts.
+    """Android's touch ripple: from where the finger lands, a circle spreads
+    across the shape, over a faint tint of all of it, and both fade once the
+    finger lifts. They are the colour of what is on the thing pressed - its
+    words or its symbol - as Material's state layers are.
 
     Drawn only while it shows - an empty group the rest of the time - since
     clipping every button on screen on every frame would cost the frames
-    this is meant to use. radius is the shape's corners, or a function
-    giving them; circle, a round one around the middle instead.
+    this is meant to use. radius is the shape's corners: one for all, four
+    (top left, top right, bottom right, bottom left), or a function giving
+    either. circle, a round one around the middle instead. color, a colour
+    or a function giving one.
     """
 
     spread = NumericProperty(0.0)
     glow = NumericProperty(0.0)
 
-    def __init__(self, widget, radius=dp(8), circle=False):
+    def __init__(self, widget, radius=dp(8), circle=False, color=(1, 1, 1, 1)):
         super().__init__()
-        self.widget, self.radius, self.circle = widget, radius, circle
+        self.widget, self.radius, self.circle, self.color = widget, radius, circle, color
         self.origin = (0, 0)
         self._pressed = False
         self.group = InstructionGroup()
@@ -105,7 +131,7 @@ class Ripple(EventDispatcher):
         self.origin = pos
         self._pressed = True
         self.spread = 0.0
-        (Animation(spread=1.0, d=0.45, t='out_quad')
+        (Animation(spread=1.0, d=0.45, t=STANDARD)
          & Animation(glow=1.0, d=0.08)).start(self)
 
     def release(self):
@@ -113,7 +139,7 @@ class Ripple(EventDispatcher):
             return
         self._pressed = False
         Animation.cancel_all(self)
-        (Animation(spread=1.0, d=0.2, t='out_quad')
+        (Animation(spread=1.0, d=0.2, t=STANDARD)
          & Animation(glow=0.0, d=0.4, t='in_quad')).start(self)
 
     def _draw(self, *_):
@@ -123,14 +149,16 @@ class Ripple(EventDispatcher):
             return
         widget = self.widget
         x, y, width, height = widget.x, widget.y, widget.width, widget.height
+        tint = self.color() if callable(self.color) else self.color
         if self.circle:
-            reach = min(width, height) / 2 * (0.6 + 0.4 * self.spread)
-            group.add(Color(1, 1, 1, 0.14 * self.glow))
+            reach = min(width, height, dp(40)) / 2 * (0.6 + 0.4 * self.spread)
+            group.add(Color(*tint[:3], 0.12 * self.glow))
             group.add(Ellipse(pos=(widget.center_x - reach, widget.center_y - reach),
                               size=(2 * reach, 2 * reach)))
             return
         radius = self.radius() if callable(self.radius) else self.radius
-        radius = min(radius, width / 2, height / 2)
+        corners = list(radius) if isinstance(radius, (list, tuple)) else [radius] * 4
+        corners = [min(r, width / 2, height / 2) for r in corners]
         ox, oy = self.origin
         # Far enough to reach the corner furthest from the finger.
         reach = max(math.hypot(ox - cx, oy - cy)
@@ -138,23 +166,23 @@ class Ripple(EventDispatcher):
         reach *= 0.15 + 0.85 * self.spread
 
         def shape():
-            return RoundedRectangle(pos=(x, y), size=(width, height), radius=[radius])
+            return RoundedRectangle(pos=(x, y), size=(width, height), radius=corners)
 
         group.add(StencilPush())
         group.add(shape())
         group.add(StencilUse())
-        group.add(Color(1, 1, 1, 0.05 * self.glow))
+        group.add(Color(*tint[:3], 0.05 * self.glow))
         group.add(Rectangle(pos=(x, y), size=(width, height)))
-        group.add(Color(1, 1, 1, 0.09 * self.glow))
+        group.add(Color(*tint[:3], 0.08 * self.glow))
         group.add(Ellipse(pos=(ox - reach, oy - reach), size=(2 * reach, 2 * reach)))
         group.add(StencilUnUse())
         group.add(shape())
         group.add(StencilPop())
 
 
-def ripple(button, radius=dp(8), circle=False) -> Ripple:
+def ripple(button, radius=dp(8), circle=False, color=(1, 1, 1, 1)) -> Ripple:
     """A ripple under a button's finger - anything with ButtonBehavior."""
-    effect = Ripple(button, radius=radius, circle=circle)
+    effect = Ripple(button, radius=radius, circle=circle, color=color)
 
     def follow(_, state):
         if state == 'down':
@@ -186,7 +214,7 @@ def blend(color, target, duration=CHANGE, widget=None):
 
     def step(_):
         progress = min(1.0, (Clock.get_boottime() - began) / duration)
-        eased = decelerate(progress)
+        eased = STANDARD(progress)
         color.rgba = tuple(a + (b - a) * eased for a, b in zip(start, target))
         if progress >= 1.0:
             _blending.pop(id(color), None)
@@ -200,17 +228,18 @@ def fade_in(widget, duration=ENTER):
     """Bring a widget that has just been put on screen up from nothing."""
     Animation.cancel_all(widget, 'opacity')
     widget.opacity = 0
-    Animation(opacity=1, d=duration, t='out_quad').start(widget)
+    Animation(opacity=1, d=duration, t=EMPHASIZED_DECELERATE).start(widget)
 
 
-# ---------------------------------------------------------- pages, dialogs
+# ---------------------------------------------------- pages, dialogs, sheets
 class Entrance:
-    """How a ModalView comes and goes, mixed in before it.
+    """How a ModalView comes and goes, mixed in before it - Material's
+    transitions for each kind of thing.
 
     'page' - a screen of its own - slides in a little way from the right as
     it fades in, and back out to the right: forward and back. 'card' - a
-    dialog, the details - grows in from slightly smaller over the dimmed
-    app, whose dimming Kivy fades itself.
+    dialog - grows in from slightly smaller. 'sheet' rises from the bottom
+    edge and sinks back into it. Over the app behind, Kivy fades the scrim.
     """
 
     entrance = 'page'
@@ -255,16 +284,25 @@ class Entrance:
         if target is None:
             return
         if self._moved is None or self._moved[0] is not target:
-            step = Translate() if self.entrance == 'page' else Scale()
+            step = Scale() if self.entrance == 'card' else Translate()
             target.canvas.before.insert(0, step)
             target.canvas.before.insert(0, PushMatrix())
             target.canvas.after.add(PopMatrix())
             self._moved = (target, step)
-        progress = decelerate(alpha)
-        target.opacity = progress
+        # Kivy runs alpha evenly in time; the curve is put on here - one
+        # that arrives gently, and one that leaves quickly.
+        if self._leaving:
+            progress = 1 - EMPHASIZED_ACCELERATE(1 - alpha)
+        else:
+            progress = EMPHASIZED_DECELERATE(alpha)
         step = self._moved[1]
         if self.entrance == 'page':
-            step.x = (1 - progress) * dp(48)
-        else:
+            target.opacity = progress
+            step.x = (1 - progress) * dp(30)
+        elif self.entrance == 'card':
+            target.opacity = progress
             step.origin = target.center
-            step.x = step.y = 0.94 + 0.06 * progress
+            step.x = step.y = 0.9 + 0.1 * progress
+        else:
+            target.opacity = 1
+            step.y = -(1 - progress) * target.height
