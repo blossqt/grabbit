@@ -225,8 +225,9 @@ notes, and keeps its window open at the end. Or from a terminal:
 It makes sure the work is committed and pushed, runs the checks, builds the
 Windows zip, takes the APK for the same commit from the Android workflow
 (starting a build if there is none), refuses an APK signed with anything but
-the release key, and asks before publishing. `--dry-run` does everything short
-of publishing; `--no-build` reuses the Windows build already in `dist\Grabbit`.
+the release key, and publishes - without asking, once all of that has passed.
+`--dry-run` does everything short of publishing; `--no-build` reuses the
+Windows build already in `dist\Grabbit`.
 
 Every APK is signed with one key, because Android only installs an update that
 is signed like the app it replaces. `build/android/make_signing_key.py` made it
