@@ -25,10 +25,9 @@ What it does:
   5. Reads the APK's signature and refuses it unless it was signed with the
      release key, whose fingerprint build\android\signing-sha256.txt pins. An
      APK signed with anything else would install on no phone that has Grabbit.
-  6. Writes a .sha256 beside each file, shows what it is publishing, and
-     creates the release: tag vX.Y.Z on this commit, both files and their
-     checksums. It does not ask first - every check above has passed by then;
-     --dry-run stops short of it, to see what would go out.
+  6. Writes a .sha256 beside each file, shows what it is about to publish,
+     asks, and creates the release: tag vX.Y.Z on this commit, both files and
+     their checksums.
 
 The Android key is ~\.grabbit\android\release.keystore (make_signing_key.py).
 BACK IT UP: lose it and no installed copy can ever be updated again.
@@ -74,6 +73,30 @@ def say(message: str) -> None:
 def fail(message: str):
     print(f'\nerror: {message}', file=sys.stderr, flush=True)
     sys.exit(1)
+
+
+def forget_typed_ahead():
+    """Throw away whatever was typed into the window before a question.
+
+    A console keeps every key pressed until something reads it, so an Enter
+    pressed during the build - minutes before the question - would answer
+    it the moment it was asked, and a release would stop unasked."""
+    if os.name != 'nt' or not sys.stdin or not sys.stdin.isatty():
+        return
+    try:
+        import msvcrt
+        while msvcrt.kbhit():
+            msvcrt.getwch()
+    except Exception:
+        pass
+
+
+def ask(question: str) -> bool:
+    forget_typed_ahead()
+    try:
+        return input(f'{question} [y/N] ').strip().lower() in ('y', 'yes')
+    except EOFError:
+        return False
 
 
 def run(*args, capture: bool = True, check: bool = True, cwd: Path = ROOT, **kwargs):
@@ -546,6 +569,7 @@ def main() -> int:
                         help='use the Windows build already in dist\\Grabbit')
     parser.add_argument('--dry-run', action='store_true',
                         help='do everything except changing anything on GitHub or in git')
+    parser.add_argument('--yes', action='store_true', help='publish without asking first')
     parser.add_argument('--make-update-key', action='store_true',
                         help='make the key releases are signed with - once, ever')
     parser.add_argument('--ask', action='store_true',
@@ -614,7 +638,7 @@ def main() -> int:
         files = [archive, write_checksum(archive), apk, write_checksum(apk),
                  *sign_release(version, notes, archive, apk, secret)]
 
-    say('what would be published' if args.dry_run else 'publishing')
+    say('ready to publish')
     print(f'   tag      {tag} on {head[:7]}')
     print(f'   title    Grabbit {version}')
     for path in files:
@@ -624,6 +648,10 @@ def main() -> int:
     if args.dry_run:
         say('dry run - nothing was published')
         return 0
+    if not args.yes and not ask(f'\nPublish Grabbit {version} to github.com/{REPO}?'):
+        say('not published')
+        return 1
+
     with tempfile.NamedTemporaryFile('w', suffix='.md', delete=False, encoding='utf-8') as handle:
         handle.write(notes)
     try:

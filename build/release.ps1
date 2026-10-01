@@ -1,9 +1,9 @@
 # Publishes a Grabbit release, which both apps then offer as an update.
 #
 # Right-click it and choose Run with PowerShell: it asks for the version -
-# offering the next one - and the release notes, then builds, checks and
-# publishes, and waits for Enter at the end so whatever happened can be read
-# before the window closes.
+# offering the next one - and the release notes, shows what it will publish
+# and asks before it does, and waits for Enter at the end so whatever
+# happened can be read before the window closes.
 #
 # Or from a terminal, with the choices given up front:
 #   powershell -ExecutionPolicy Bypass -File build\release.ps1 --dry-run
