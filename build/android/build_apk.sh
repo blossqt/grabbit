@@ -269,7 +269,7 @@ done
 # gallery-dl. grep -c rather than -q: -q stops reading at the first match, and
 # under pipefail the writer's broken pipe would fail the check it just passed.
 TOOLS="$ANDROID_ROOT/build-tools/$P4A_BUILD_TOOLS"
-for class in DownloadService ServiceEngine RestartReceiver FileShare Touch Screen Look; do
+for class in DownloadService ServiceEngine RestartReceiver FileShare Touch Screen Look Incoming; do
   "$TOOLS/dexdump" "$APK" 2>/dev/null | grep -c "Lcom/grabbit/downloader/$class;" > /dev/null \
     || { echo "error: $class is not compiled into the APK" >&2; exit 1; }
 done
@@ -285,6 +285,9 @@ echo "   RestartReceiver"
 echo "$MANIFEST" | grep -A6 'com.grabbit.downloader.FileShare' | grep -c 'com.grabbit.downloader.files' > /dev/null \
   || { echo "error: the manifest does not declare FileShare, which opening and sharing downloads need" >&2; exit 1; }
 echo "   FileShare"
+echo "$MANIFEST" | grep -c 'application/x-bittorrent' > /dev/null \
+  || { echo "error: the manifest does not claim .torrent files, so tapping one would not offer Grabbit" >&2; exit 1; }
+echo "   .torrent files"
 PRIVATE="$(mktemp)"
 unzip -p "$APK" assets/private.tar > "$PRIVATE"
 LISTING="$(tar -tf "$PRIVATE")"

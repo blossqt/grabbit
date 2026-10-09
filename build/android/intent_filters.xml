@@ -1,8 +1,9 @@
 <!-- Added to Grabbit's activity in the manifest by python-for-android.
 
-     Between them these are how a link normally reaches a phone app: the share
-     sheet from a browser or a social app, and magnet links, which nothing else
-     on a phone usually claims. -->
+     Between them these are how a link or a torrent normally reaches a phone
+     app: the share sheet from a browser or a social app, magnet links, which
+     nothing else on a phone usually claims, and .torrent files, tapped in
+     Files or Downloads or shared from another app (Incoming.java reads them). -->
 <intent-filter>
     <action android:name="android.intent.action.SEND" />
     <category android:name="android.intent.category.DEFAULT" />
@@ -13,4 +14,37 @@
     <category android:name="android.intent.category.DEFAULT" />
     <category android:name="android.intent.category.BROWSABLE" />
     <data android:scheme="magnet" />
+</intent-filter>
+
+<!-- A torrent file, by its type, where the app opening it knows that. -->
+<intent-filter>
+    <action android:name="android.intent.action.VIEW" />
+    <category android:name="android.intent.category.DEFAULT" />
+    <category android:name="android.intent.category.BROWSABLE" />
+    <data android:scheme="content" />
+    <data android:scheme="file" />
+    <data android:mimeType="application/x-bittorrent" />
+</intent-filter>
+<!-- And by the end of its name, where the app only knows it as a file.
+     Android's patterns stop at the first dot they could, so a name with
+     dots of its own before .torrent needs a pattern with as many. -->
+<intent-filter>
+    <action android:name="android.intent.action.VIEW" />
+    <category android:name="android.intent.category.DEFAULT" />
+    <category android:name="android.intent.category.BROWSABLE" />
+    <data android:scheme="content" />
+    <data android:scheme="file" />
+    <data android:host="*" />
+    <data android:mimeType="*/*" />
+    <data android:pathPattern=".*\\.torrent" />
+    <data android:pathPattern=".*\\..*\\.torrent" />
+    <data android:pathPattern=".*\\..*\\..*\\.torrent" />
+    <data android:pathPattern=".*\\..*\\..*\\..*\\.torrent" />
+    <data android:pathPattern=".*\\..*\\..*\\..*\\..*\\.torrent" />
+</intent-filter>
+<!-- A torrent file sent from another app's share sheet. -->
+<intent-filter>
+    <action android:name="android.intent.action.SEND" />
+    <category android:name="android.intent.category.DEFAULT" />
+    <data android:mimeType="application/x-bittorrent" />
 </intent-filter>

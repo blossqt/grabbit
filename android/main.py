@@ -602,9 +602,15 @@ class GrabbitApp(App):
             return ''
         try:
             from jnius import autoclass
+            from grabbit_mobile.bootstrap import received_torrent
             Intent = autoclass('android.content.Intent')
             action = intent.getAction()
-            if action == Intent.ACTION_SEND:
+            # A torrent file tapped in Files or shared from another app: a
+            # copy of it, which is read as a torrent on disk is.
+            torrent = received_torrent(intent)
+            if torrent:
+                text = ''
+            elif action == Intent.ACTION_SEND:
                 text = intent.getStringExtra(Intent.EXTRA_TEXT) or ''
             elif action == Intent.ACTION_VIEW:
                 text = intent.getDataString() or ''
@@ -614,9 +620,12 @@ class GrabbitApp(App):
             # to the app would add the same link again.
             intent.setAction(Intent.ACTION_MAIN)
             intent.removeExtra(Intent.EXTRA_TEXT)
+            intent.removeExtra(Intent.EXTRA_STREAM)
             intent.setData(None)
         except Exception:
             return ''
+        if torrent:
+            return torrent
         found = LINK_IN_TEXT.search(text)
         return found.group(0) if found else text.strip()
 

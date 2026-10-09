@@ -325,6 +325,27 @@ def hands():
         return None
 
 
+def received_torrent(intent) -> str:
+    """The path of a copy of the torrent file another app handed over in this
+    intent - tapped in Files, or shared - or '' when it hands over no file
+    (Incoming, java/). Called on the main thread, where the intent arrives."""
+    try:
+        from jnius import JavaClass, JavaStaticMethod, MetaJavaClass, autoclass
+    except ImportError:
+        return ''
+    try:
+        class Incoming(JavaClass, metaclass=MetaJavaClass):
+            __javaclass__ = 'com/grabbit/downloader/Incoming'
+            torrent = JavaStaticMethod(
+                '(Landroid/app/Activity;Landroid/content/Intent;)Ljava/lang/String;')
+
+        return Incoming.torrent(autoclass('org.kivy.android.PythonActivity').mActivity,
+                                intent) or ''
+    except Exception:
+        log.exception('could not take the torrent file handed over')
+        return ''
+
+
 def fastest_screen() -> float:
     """Ask for the screen's fastest refresh rate (Screen, java/), and say what
     it is - 0 off a phone, or when it cannot be read."""

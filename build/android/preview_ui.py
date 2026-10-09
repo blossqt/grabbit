@@ -155,11 +155,11 @@ class FakeEngine:
         self.settings_sent += 1
 
     def analyze_link(self, url, on_done):
-        """Magnets and the like are read for real - there is no network in
-        that; any web link stands for the sample video."""
+        """Magnets and torrent files are read for real - there is no network
+        in that; any web link stands for the sample video."""
         def work():
             time.sleep(0.3)
-            if url.startswith('magnet:') or self.site is None:
+            if url.startswith('magnet:') or os.path.isfile(url) or self.site is None:
                 on_done(analyze_mod.analyze(url, self.settings))
             else:
                 on_done(self.site.post(url) if self.post else self.site.analysis(url))
@@ -416,6 +416,28 @@ def check_page(app, report):
         wait_until(lambda: page.parent is None, 3)
         report('closing it adds nothing', len(app.engine.added) == count and app.page is None)
         app.input.text = ''
+
+        # A .torrent file tapped in Files, or shared, arrives as a copy on
+        # disk (Incoming.java) and is opened as a link is.
+        folder = tempfile.mkdtemp(prefix='grabbit-received-')
+        meta = {'info': {'name': 'Holiday photos', 'piece length': 16384, 'pieces': b'\0' * 20,
+                         'files': [{'length': 2_000_000, 'path': ['a.jpg']},
+                                   {'length': 3_000_000, 'path': ['b.jpg']}]}}
+        received = os.path.join(folder, 'Holiday photos.torrent')
+        with open(received, 'wb') as handle:
+            handle.write(bencode(meta))
+        app.inspect(received)
+        page = app.page
+        wait_until(lambda: page.analysis is not None, 10)
+        report('a .torrent file handed over by another app opens its page, files counted',
+               page.title.text == 'Holiday photos' and '2 files' in page.about.text,
+               f'{page.title.text} - {page.about.text}')
+        tap(page.go)
+        wait_until(lambda: page.parent is None, 3)
+        result, _ = app.engine.added[-1]
+        report('and Download queues that torrent', result.kind == analyze_mod.KIND_TORRENT
+               and result.torrent_data == bencode(meta), result.kind)
+        shutil.rmtree(folder, ignore_errors=True)
     finally:
         app.engine.site = None
         site.close()
