@@ -2,7 +2,8 @@
 
 The desktop shows eleven columns. A phone cannot, so the same facts are
 arranged as a name, a bar and a line of detail underneath - and the things
-you actually do to a download are the things you can tap. Holding one picks
+you actually do to a download are buttons: pause or carry on, share, details,
+remove. Holding one picks
 it out, as holding an item does in Android's own lists, and from then on a
 tap picks or drops a download rather than acting on it (main.py).
 """
@@ -36,14 +37,22 @@ FILL = theme.SURFACE_CONTAINER
 CHOSEN_FILL = theme.SECONDARY_CONTAINER
 
 
-def detail_line(task, hints: bool = True) -> str:
-    """Everything the desktop's columns say, in one sentence - and what a tap
-    on it does, unless a tap is picking downloads out instead."""
+def toggle_kind(task) -> str:
+    """The symbol on a download's own button: carry on with a paused one, try
+    a failed one again, pause anything else under way - seeding too. A
+    completed download has none; it has share instead."""
+    if task.state == State.PAUSED:
+        return 'play'
     if task.state == State.ERROR:
-        # What went wrong can run long, so the way out comes first; the
-        # details sheet has all of it.
-        failed = 'Failed - tap to try again' if hints else 'Failed'
-        return '   ·   '.join(b for b in (failed, task.error) if b)
+        return 'retry'
+    return 'pause'
+
+
+def detail_line(task) -> str:
+    """Everything the desktop's columns say, in one sentence."""
+    if task.state == State.ERROR:
+        # What went wrong can run long; the details sheet has all of it.
+        return '   ·   '.join(b for b in ('Failed', task.error) if b)
     bits = [task.status_text]
     if task.total:
         bits.append(f'{human_size(task.done)} / {human_size(task.total)}')
@@ -57,21 +66,18 @@ def detail_line(task, hints: bool = True) -> str:
         bits.append(human_eta(task.eta))
     if task.is_torrent and task.connections:
         bits.append(f'{task.seeds} seed(s), {max(0, task.connections - task.seeds)} peer(s)')
-    # Only the download that is waiting for you gets told what a tap does. On
-    # a running one the same hint just pushes the numbers off the end.
-    if hints and task.state == State.PAUSED:
-        bits.append('tap to start')
     return '   ·   '.join(b for b in bits if b)
 
 
 class TaskRow(Card):
-    """A card per download: glyph, name, progress, detail - and share, for
-    a finished one, details and remove.
+    """A card per download: glyph, name, progress, detail - and its buttons:
+    pause or carry on until it is finished, share once it is, details and
+    remove.
 
     on_select picks it for the graph and on_open opens what it made - a tap
-    on the name does whichever fits; on_toggle is the detail line's;
-    on_hold is a long press, and on_choose a tap while downloads are being
-    picked out. Each is called with the download's id.
+    on the name or the detail does whichever fits; on_toggle is the pause
+    button's; on_hold is a long press, and on_choose a tap while downloads
+    are being picked out. Each is called with the download's id.
     """
 
     def __init__(self, on_select=None, on_details=None, on_toggle=None, on_remove=None,
@@ -81,6 +87,7 @@ class TaskRow(Card):
                          radius=theme.MEDIUM, fill=FILL, **kwargs)
         self.task_id = ''
         self.finished = False
+        self.complete = False       # done with: share in place of pause
         # None as usual; while downloads are being picked out, whether this one is.
         self.choosing = None
         self._fill = FILL
@@ -109,6 +116,7 @@ class TaskRow(Card):
             button.bind(on_release=lambda pressed: self._tap(pressed, action))
             return button
 
+        self.toggle_button = icon('pause', on_toggle)
         self.share_button = icon('share', on_share)
         self.details_button = icon('info', on_details)
         self.remove_button = icon('close', on_remove)
@@ -116,8 +124,8 @@ class TaskRow(Card):
         self.heading.add_widget(self.title)
 
         self.bar = ProgressTrack()
-        # The detail line is also the start/pause control: a button, so it
-        # behaves inside a scrolling list.
+        # The detail line is a button too, as the name is - so it behaves
+        # inside a scrolling list - and does what a tap on the name does.
         self.detail = Button(text='', color=theme.ON_SURFACE_VARIANT, font_size=theme.BODY_SMALL,
                              halign='left',
                              valign='middle', size_hint_y=None, height=dp(20),
@@ -125,7 +133,8 @@ class TaskRow(Card):
                              background_normal='', background_down='',
                              background_color=theme.TRANSPARENT)
         self.detail.bind(size=lambda widget, value: setattr(widget, 'text_size', value))
-        self.detail.bind(on_release=lambda pressed: self._tap(pressed, on_toggle))
+        self.detail.bind(on_release=lambda pressed: self._tap(
+            pressed, on_open if self.finished else on_select))
 
         self.add_widget(self.heading)
         self.add_widget(self.bar)
@@ -138,6 +147,7 @@ class TaskRow(Card):
         same = task.id == self.task_id
         self.task_id = task.id
         self.finished = finished(task)
+        self.complete = task.state == State.COMPLETED
         self.choosing = choosing
         if choosing is None:
             self.glyph.show(task)
@@ -145,7 +155,11 @@ class TaskRow(Card):
             self.glyph.show_choice(choosing)
         self.title.text = task.name or task.source
         self.bar.show(task.progress, theme.state_color(task.state), glide=same)
-        self.detail.text = detail_line(task, hints=choosing is None)
+        self.detail.text = detail_line(task)
+        kind = toggle_kind(task)
+        if kind != self.toggle_button.kind:
+            self.toggle_button.kind = kind
+            self.toggle_button._redraw()
         self.detail.color = theme.state_color(task.state) if task.state in (
             State.ERROR, State.COMPLETED, State.SEEDING) else theme.ON_SURFACE_VARIANT
         fill = CHOSEN_FILL if (selected if choosing is None else choosing) else FILL
@@ -155,15 +169,17 @@ class TaskRow(Card):
         self._arrange()
 
     def _arrange(self):
-        """The buttons this download has now: none while picking, share once
-        it is finished. Taken out rather than hidden - a hidden button is
+        """The buttons this download has now: none while picking; pause or
+        carry on until it is complete - a seeding torrent can be paused - and
+        share once it is. Taken out rather than hidden - a hidden button is
         still there to be touched."""
         if self.choosing is not None:
             wanted = []
         else:
-            wanted = ([self.share_button] if self.finished else []) + [
-                self.details_button, self.remove_button]
-        buttons = (self.share_button, self.details_button, self.remove_button)
+            wanted = [self.share_button if self.complete else self.toggle_button,
+                      self.details_button, self.remove_button]
+        buttons = (self.toggle_button, self.share_button, self.details_button,
+                   self.remove_button)
         if [w for w in reversed(self.heading.children) if w in buttons] == wanted:
             return
         for button in buttons:
@@ -184,7 +200,8 @@ class TaskRow(Card):
     def on_touch_down(self, touch):
         if not self.collide_point(*touch.pos) or touch.is_mouse_scrolling:
             return super().on_touch_down(touch)
-        buttons = (self.share_button, self.details_button, self.remove_button)
+        buttons = (self.toggle_button, self.share_button, self.details_button,
+                   self.remove_button)
         if not any(b.parent is not None and b.collide_point(*touch.pos) for b in buttons):
             self._pressing = touch
             self.ripple.press(touch.pos)

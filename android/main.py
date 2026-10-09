@@ -932,8 +932,8 @@ class GrabbitApp(App):
         self.details.open_task(task_id, tab)
 
     def toggle_task(self, task_id: str):
-        """Start what is waiting, pause what is running, try again what
-        failed, open what is finished."""
+        """A download's own button: carry on with a paused one, try a failed
+        one again, pause anything else under way, open a finished one."""
         task = self.engine.store.get(task_id)
         if task is None:
             return
@@ -942,7 +942,7 @@ class GrabbitApp(App):
         elif task.state in (State.PAUSED, State.ERROR):
             self.engine.expect(task.name or task.source)
             self.engine.resume([task_id])
-        elif task.state in (State.DOWNLOADING, State.SEEDING, State.QUEUED):
+        else:
             self.engine.pause([task_id])
         self._schedule_refresh()
 

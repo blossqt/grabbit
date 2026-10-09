@@ -794,9 +794,11 @@ def check_finished(app, report):
                ' | '.join(f'{os.path.basename(path)}: {piece!r}' for path, piece in runs))
         with_share = sorted(task_id for task_id, row in rows.items()
                             if row.share_button.parent is row.heading)
-        report('finished downloads carry a share button, and nothing else does',
-               with_share == sorted([video.id, photo.id, torrent.id]),
-               f'{len(with_share)} of {len(rows)} rows')
+        report('completed downloads carry a share button, and nothing else does',
+               with_share == sorted([video.id, photo.id]), f'{len(with_share)} of {len(rows)} rows')
+        report('a torrent still seeding has its pause button instead',
+               rows[torrent.id].toggle_button.parent is rows[torrent.id].heading
+               and rows[torrent.id].toggle_button.kind == 'pause')
 
         reveal(rows[video.id].title)
         tap(rows[video.id].title)
@@ -1025,12 +1027,32 @@ def check(app):
 
     running = next((t for t in app.engine.store if t.state == State.DOWNLOADING), None)
     if running is not None:
-        tap(app._rows[running.id].detail)
-        report('tapping the status line pauses it',
-               app.engine.store.get(running.id).state == State.PAUSED)
-        tap(app._rows[running.id].detail)
-        report('and tapping it again starts it',
-               app.engine.store.get(running.id).state != State.PAUSED)
+        row = app._rows[running.id]
+        reveal(row.detail)
+        tap(row.detail)
+        report('tapping the status line does not pause anything any more',
+               app.engine.store.get(running.id).state == State.DOWNLOADING)
+        reveal(row.toggle_button)
+        report('a running download has a pause button',
+               row.toggle_button.parent is row.heading and row.toggle_button.kind == 'pause')
+        tap(row.toggle_button)
+        settle(2)
+        report('which pauses it, and turns into a play button',
+               app.engine.store.get(running.id).state == State.PAUSED
+               and row.toggle_button.kind == 'play', row.toggle_button.kind)
+        tap(row.toggle_button)
+        settle(2)
+        report('which starts it again', app.engine.store.get(running.id).state != State.PAUSED
+               and row.toggle_button.kind == 'pause', app.engine.store.get(running.id).state)
+    failed = next((t for t in app.engine.store if t.state == State.ERROR), None)
+    if failed is not None:
+        report('a failed download offers to try again instead',
+               app._rows[failed.id].toggle_button.kind == 'retry')
+    done = next((t for t in app.engine.store if t.state == State.COMPLETED), None)
+    if done is not None:
+        report('and a finished one has share in its place',
+               app._rows[done.id].toggle_button.parent is None
+               and app._rows[done.id].share_button.parent is app._rows[done.id].heading)
 
     app.open_details(first.id)
     opened = app.details.title.text == (first.name or first.source)

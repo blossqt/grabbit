@@ -963,15 +963,49 @@ class MobileEngine:
                 else:
                     task.state = State.QUEUED
                     self._queue_media(task)
-            elif task.gid:
-                try:
-                    self.client.call('aria2.unpause', task.gid)
-                    task.state = State.QUEUED
-                except Aria2Error:
-                    task.state = State.QUEUED
-                    self._add_uri(task)
+            else:
+                task.state = State.QUEUED
+                self._carry_on(task)
         self.store.mark_dirty()
         self.on_change()
+
+    def _carry_on(self, task: Task):
+        """Set a stopped download going in aria2 again: unpaused, or - when
+        aria2 no longer has it to unpause - handed over afresh, as what it is.
+        A torrent handed over as a web address would only fail."""
+        for attempt in range(5):
+            if not task.gid:
+                break
+            try:
+                self.client.call('aria2.unpause', task.gid)
+                return
+            except Aria2Error:
+                pass
+            try:
+                status = (self.client.call('aria2.tellStatus', task.gid, ['status']) or {}).get('status')
+            except Aria2Error:
+                status = None                  # aria2 has never heard of it
+            if status in ('active', 'waiting'):
+                return                         # going already
+            if status != 'paused':
+                break                          # finished with, failed, or gone
+            time.sleep(0.2)                    # still pausing: a moment more
+        log.info('handing %s to aria2 afresh', task.name or task.id)
+        for call in ('aria2.forceRemove', 'aria2.removeDownloadResult'):
+            if task.gid:
+                try:
+                    self.client.call(call, task.gid)
+                except Aria2Error:
+                    pass
+        task.gid = ''
+        if task.kind == KIND_TORRENT and task.torrent_file and os.path.exists(task.torrent_file):
+            self._add_torrent(task)
+        elif task.kind == KIND_MAGNET and task.torrent_file and os.path.exists(task.torrent_file):
+            self.start_torrent_from_metadata(task)
+        elif task.kind == KIND_MAGNET:
+            self._add_magnet(task)
+        else:
+            self._add_uri(task)
 
     @staticmethod
     def _delete(path: str, inside: str) -> None:

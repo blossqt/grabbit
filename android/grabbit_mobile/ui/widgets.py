@@ -446,6 +446,27 @@ class IconButton(ButtonBehavior, Widget):
                      x + size * 0.48, y + size * 0.2], width=STROKE, joint='round')
 
     @staticmethod
+    def _draw_pause(x, y, size):
+        for left in (0.3, 0.6):
+            RoundedRectangle(pos=(x + size * left, y + size * 0.22),
+                             size=(size * 0.12, size * 0.56), radius=[size * 0.03])
+
+    @staticmethod
+    def _draw_play(x, y, size):
+        Triangle(points=[x + size * 0.32, y + size * 0.2, x + size * 0.32, y + size * 0.8,
+                         x + size * 0.8, y + size * 0.5])
+
+    @staticmethod
+    def _draw_retry(x, y, size):
+        # Round most of the way, with the arrowhead where it ends.
+        cx, cy, reach = x + size / 2, y + size / 2, size * 0.32
+        Line(circle=(cx, cy, reach, 60, 360), width=STROKE)
+        tip = (cx + reach * math.sin(math.radians(60)), cy + reach * math.cos(math.radians(60)))
+        Triangle(points=[tip[0] - size * 0.13, tip[1] + size * 0.02,
+                         tip[0] + size * 0.07, tip[1] + size * 0.15,
+                         tip[0] + size * 0.07, tip[1] - size * 0.12])
+
+    @staticmethod
     def _draw_previous(x, y, size):
         Line(points=[x + size * 0.6, y + size * 0.78, x + size * 0.34, y + size * 0.5,
                      x + size * 0.6, y + size * 0.22], width=STROKE, joint='round')
