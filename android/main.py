@@ -591,7 +591,16 @@ class GrabbitApp(App):
             if installing[0] == 'failed':
                 self._update_failed(installing[1])
             return False
+        # A .torrent tapped in another app, or sent from one, comes as an
+        # address only this activity may read: it is copied in before the
+        # intent is cleared, and the copy read as a pasted path would be.
+        from grabbit_mobile.bootstrap import RECEIVE_FAILED, received_torrent
+        received = received_torrent(intent)
         link = self._link_from_intent(intent)
+        if received == RECEIVE_FAILED:
+            self._cannot_read_file()
+            return False
+        link = received or link
         if link:
             self.inspect(link)
         return bool(link)
@@ -614,6 +623,7 @@ class GrabbitApp(App):
             # to the app would add the same link again.
             intent.setAction(Intent.ACTION_MAIN)
             intent.removeExtra(Intent.EXTRA_TEXT)
+            intent.removeExtra(Intent.EXTRA_STREAM)
             intent.setData(None)
         except Exception:
             return ''
@@ -665,14 +675,25 @@ class GrabbitApp(App):
         when the answer comes: a video's qualities and types, a torrent's size,
         a file's name.
         """
+        page = self._open_page(url)
+        self.engine.analyze_link(url, lambda result: Clock.schedule_once(
+            lambda *_: page.show(result)))
+
+    def _cannot_read_file(self):
+        """Say so on the page a tapped .torrent would have opened."""
+        from grabbit import analyze as analyze_mod
+        self._open_page('').show(analyze_mod.Analysis(
+            url='Torrent', kind=analyze_mod.KIND_ERROR,
+            error='Grabbit could not read that file. If it is still there, try opening it again.'))
+
+    def _open_page(self, url: str):
         if self.page is not None:
             self.page.dismiss()
         page = ChoosePage(url, self.settings, on_choose=self._chosen, insets=self._insets)
         page.bind(on_dismiss=lambda *_: self._page_closed(page))
         self.page = page
         page.open()
-        self.engine.analyze_link(url, lambda result: Clock.schedule_once(
-            lambda *_: page.show(result)))
+        return page
 
     def _page_closed(self, page):
         if self.page is page:

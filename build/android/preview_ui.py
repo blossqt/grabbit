@@ -421,6 +421,54 @@ def check_page(app, report):
         site.close()
 
 
+def check_opened_torrent(app, report):
+    """A .torrent tapped in another app: Incoming (java/) copies it in, and
+    the window reads the copy. Off a phone there is nothing to copy, so the
+    copy is made here and handed over as Incoming would hand it."""
+    from grabbit_mobile import bootstrap
+    folder = tempfile.mkdtemp(prefix='grabbit-opened-')
+    torrent = os.path.join(folder, 'Ubuntu 24.04.3 Desktop (64-bit).torrent')
+    with open(torrent, 'wb') as handle:
+        handle.write(b'd4:infod6:lengthi6203355136e4:name32:ubuntu-24.04.3-desktop-amd64.iso'
+                     b'12:piece lengthi262144e6:pieces20:' + bytes(20) + b'ee')
+    broken = os.path.join(folder, 'not really.torrent')
+    with open(broken, 'wb') as handle:
+        handle.write(b'<html>Sign in to download</html>')
+    received = bootstrap.received_torrent
+    try:
+        bootstrap.received_torrent = lambda intent: torrent
+        app._handle_intent(object())
+        page = app.page
+        wait_until(lambda: page is not None and page.analysis is not None, 10)
+        report('a .torrent opened from another app opens its page, with its files',
+               page is not None and page.title.text == 'ubuntu-24.04.3-desktop-amd64.iso'
+               and 'BitTorrent' in page.about.text and not page.go.disabled,
+               page.about.text if page else 'no page')
+        page.dismiss()
+        wait_until(lambda: page.parent is None, 3)
+
+        bootstrap.received_torrent = lambda intent: broken
+        app._handle_intent(object())
+        page = app.page
+        wait_until(lambda: page.analysis is not None, 10)
+        report('one that is not a torrent says so, under its own name rather than a path',
+               page.title.text == 'not really.torrent' and page.go.disabled, page.about.text)
+        page.dismiss()
+        wait_until(lambda: page.parent is None, 3)
+
+        bootstrap.received_torrent = lambda intent: bootstrap.RECEIVE_FAILED
+        app._handle_intent(object())
+        page = app.page
+        report('and one Android would not let Grabbit read says that',
+               page is not None and 'could not read that file' in page.about.text
+               and page.go.disabled, page.about.text if page else 'no page')
+        page.dismiss()
+        wait_until(lambda: page.parent is None, 3)
+    finally:
+        bootstrap.received_torrent = received
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def check_post(app, report):
     """A post of several slides: a grid of them, to untick what is not wanted."""
     from grabbit_mobile.engine import MobileEngine
@@ -967,6 +1015,7 @@ def check(app):
     report("the link box is the one that becomes Android's own field on a phone",
            isinstance(app.input, LinkBox), type(app.input).__name__)
     check_page(app, report)
+    check_opened_torrent(app, report)
     check_post(app, report)
 
     reveal(app._status_chips['completed'])

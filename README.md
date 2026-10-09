@@ -105,7 +105,11 @@ Pasting or sharing a link opens a page once the link has been read, with the
 choices the desktop's card offers: quality and file type, the sound alone, a
 GIF, or one frame picked with a slider. A post of several photos and videos,
 or a playlist, shows them all in a grid, ticked, to untick the ones not
-wanted. It is drawn in Material 3 (`grabbit_mobile/ui/widgets.py`): on
+wanted. Magnet links open in Grabbit, and so do `.torrent` files, tapped in a
+file manager, a browser's downloads or a chat, or shared from one: Android
+hands over an address rather than a path, so `Incoming` (`build/android/java`)
+copies the file in and the page reads the copy. It is drawn in Material 3
+(`grabbit_mobile/ui/widgets.py`): on
 Android 12 and later in the colours Android makes from the wallpaper, as its
 own apps are, and elsewhere in Grabbit's blue (`ui/theme.py`), light or dark
 as the phone is set. Touches ripple and pages slide in, as Android's own do

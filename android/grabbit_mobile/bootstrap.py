@@ -325,6 +325,38 @@ def hands():
         return None
 
 
+RECEIVE_FAILED = 'failed'           # Incoming.FAILED
+
+
+def received_torrent(intent) -> str:
+    """The .torrent another app opened Grabbit with, copied in (Incoming,
+    java/): the copy's path, '' when the intent carries no file - a link, or
+    off a phone - or RECEIVE_FAILED when it could not be read. The main
+    thread only, for the reason service_controls gives."""
+    if intent is None:
+        return ''
+    try:
+        from jnius import JavaClass, JavaStaticMethod, MetaJavaClass, autoclass
+    except ImportError:
+        return ''
+    try:
+        class Incoming(JavaClass, metaclass=MetaJavaClass):
+            __javaclass__ = 'com/grabbit/downloader/Incoming'
+            torrent = JavaStaticMethod(
+                '(Landroid/app/Activity;Landroid/content/Intent;Ljava/lang/String;)Ljava/lang/String;')
+
+        # The cache: once read, the copy is the downloader's own (torrents_dir).
+        folder = paths.cache_dir() / 'opened'
+        folder.mkdir(parents=True, exist_ok=True)
+        return Incoming.torrent(autoclass('org.kivy.android.PythonActivity').mActivity,
+                                intent, str(folder)) or ''
+    except Exception:
+        # Not the file - Incoming answers for that - but reaching Incoming
+        # at all; a link shared along with it is still worth reading.
+        log.exception('could not ask for the file Grabbit was opened with')
+        return ''
+
+
 def fastest_screen() -> float:
     """Ask for the screen's fastest refresh rate (Screen, java/), and say what
     it is - 0 off a phone, or when it cannot be read."""

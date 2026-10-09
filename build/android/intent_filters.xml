@@ -14,3 +14,33 @@
     <category android:name="android.intent.category.BROWSABLE" />
     <data android:scheme="magnet" />
 </intent-filter>
+<!-- And .torrent files: tapped in a file manager, a browser's downloads or a
+     chat, or sent from one through the share sheet. They come as content:
+     addresses, which Incoming (java/) copies in. Android calls their type
+     application/x-bittorrent. -->
+<intent-filter>
+    <action android:name="android.intent.action.VIEW" />
+    <category android:name="android.intent.category.DEFAULT" />
+    <data android:scheme="content" />
+    <data android:mimeType="application/x-bittorrent" />
+</intent-filter>
+<intent-filter>
+    <action android:name="android.intent.action.SEND" />
+    <category android:name="android.intent.category.DEFAULT" />
+    <data android:mimeType="application/x-bittorrent" />
+</intent-filter>
+<!-- Some apps call every file they cannot place application/octet-stream;
+     that is claimed only where the address ends in .torrent, or Grabbit would
+     be offered for all of them. Android's patterns do not backtrack, so .*
+     stops at the name's first dot and each count of dots needs its own. -->
+<intent-filter>
+    <action android:name="android.intent.action.VIEW" />
+    <category android:name="android.intent.category.DEFAULT" />
+    <data android:scheme="content" />
+    <data android:host="*" />
+    <data android:mimeType="application/octet-stream" />
+    <data android:pathPattern=".*\\.torrent" />
+    <data android:pathPattern=".*\\..*\\.torrent" />
+    <data android:pathPattern=".*\\..*\\..*\\.torrent" />
+    <data android:pathPattern=".*\\..*\\..*\\..*\\.torrent" />
+</intent-filter>

@@ -10,6 +10,7 @@ not wanted.
 """
 
 import logging
+import os
 import queue
 import threading
 import urllib.request
@@ -71,12 +72,18 @@ def post_items(analysis) -> list:
     return [(place, item) for place, item in enumerate(probe.items) if not item.optional]
 
 
+def shown_as(url: str) -> str:
+    """A link as the page titles it. A .torrent opened from another app is
+    read from a copy in the app's cache, whose path means nothing but its name."""
+    return os.path.basename(url) if url.startswith('/') else url
+
+
 def summary(analysis) -> tuple:
     """(title, one line about it) for any kind of link."""
     kind = analysis.kind
     probe = getattr(analysis, 'probe', None)
     if kind == analyze_mod.KIND_ERROR:
-        return analysis.url, analysis.error or 'That link could not be read'
+        return shown_as(analysis.url), analysis.error or 'That link could not be read'
     if kind == analyze_mod.KIND_MAGNET:
         info = analysis.magnet or {}
         return (info.get('name') or 'Magnet link',
@@ -458,7 +465,7 @@ class ChoosePage(Entrance, ModalView):
         self.column.add_widget(self.picture_card)
         self.column.bind(width=self._size_picture)
 
-        self.title = Label(text=url, color=theme.ON_SURFACE, font_size=theme.TITLE_MEDIUM,
+        self.title = Label(text=shown_as(url), color=theme.ON_SURFACE, font_size=theme.TITLE_MEDIUM,
                            size_hint_y=None, halign='left', valign='top',
                            max_lines=2, shorten=True, shorten_from='right')
         self.title.bind(width=lambda widget, width: setattr(widget, 'text_size', (width, None)),
