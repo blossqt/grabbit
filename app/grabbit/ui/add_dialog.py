@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QWidget)
 
 from .. import analyze as analyze_mod
+from .. import choices
 from ..torrentmeta import parse_torrent
 from ..util import extract_links, host_of, human_size, site_name
 from . import icons, preview, thumbs
@@ -19,15 +20,14 @@ from .gallery import GalleryGrid, PreviewDialog
 THUMB_W, THUMB_H = 128, 72
 
 
-def quality_options(heights, frame: bool = False) -> list:
+def quality_options(heights) -> list:
+    """One menu for every item of a playlist or a post at once."""
     options = [('best', 'Best available')]
     for height in sorted({h for h in (heights or []) if h}, reverse=True)[:8]:
         options.append((str(height), f'{height}p'))
-    options += [('audio_m4a', 'Audio only (M4A)'), ('audio_mp3', 'Audio only (MP3)'),
-                ('gif', 'Animated GIF')]
-    if frame:
-        # One picture, chosen with a slider: only for a single video.
-        options.append(('frame', 'Still image (one frame)'))
+    options += [(f'audio_{value}', f'Audio only ({label})')
+                for value, label in choices.AUDIO_FORMATS]
+    options.append(('gif', 'Animated GIF'))
     return options
 
 
@@ -282,7 +282,10 @@ class MetalinkCard(LinkCard):
 
 
 class MediaCard(LinkCard):
-    """A single video or audio item."""
+    """A single video or sound, and what to save it as: its type, then its
+    format, then its quality - each offering only what the one before it
+    allows and what the source has (grabbit.choices). A track with nothing
+    to see is offered as audio alone."""
 
     def __init__(self, analysis, settings, parent=None):
         super().__init__(analysis.url, parent)
@@ -290,6 +293,7 @@ class MediaCard(LinkCard):
         self.probe = analysis.probe
         self.item = self.probe.items[0]
         self.settings = settings
+        self.source = choices.source_of(self.item, live=self.probe.is_live)
 
         self.title.setText(self.probe.title or analysis.url)
         bits = [self.probe.site or site_name(analysis.url)]
@@ -304,24 +308,9 @@ class MediaCard(LinkCard):
         self.set_thumbnail(self.item.thumbnail or self.probe.thumbnail, self.item.headers)
 
         row = QHBoxLayout()
-        row.addWidget(QLabel('Quality'))
-        self.quality = QComboBox()
-        still = self.item.kind == 'video' and not self.probe.is_live
-        for value, label in quality_options(self.item.heights or self.probe.heights, frame=still):
-            self.quality.addItem(label, value)
-        index = self.quality.findData(settings.video_quality)
-        self.quality.setCurrentIndex(index if index >= 0 else 0)
-        self.quality.currentIndexChanged.connect(self._quality_changed)
-        row.addWidget(self.quality)
-        row.addSpacing(12)
-        self.container_label = QLabel('Container')
-        row.addWidget(self.container_label)
-        self.container = QComboBox()
-        for value, label in (('mp4', 'MP4'), ('mkv', 'MKV'), ('any', 'Original')):
-            self.container.addItem(label, value)
-        index = self.container.findData(settings.video_container)
-        self.container.setCurrentIndex(index if index >= 0 else 0)
-        row.addWidget(self.container)
+        self.kind = self._menu(row, 'Type')
+        self.format = self._menu(row, 'Format')
+        self.quality = self._menu(row, 'Quality')
         row.addStretch(1)
 
         self.preview_button = QPushButton('Watch')
@@ -332,12 +321,67 @@ class MediaCard(LinkCard):
         row.addWidget(self.preview_button)
         self.body.addLayout(row)
         self.frame_picker = None        # made the first time a still is asked for
+        self._quality_kind = None       # the type the quality menu was filled for
 
-    def _quality_changed(self):
-        """A still has no container, and needs its moment chosen instead."""
-        still = self.quality.currentData() == 'frame'
-        self.container_label.setVisible(not still)
-        self.container.setVisible(not still)
+        # Starting from the default in Options, where the source allows it.
+        self._wanted = choices.remembered(settings.video_quality, settings.video_container)
+        for value, label in choices.types(self.source):
+            self.kind.addItem(label, value)
+        self._select(self.kind, self._wanted[0])
+        self.kind.currentIndexChanged.connect(self._kind_changed)
+        self.format.currentIndexChanged.connect(self._format_changed)
+        self.quality.currentIndexChanged.connect(lambda _: self.changed.emit())
+        self._kind_changed()
+
+    @staticmethod
+    def _menu(row, label: str) -> QComboBox:
+        row.addWidget(QLabel(label))
+        menu = QComboBox()
+        menu.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        row.addWidget(menu)
+        row.addSpacing(12)
+        return menu
+
+    @staticmethod
+    def _select(menu: QComboBox, value):
+        index = menu.findData(value)
+        menu.setCurrentIndex(index if index >= 0 else 0)
+
+    def _kind_changed(self, *_):
+        kind = self.kind.currentData()
+        self.format.blockSignals(True)
+        self.format.clear()
+        for value, label in choices.formats(kind, self.source):
+            self.format.addItem(label, value)
+        self._select(self.format, self._wanted[1] if kind == self._wanted[0] else None)
+        self.format.blockSignals(False)
+        self.format.setEnabled(self.format.count() > 1)      # a GIF is a GIF
+        self._format_changed()
+
+    def _format_changed(self, *_):
+        kind, fmt = self.kind.currentData(), self.format.currentData()
+        # The quality already chosen stays, where the new format has it too.
+        kept = self.quality.currentData() if self._quality_kind == kind else None
+        self._quality_kind = kind
+        self.quality.blockSignals(True)
+        self.quality.clear()
+        for value, label in choices.qualities(kind, fmt, self.source,
+                                              gif_width=self.settings.gif_width,
+                                              fps=self.settings.gif_fps):
+            self.quality.addItem(label, value)
+        if kept is not None and self.quality.findData(kept) >= 0:
+            self._select(self.quality, kept)
+        elif kind == 'video':
+            self._select(self.quality, self.settings.video_quality)
+        elif kind == 'gif':
+            self._select(self.quality, str(self.settings.gif_width))
+        self.quality.blockSignals(False)
+        self.quality.setEnabled(self.quality.count() > 1)
+        self._show_frame_picker(kind == 'image')
+        self.changed.emit()
+
+    def _show_frame_picker(self, still: bool):
+        """A still needs its moment chosen: a slider along the video."""
         if still and self.frame_picker is None:
             self.frame_picker = FramePicker(self.item.url or self.url, self.settings,
                                             self.item.duration or 0)
@@ -346,7 +390,6 @@ class MediaCard(LinkCard):
             self.frame_picker.setVisible(still)
             if still:
                 self.frame_picker.fetch()
-        self.changed.emit()
 
     def shutdown(self):
         if self.frame_picker is not None:
@@ -360,12 +403,15 @@ class MediaCard(LinkCard):
         preview.play_link(self.item.url or self.url, self.settings, self, state)
 
     def requests(self):
+        kind, fmt = self.kind.currentData(), self.format.currentData()
+        chosen = choices.choice(kind, fmt, self.quality.currentData() or '')
         request = {'type': 'media', 'item': self.item, 'probe': self.probe,
-                   'quality': self.quality.currentData(),
-                   'container': self.container.currentData()}
-        if request['quality'] == 'frame' and self.frame_picker is not None:
+                   'quality': chosen.pop('quality'),
+                   'container': chosen.pop('container', self.settings.video_container)}
+        if kind == 'image' and self.frame_picker is not None:
             request['frame_at'] = self.frame_picker.at
-            request['frame_format'] = self.frame_picker.image_type
+            request['frame_format'] = chosen.pop('frame_format')
+        request['options'] = chosen
         return [request]
 
 

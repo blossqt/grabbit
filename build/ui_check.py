@@ -97,13 +97,14 @@ def check_still(app):
         return (sum(reds) / max(1, len(reds))) * 219 / 255 / frames_check.RATE
 
     try:
-        options = [card.quality.itemData(i) for i in range(card.quality.count())]
-        report("a video's card offers a still from it", 'frame' in options, ', '.join(options))
-        card.quality.setCurrentIndex(options.index('frame'))
+        kinds = [card.kind.itemData(i) for i in range(card.kind.count())]
+        report("a video's card offers a still from it", 'image' in kinds, ', '.join(kinds))
+        card.kind.setCurrentIndex(kinds.index('image'))
         picker = card.frame_picker
-        report('choosing it shows a slider along the video, and no container',
-               picker is not None and picker.isVisibleTo(card) and not card.container.isVisibleTo(card)
-               and picker.slider.maximum() == frames_check.SECONDS * 1000)
+        report('choosing it shows a slider along the video, and picture formats',
+               picker is not None and picker.isVisibleTo(card)
+               and picker.slider.maximum() == frames_check.SECONDS * 1000
+               and card.format.findData('jpg') >= 0)
         first = wait(lambda: not picker.picture.pixmap().isNull(), 40)
         report('and the frame at the start', first and shown_time() < 1.0,
                f'{shown_time():.1f}s' if first else picker.picture.text())
@@ -112,7 +113,7 @@ def check_still(app):
                picker.clock.text())
         moved = wait(lambda: abs(shown_time() - 12.0) < 1.0, 30)
         report('and the frame there is shown once it stops', moved, f'{shown_time():.1f}s')
-        picker.kind.setCurrentIndex(picker.kind.findData('jpg'))
+        card.format.setCurrentIndex(card.format.findData('jpg'))
         request = card.requests()[0]
         report('Download asks for that frame, as that kind of picture',
                request['quality'] == 'frame' and request['frame_at'] == 12.0
@@ -121,6 +122,90 @@ def check_still(app):
     finally:
         card.shutdown()
         server.shutdown()
+
+
+def check_choices(app):
+    """Type, then format, then quality - from what the source has."""
+    from grabbit import analyze
+    from grabbit.media import MediaItem, ProbeResult
+    from grabbit.ui.add_dialog import MediaCard
+
+    def card_for(formats, title):
+        item = MediaItem(key=title, kind='video', title=title, url='https://example.invalid/x',
+                         info={'formats': formats})
+        probe = ProbeResult(url=item.url, title=title, items=[item])
+        settings = Settings()
+        return MediaCard(analyze.Analysis(url=item.url, kind=analyze.KIND_MEDIA, probe=probe),
+                         settings)
+
+    def menu(combo):
+        return [(combo.itemData(i), combo.itemText(i)) for i in range(combo.count())]
+
+    track = card_for([
+        {'format_id': 'http_mp3_128', 'vcodec': 'none', 'acodec': 'mp3', 'abr': 128, 'asr': 44100,
+         'ext': 'mp3'},
+        {'format_id': 'hls_opus_64', 'vcodec': 'none', 'acodec': 'opus', 'abr': 64, 'asr': 48000,
+         'ext': 'opus'}], 'A track')
+    report('a track with nothing to see is offered as audio alone',
+           [v for v, _ in menu(track.kind)] == ['audio'], str(menu(track.kind)))
+    formats = [v for v, _ in menu(track.format)]
+    report('in every audio format, FLAC and WAV among them',
+           formats == ['mp3', 'm4a', 'opus', 'flac', 'wav', 'best'], ', '.join(formats))
+    track.format.setCurrentIndex(track.format.findData('flac'))
+    rates = menu(track.quality)
+    report("FLAC's qualities are sample rates, none above the original's",
+           rates[0] == ('', 'Original · 48 kHz') and ('44100', '44.1 kHz') in rates
+           and all(int(v) < 48000 for v, _ in rates[1:]), ', '.join(t for _, t in rates))
+    track.quality.setCurrentIndex(track.quality.findData('44100'))
+    request = track.requests()[0]
+    report('and Download asks for FLAC at that rate',
+           request['quality'] == 'audio_flac' and request['options'] == {'sample_rate': 44100},
+           f"{request['quality']} {request['options']}")
+    track.format.setCurrentIndex(track.format.findData('mp3'))
+    bitrates = [v for v, _ in menu(track.quality)]
+    report("MP3's are bitrates, none past the original's",
+           bitrates == ['0', '128', '96', '64'], ', '.join(bitrates))
+    track.format.setCurrentIndex(track.format.findData('best'))
+    original = menu(track.quality)
+    report("Original lists the site's own sounds, best first, each the one it names",
+           original[0] == ('id:http_mp3_128', 'Best · MP3 · 128 kbps · 44.1 kHz')
+           and original[1] == ('id:hls_opus_64', 'Opus · 64 kbps · 48 kHz'),
+           ' | '.join(t for _, t in original))
+    track.quality.setCurrentIndex(1)
+    report('and Download keeps the one chosen, unconverted',
+           track.requests()[0]['options'] == {'audio_format': 'hls_opus_64'})
+
+    video = card_for([
+        {'format_id': '401', 'vcodec': 'av01', 'acodec': 'none', 'width': 3840, 'height': 2160,
+         'ext': 'mp4'},
+        {'format_id': '137', 'vcodec': 'avc1', 'acodec': 'none', 'width': 1920, 'height': 1080,
+         'ext': 'mp4'},
+        {'format_id': '248', 'vcodec': 'vp9', 'acodec': 'none', 'width': 1920, 'height': 1080,
+         'ext': 'webm'},
+        {'format_id': '140', 'vcodec': 'none', 'acodec': 'mp4a.40.2', 'abr': 129, 'asr': 44100,
+         'ext': 'm4a'}], 'A video')
+    report('a video can be a video, its sound, a GIF or one picture',
+           [v for v, _ in menu(video.kind)] == ['video', 'audio', 'gif', 'image'])
+    report('its formats include WebM, as the site has WebM',
+           [v for v, _ in menu(video.format)] == ['mp4', 'mkv', 'webm', 'any'])
+    sizes = [t for _, t in menu(video.quality)]
+    report('and its qualities are its own sizes, as they are',
+           sizes == ['Best available · 3840×2160', '2160p · 3840×2160 (4K)', '1080p · 1920×1080'],
+           ' | '.join(sizes))
+    video.quality.setCurrentIndex(video.quality.findData('1080'))
+    video.format.setCurrentIndex(video.format.findData('mkv'))
+    request = video.requests()[0]
+    report('Download asks for that size, in that format',
+           request['quality'] == '1080' and request['container'] == 'mkv' and not request['options'],
+           f"{request['quality']} {request['container']}")
+    tall = card_for([{'format_id': 'h', 'vcodec': 'h264', 'acodec': 'aac', 'width': 1080,
+                      'height': 1920, 'ext': 'mp4'}], 'A phone video')
+    report("a phone's tall video is called by its shorter side",
+           menu(tall.quality)[1] == ('1920', '1080p · 1080×1920'), str(menu(tall.quality)[1:]))
+    report('and without WebM to be had, no WebM is offered',
+           'webm' not in [v for v, _ in menu(tall.format)])
+    for card in (track, video, tall):
+        card.shutdown()
 
 
 def main():
@@ -312,6 +397,7 @@ def main():
            and opened.call_args_list[1].args[0].endswith('.m3u') and desktop_stream[0],
            ', '.join(str(c.args[0])[-20:] for c in opened.call_args_list))
 
+    check_choices(app)
     check_still(app)
 
     engine.shutdown()

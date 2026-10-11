@@ -434,9 +434,11 @@ class Engine(QObject):
 
     def add_media(self, item, probe_result, quality: str = '', container: str = '',
                   save_dir: str = '', start: bool = True, frame_at: float = 0.0,
-                  frame_format: str = 'png') -> Task:
+                  frame_format: str = 'png', options: dict | None = None) -> Task:
         """Queue a video/audio item for yt-dlp - or, with quality 'frame', the
-        one picture at frame_at seconds into it (grabbit.frames)."""
+        one picture at frame_at seconds into it (grabbit.frames). options are
+        what only some choices carry (choices.choice): a bitrate, a sample
+        rate, one of the source's own sounds, a GIF's width."""
         save_dir = save_dir or self.settings.download_dir
         if self.settings.site_subfolders and probe_result.site:
             save_dir = os.path.join(save_dir, safe_filename(probe_result.site, 'site', 60))
@@ -455,6 +457,9 @@ class Engine(QObject):
             'entry_index': item.index,
             'duration': item.duration,
         }
+        for key in ('audio_quality', 'sample_rate', 'audio_format', 'gif_width'):
+            if (options or {}).get(key):
+                task.media[key] = options[key]
         if task.media['quality'] == 'frame':
             from .frames import frame_filename
             task.media['frame_at'] = max(0.0, float(frame_at or 0))

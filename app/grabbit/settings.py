@@ -37,6 +37,10 @@ VIDEO_QUALITIES = [
     ('360', '360p'),
     ('audio_m4a', 'Audio only (M4A)'),
     ('audio_mp3', 'Audio only (MP3)'),
+    ('audio_opus', 'Audio only (Opus)'),
+    ('audio_flac', 'Audio only (FLAC)'),
+    ('audio_wav', 'Audio only (WAV)'),
+    ('audio_best', 'Audio only (original, not converted)'),
 ]
 
 COOKIE_BROWSERS = [

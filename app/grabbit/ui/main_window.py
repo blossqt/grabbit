@@ -501,7 +501,8 @@ class MainWindow(QMainWindow):
                     self.engine.add_media(request['item'], request['probe'], request['quality'],
                                           request['container'], save_dir, start,
                                           frame_at=request.get('frame_at', 0.0),
-                                          frame_format=request.get('frame_format', 'png'))
+                                          frame_format=request.get('frame_format', 'png'),
+                                          options=request.get('options'))
                 elif kind == 'image':
                     self.engine.add_image(request['item'], request['probe'], save_dir, start)
                 elif kind == 'magnet':

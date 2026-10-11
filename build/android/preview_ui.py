@@ -361,7 +361,10 @@ def check_page(app, report):
                and page.quality_row.buttons['720'].selected
                and not page.quality_row.buttons['best'].selected)
         tap(page.type_row.buttons['audio'])
-        report('Audio offers MP3 and M4A', list(page.audio_row.buttons) == ['audio_mp3', 'audio_m4a'])
+        report("Audio offers the desktop's formats, FLAC and WAV among them",
+               list(page.audio_row.buttons) == ['audio_mp3', 'audio_m4a', 'audio_opus',
+                                                'audio_flac', 'audio_wav', 'audio_best'],
+               ', '.join(b.text for b in page.audio_row.buttons.values()))
         tap(page.audio_row.buttons['audio_m4a'])
         tap(page.go)
         wait_until(lambda: page.parent is None, 3)       # it fades out first

@@ -151,7 +151,9 @@ class SettingsDialog(QDialog):
         form.addRow('Default quality', self.quality)
 
         self.container = QComboBox()
-        for value, label in (('mp4', 'MP4 (most compatible)'), ('mkv', 'MKV'), ('any', 'Whatever the site offers')):
+        for value, label in (('mp4', 'MP4 (most compatible)'), ('mkv', 'MKV'),
+                             ('webm', 'WebM, where the site has it'),
+                             ('any', 'Whatever the site offers')):
             self.container.addItem(label, value)
         index = self.container.findData(settings.video_container)
         self.container.setCurrentIndex(max(0, index))

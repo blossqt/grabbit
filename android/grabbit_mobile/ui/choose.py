@@ -32,7 +32,7 @@ from kivy.uix.scrollview import ScrollView
 from kivy.uix.widget import Widget
 
 from grabbit import analyze as analyze_mod
-from grabbit import frames
+from grabbit import choices, frames
 from grabbit.tasks import State
 from grabbit.util import human_duration, human_size, site_name
 
@@ -44,7 +44,10 @@ log = logging.getLogger(__name__)
 
 TYPES = [('video', 'Video'), ('audio', 'Audio'), ('gif', 'GIF'), ('image', 'Image')]
 CONTAINERS = [('mp4', 'MP4'), ('mkv', 'MKV'), ('any', 'Original')]
-AUDIO = [('audio_mp3', 'MP3'), ('audio_m4a', 'M4A')]
+# The desktop's audio formats (grabbit.choices), from MP3 to FLAC, WAV and the
+# site's own sound, not converted.
+AUDIO = [(f'audio_{value}', label.split(' (')[0] if value != 'best' else 'Original')
+         for value, label in choices.AUDIO_FORMATS]
 
 # A browser's name, for sites that turn away anything else asking for a picture.
 _AGENT = ('Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 '
@@ -522,7 +525,9 @@ class ChoosePage(Entrance, ModalView):
         if self.items:
             single = analysis.kind == analyze_mod.KIND_MEDIA
             item = self.items[0]
-            audio_only = single and item.kind == 'audio'
+            # A track with nothing to see - SoundCloud's - is only ever audio.
+            audio_only = single and (item.kind == 'audio'
+                                     or not choices.source_of(item).picture)
             offered = [('audio', 'Audio')] if audio_only else [
                 t for t in TYPES if t[0] != 'image' or single]
             self.kind = 'audio' if audio_only else self._kind_from(self.quality)
@@ -617,7 +622,8 @@ class ChoosePage(Entrance, ModalView):
             self.detail.add_widget(self.container_row)
         elif kind == 'audio':
             self.detail.add_widget(_heading('File type'))
-            self.audio_row = OptionRow(AUDIO, self.audio, self._set('audio'))
+            # Six of them: chips that wrap, rather than one crowded row.
+            self.audio_row = OptionWrap(AUDIO, self.audio, self._set('audio'))
             self.detail.add_widget(self.audio_row)
         elif kind == 'gif':
             seconds = int(getattr(self.settings, 'gif_max_seconds', 30) or 0)

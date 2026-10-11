@@ -122,8 +122,11 @@ def make_ydl(settings, extra: dict | None = None, log_sink=None) -> YoutubeDL:
     return ydl
 
 
-def format_selection(quality: str, container: str) -> dict:
-    """yt-dlp params for a quality preset from the settings/UI."""
+def format_selection(quality: str, container: str, options: dict | None = None) -> dict:
+    """yt-dlp params for a quality preset from the settings/UI - and, from
+    options (choices.choice), a sound's bitrate or sample rate, or one of the
+    source's own sounds to keep as it is."""
+    options = options or {}
     params: dict = {}
     postprocessors: list[dict] = []
 
@@ -144,14 +147,21 @@ def format_selection(quality: str, container: str) -> dict:
         params['format'] = ('bv*[vcodec!^=av01][height<=720]/b[vcodec!^=av01][height<=720]'
                             '/bv*[vcodec!^=av01]/b[vcodec!^=av01]'
                             '/bv*[height<=720]/b[height<=720]/bv*/b')
-    elif quality == 'audio_mp3':
-        params['format'] = 'ba/b'
-        postprocessors.append({'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3',
-                               'preferredquality': '0', 'nopostoverwrites': False})
-    elif quality == 'audio_m4a':
-        params['format'] = 'ba[ext=m4a]/ba/b'
-        postprocessors.append({'key': 'FFmpegExtractAudio', 'preferredcodec': 'm4a',
-                               'preferredquality': '0', 'nopostoverwrites': False})
+    elif quality.startswith('audio_'):
+        # mp3, m4a, opus, flac, wav - or best: the source's sound, not converted.
+        codec = quality[len('audio_'):] or 'best'
+        wanted = options.get('audio_format')
+        if wanted:
+            params['format'] = f'{wanted}/ba/b'
+        else:
+            params['format'] = 'ba[ext=m4a]/ba/b' if codec == 'm4a' else 'ba/b'
+        # '0' is the encoder's best variable bitrate; ten and up, kbps.
+        postprocessors.append({'key': 'FFmpegExtractAudio', 'preferredcodec': codec,
+                               'preferredquality': str(options.get('audio_quality') or '0'),
+                               'nopostoverwrites': False})
+        rate = int(options.get('sample_rate') or 0)
+        if rate and codec != 'best':
+            params['postprocessor_args'] = {'extractaudio': ['-ar', str(rate)]}
     elif quality and quality != 'best' and quality.isdigit():
         height = int(quality)
         params['format'] = (f'bv*[height<={height}]+ba/b[height<={height}]'
@@ -165,15 +175,18 @@ def format_selection(quality: str, container: str) -> dict:
             params['merge_output_format'] = 'mp4'
         elif container == 'mkv':
             params['merge_output_format'] = 'mkv'
+        elif container == 'webm':
+            params['format_sort'] = ['res', 'ext:webm:webm']
+            params['merge_output_format'] = 'webm'
     params['_postprocessors'] = postprocessors
     return params
 
 
 def download_params(settings, save_dir: str, quality: str | None = None,
-                    container: str | None = None) -> dict:
+                    container: str | None = None, options: dict | None = None) -> dict:
     quality = quality or settings.video_quality
     container = container or settings.video_container
-    selection = format_selection(quality, container)
+    selection = format_selection(quality, container, options)
     postprocessors = selection.pop('_postprocessors')
     is_audio = quality.startswith('audio')
     if quality in ('gif', 'frame'):
@@ -197,7 +210,8 @@ def download_params(settings, save_dir: str, quality: str | None = None,
         postprocessors.append({'key': 'FFmpegEmbedSubtitle', 'already_have_subtitle': False})
     if settings.embed_metadata:
         postprocessors.append({'key': 'FFmpegMetadata', 'add_metadata': True, 'add_chapters': True})
-    if settings.embed_thumbnail:
+    # A WAV has nowhere to keep a picture, and trying fails the download.
+    if settings.embed_thumbnail and quality != 'audio_wav':
         params['writethumbnail'] = True
         postprocessors.append({'key': 'EmbedThumbnail', 'already_have_thumbnail': False})
     params['postprocessors'] = postprocessors
@@ -385,7 +399,7 @@ def resolve_stream(url: str, settings, log_sink=None) -> dict:
         }
 
 
-def convert_to_gif(source: str, settings, log_sink=None) -> str:
+def convert_to_gif(source: str, settings, log_sink=None, width: int = 0) -> str:
     """Turn a downloaded video into an animated GIF.
 
     Two passes: ffmpeg first works out one colour palette for the whole clip,
@@ -397,7 +411,7 @@ def convert_to_gif(source: str, settings, log_sink=None) -> str:
         raise RuntimeError('FFmpeg is needed to make a GIF')
 
     fps = max(1, int(getattr(settings, 'gif_fps', 15) or 15))
-    width = max(64, int(getattr(settings, 'gif_width', 480) or 480))
+    width = max(64, int(width or getattr(settings, 'gif_width', 480) or 480))
     limit = max(0, int(getattr(settings, 'gif_max_seconds', 30) or 0))
     target = os.path.splitext(source)[0] + '.gif'
     palette = source + '.palette.png'
@@ -716,7 +730,8 @@ class MediaJob(threading.Thread):
 
     def _run(self):
         params = download_params(self.settings, self.save_dir,
-                                 self.media.get('quality'), self.media.get('container'))
+                                 self.media.get('quality'), self.media.get('container'),
+                                 self.media)
         params['progress_hooks'] = [self._progress_hook]
         params['postprocessor_hooks'] = [self._pp_hook]
         ydl = make_ydl(self.settings, params, self._log)
@@ -739,7 +754,8 @@ class MediaJob(threading.Thread):
             self.check_interrupts()
             self._emit(self.task_id, 'state', {'state': 'processing', 'note': 'Making the GIF'})
             video = filepath
-            filepath = convert_to_gif(video, self.settings, self._log)
+            filepath = convert_to_gif(video, self.settings, self._log,
+                                      width=int(self.media.get('gif_width') or 0))
             try:
                 os.remove(video)          # the source clip was only a means to an end
             except OSError:

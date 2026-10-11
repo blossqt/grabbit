@@ -4,7 +4,7 @@ step either way for the frame just before or after."""
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QSlider, QToolButton,
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QSlider, QToolButton,
                                QVBoxLayout, QWidget)
 
 from .. import frames
@@ -76,17 +76,6 @@ class FramePicker(QWidget):
             row.addWidget(widget, 1 if widget is self.slider else 0)
         layout.addLayout(row)
 
-        kinds = QHBoxLayout()
-        kinds.addWidget(QLabel('Save the frame as'))
-        self.kind = QComboBox()
-        for value, label in frames.IMAGE_TYPES:
-            self.kind.addItem(label, value)
-        index = self.kind.findData(getattr(settings, 'frame_format', '') or 'png')
-        self.kind.setCurrentIndex(max(0, index))
-        kinds.addWidget(self.kind)
-        kinds.addStretch(1)
-        layout.addLayout(kinds)
-
         # Fetch where the slider stops, not everywhere it passes through.
         self._rest = QTimer(self)
         self._rest.setSingleShot(True)
@@ -98,10 +87,6 @@ class FramePicker(QWidget):
     @property
     def at(self) -> float:
         return self.slider.value() / 1000.0
-
-    @property
-    def image_type(self) -> str:
-        return self.kind.currentData()
 
     # --------------------------------------------------------------- moving
     def _moved(self, _value):
