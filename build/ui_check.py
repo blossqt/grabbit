@@ -141,11 +141,12 @@ def check_choices(app):
     def menu(combo):
         return [(combo.itemData(i), combo.itemText(i)) for i in range(combo.count())]
 
+    # Formats as the probe leaves them: in yt-dlp's order, worst first.
     track = card_for([
-        {'format_id': 'http_mp3_128', 'vcodec': 'none', 'acodec': 'mp3', 'abr': 128, 'asr': 44100,
-         'ext': 'mp3'},
         {'format_id': 'hls_opus_64', 'vcodec': 'none', 'acodec': 'opus', 'abr': 64, 'asr': 48000,
-         'ext': 'opus'}], 'A track')
+         'ext': 'opus'},
+        {'format_id': 'http_mp3_128', 'vcodec': 'none', 'acodec': 'mp3', 'abr': 128, 'asr': 44100,
+         'ext': 'mp3'}], 'A track')
     report('a track with nothing to see is offered as audio alone',
            [v for v, _ in menu(track.kind)] == ['audio'], str(menu(track.kind)))
     formats = [v for v, _ in menu(track.format)]
@@ -153,23 +154,26 @@ def check_choices(app):
            formats == ['mp3', 'm4a', 'opus', 'flac', 'wav', 'best'], ', '.join(formats))
     track.format.setCurrentIndex(track.format.findData('flac'))
     rates = menu(track.quality)
-    report("FLAC's qualities are sample rates, none above the original's",
-           rates[0] == ('', 'Original · 48 kHz') and ('44100', '44.1 kHz') in rates
-           and all(int(v) < 48000 for v, _ in rates[1:]), ', '.join(t for _, t in rates))
-    track.quality.setCurrentIndex(track.quality.findData('44100'))
+    report("FLAC's qualities are sample rates, the first the source's, saying what it is",
+           rates[0] == ('', 'Source (MP3 128 kbps · 44.1 kHz)') and ('32000', '32 kHz') in rates
+           and all(int(v) < 44100 for v, _ in rates[1:]), ' | '.join(t for _, t in rates))
+    track.quality.setCurrentIndex(track.quality.findData('32000'))
     request = track.requests()[0]
-    report('and Download asks for FLAC at that rate',
-           request['quality'] == 'audio_flac' and request['options'] == {'sample_rate': 44100},
+    report('and Download asks for FLAC at that rate, from the sound it named',
+           request['quality'] == 'audio_flac'
+           and request['options'] == {'audio_format': 'http_mp3_128', 'sample_rate': 32000},
            f"{request['quality']} {request['options']}")
     track.format.setCurrentIndex(track.format.findData('mp3'))
-    bitrates = [v for v, _ in menu(track.quality)]
-    report("MP3's are bitrates, none past the original's",
-           bitrates == ['0', '128', '96', '64'], ', '.join(bitrates))
+    bitrates = menu(track.quality)
+    report("MP3's are bitrates, none past the source's, which the first names",
+           [v for v, _ in bitrates] == ['0', '128', '96', '64']
+           and bitrates[0][1] == 'Highest (source: MP3 128 kbps)',
+           ' | '.join(t for _, t in bitrates))
     track.format.setCurrentIndex(track.format.findData('best'))
     original = menu(track.quality)
-    report("Original lists the site's own sounds, best first, each the one it names",
-           original[0] == ('id:http_mp3_128', 'Best · MP3 · 128 kbps · 44.1 kHz')
-           and original[1] == ('id:hls_opus_64', 'Opus · 64 kbps · 48 kHz'),
+    report("Original lists the site's own sounds, the source's best first, each the one it names",
+           original[0] == ('id:http_mp3_128', 'Source (MP3 128 kbps · 44.1 kHz)')
+           and original[1] == ('id:hls_opus_64', 'Opus 64 kbps · 48 kHz'),
            ' | '.join(t for _, t in original))
     track.quality.setCurrentIndex(1)
     report('and Download keeps the one chosen, unconverted',
@@ -179,19 +183,33 @@ def check_choices(app):
         {'format_id': '401', 'vcodec': 'av01', 'acodec': 'none', 'width': 3840, 'height': 2160,
          'ext': 'mp4'},
         {'format_id': '137', 'vcodec': 'avc1', 'acodec': 'none', 'width': 1920, 'height': 1080,
-         'ext': 'mp4'},
+         'fps': 60, 'ext': 'mp4'},
         {'format_id': '248', 'vcodec': 'vp9', 'acodec': 'none', 'width': 1920, 'height': 1080,
-         'ext': 'webm'},
+         'fps': 30, 'ext': 'webm'},
         {'format_id': '140', 'vcodec': 'none', 'acodec': 'mp4a.40.2', 'abr': 129, 'asr': 44100,
-         'ext': 'm4a'}], 'A video')
+         'ext': 'm4a'},
+        {'format_id': '251', 'vcodec': 'none', 'acodec': 'opus', 'abr': 135, 'asr': 48000,
+         'ext': 'webm'}], 'A video')
     report('a video can be a video, its sound, a GIF or one picture',
            [v for v, _ in menu(video.kind)] == ['video', 'audio', 'gif', 'image'])
     report('its formats include WebM, as the site has WebM',
            [v for v, _ in menu(video.format)] == ['mp4', 'mkv', 'webm', 'any'])
     sizes = [t for _, t in menu(video.quality)]
-    report('and its qualities are its own sizes, as they are',
-           sizes == ['Best available · 3840×2160', '2160p · 3840×2160 (4K)', '1080p · 1920×1080'],
+    report('and its qualities are its own sizes, the first the source, saying what it is',
+           sizes == ['Source (2160p · 3840×2160 · 4K)', '1080p60 · 1920×1080'],
            ' | '.join(sizes))
+    video.kind.setCurrentIndex(video.kind.findData('audio'))
+    video.format.setCurrentIndex(video.format.findData('mp3'))
+    first = menu(video.quality)[0][1]
+    mp3 = video.requests()[0]['options']
+    video.format.setCurrentIndex(video.format.findData('m4a'))
+    m4a_first = menu(video.quality)[0][1]
+    m4a = video.requests()[0]['options']
+    report('its sound becomes MP3 from the best one, M4A from the one already AAC',
+           first == 'Highest (source: Opus 135 kbps)' and mp3.get('audio_format') == '251'
+           and m4a_first == 'Highest (source: AAC 129 kbps)' and m4a.get('audio_format') == '140',
+           f'{first} {mp3} | {m4a_first} {m4a}')
+    video.kind.setCurrentIndex(video.kind.findData('video'))
     video.quality.setCurrentIndex(video.quality.findData('1080'))
     video.format.setCurrentIndex(video.format.findData('mkv'))
     request = video.requests()[0]
@@ -201,7 +219,7 @@ def check_choices(app):
     tall = card_for([{'format_id': 'h', 'vcodec': 'h264', 'acodec': 'aac', 'width': 1080,
                       'height': 1920, 'ext': 'mp4'}], 'A phone video')
     report("a phone's tall video is called by its shorter side",
-           menu(tall.quality)[1] == ('1920', '1080p · 1080×1920'), str(menu(tall.quality)[1:]))
+           menu(tall.quality) == [('best', 'Source (1080p · 1080×1920)')], str(menu(tall.quality)))
     report('and without WebM to be had, no WebM is offered',
            'webm' not in [v for v, _ in menu(tall.format)])
     for card in (track, video, tall):

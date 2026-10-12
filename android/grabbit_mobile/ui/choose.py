@@ -400,6 +400,15 @@ def _heading(text):
     return label
 
 
+def _note(text):
+    """A line or two of quieter text, wrapping to the width it is given."""
+    note = Label(text=text, color=theme.ON_SURFACE_VARIANT, font_size=theme.BODY_MEDIUM,
+                 size_hint_y=None, halign='left', valign='top')
+    note.bind(width=lambda widget, width: setattr(widget, 'text_size', (width, None)),
+              texture_size=lambda widget, size: setattr(widget, 'height', size[1]))
+    return note
+
+
 # A few choices that share one row (Video, Audio, GIF, Image), and choices as
 # wide as their words that wrap (the qualities): Material's segmented button
 # and its chips.
@@ -430,6 +439,7 @@ class ChoosePage(Entrance, ModalView):
         self.quality = settings.video_quality or 'best'
         self.container = settings.video_container or 'mp4'
         self.audio = self.quality if self.quality.startswith('audio') else 'audio_mp3'
+        self.source = None              # the one video or sound's (grabbit.choices)
         self.frame_format = getattr(settings, 'frame_format', '') or 'png'
         self.frame_at = 0.0
         self.fps = 0.0
@@ -525,9 +535,10 @@ class ChoosePage(Entrance, ModalView):
         if self.items:
             single = analysis.kind == analyze_mod.KIND_MEDIA
             item = self.items[0]
+            # What the one video or sound is, as it is - its size, its sound.
+            self.source = choices.source_of(item) if single else None
             # A track with nothing to see - SoundCloud's - is only ever audio.
-            audio_only = single and (item.kind == 'audio'
-                                     or not choices.source_of(item).picture)
+            audio_only = single and (item.kind == 'audio' or not self.source.picture)
             offered = [('audio', 'Audio')] if audio_only else [
                 t for t in TYPES if t[0] != 'image' or single]
             self.kind = 'audio' if audio_only else self._kind_from(self.quality)
@@ -611,7 +622,13 @@ class ChoosePage(Entrance, ModalView):
         self.kind = kind
         self.detail.clear_widgets()
         if kind == 'video':
-            offered = [('best', 'Best')] + [(str(h), f'{h}p') for h in self.heights[:7]]
+            # The best is the source as it is: named for what that is, and
+            # its size not offered a second time below it.
+            top, heights = self.source.size() if self.source else '', self.heights
+            if top and heights and heights[0] == self.source.sizes[0][1]:
+                heights = heights[1:]
+            offered = ([('best', f'Source ({top})' if top else 'Best')]
+                       + [(str(h), f'{h}p') for h in heights[:7]])
             if self.quality not in dict(offered):
                 self.quality = 'best'
             self.detail.add_widget(_heading('Quality'))
@@ -623,19 +640,17 @@ class ChoosePage(Entrance, ModalView):
         elif kind == 'audio':
             self.detail.add_widget(_heading('File type'))
             # Six of them: chips that wrap, rather than one crowded row.
-            self.audio_row = OptionWrap(AUDIO, self.audio, self._set('audio'))
+            self.audio_row = OptionWrap(AUDIO, self.audio, self._choose_audio)
             self.detail.add_widget(self.audio_row)
+            self.sound_note = _note('')
+            self.detail.add_widget(self.sound_note)
+            self._choose_audio(self.audio)
         elif kind == 'gif':
             seconds = int(getattr(self.settings, 'gif_max_seconds', 30) or 0)
-            note = Label(text=(f'The first {seconds} seconds' if seconds else 'The whole video')
-                         + f', {getattr(self.settings, "gif_width", 480)} pixels wide, '
-                           f'{getattr(self.settings, "gif_fps", 15)} frames a second.',
-                         color=theme.ON_SURFACE_VARIANT, font_size=theme.BODY_MEDIUM,
-                         size_hint_y=None,
-                         halign='left', valign='top')
-            note.bind(width=lambda widget, width: setattr(widget, 'text_size', (width, None)),
-                      texture_size=lambda widget, size: setattr(widget, 'height', size[1]))
-            self.detail.add_widget(note)
+            self.detail.add_widget(_note(
+                (f'The first {seconds} seconds' if seconds else 'The whole video')
+                + f', {getattr(self.settings, "gif_width", 480)} pixels wide, '
+                  f'{getattr(self.settings, "gif_fps", 15)} frames a second.'))
         elif kind == 'image':
             self._build_scrubber()
         if kind != 'image':
@@ -643,6 +658,16 @@ class ChoosePage(Entrance, ModalView):
 
     def _set(self, name):
         return lambda value: setattr(self, name, value)
+
+    def _sound(self):
+        """The source's sound the chosen audio format starts from (Source.sound)."""
+        return self.source.sound(self.audio[len('audio_'):]) if self.source else None
+
+    def _choose_audio(self, value):
+        self.audio = value
+        sound = self._sound()
+        self.sound_note.text = f'Source: {sound.describe()}' if sound else ''
+        self.sound_note.opacity = 1 if sound else 0
 
     # ---------------------------------------------------------- one frame
     def _build_scrubber(self):
@@ -763,7 +788,11 @@ class ChoosePage(Entrance, ModalView):
         if not getattr(self, 'items', None):
             return {}
         if self.kind == 'audio':
-            return {'quality': self.audio, 'container': self.container}
+            chosen = {'quality': self.audio, 'container': self.container}
+            sound = self._sound()
+            if sound and sound.id:               # the very one the page named
+                chosen['audio_format'] = sound.id
+            return chosen
         if self.kind == 'gif':
             return {'quality': 'gif', 'container': self.container}
         if self.kind == 'image':

@@ -331,6 +331,14 @@ def probe(url: str, settings, max_entries: int = 400, log_sink=None) -> ProbeRes
         if not result.thumbnail and result.items:
             result.thumbnail = result.items[0].thumbnail
     else:
+        # Read unprocessed, its formats are in the site's order: put them in
+        # yt-dlp's, worst first, so the best sound named (grabbit.choices) is
+        # the one yt-dlp itself would take.
+        try:
+            if info.get('formats'):
+                ydl.sort_formats(info)
+        except Exception:
+            log.debug('the formats could not be sorted', exc_info=True)
         item = _item_from_entry(info, 1)
         result.items = [item]
         result.kind = 'gallery' if item.kind == 'image' else 'video'

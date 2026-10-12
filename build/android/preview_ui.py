@@ -81,10 +81,18 @@ class SampleSite:
         self.duration = float(frames_check.SECONDS)
 
     def analysis(self, url=None):
+        # Its formats as the probe leaves them, in yt-dlp's order, worst first:
+        # its sizes, and two sounds on their own.
+        formats = [{'format_id': str(h), 'vcodec': 'avc1', 'acodec': 'none', 'ext': 'mp4',
+                    'width': h * 16 // 9, 'height': h} for h in (240, 360, 480, 720, 1080)]
+        formats += [{'format_id': '140', 'vcodec': 'none', 'acodec': 'mp4a.40.2', 'abr': 129,
+                     'asr': 44100, 'ext': 'm4a'},
+                    {'format_id': '251', 'vcodec': 'none', 'acodec': 'opus', 'abr': 135,
+                     'asr': 48000, 'ext': 'webm'}]
         item = MediaItem(key='climb', kind='video', title='A video that gets brighter',
                          thumbnail=self.thumbnail, preview=self.thumbnail,
                          duration=self.duration, url=self.url,
-                         heights=[1080, 720, 480, 360, 240])
+                         heights=[1080, 720, 480, 360, 240], info={'formats': formats})
         probe = ProbeResult(url=url or self.url, kind='video', site='Sample',
                             title=item.title, uploader='Grabbit', items=[item],
                             heights=item.heights)
@@ -351,8 +359,10 @@ def check_page(app, report):
                ', '.join(b.text for b in page.type_row.buttons.values()))
         wait_until(lambda: page.picture.opacity == 1, 10)
         report('with its thumbnail', page.picture.opacity == 1 and page.picture.texture is not None)
-        report('Video offers the qualities that video comes in, and file types',
-               list(page.quality_row.buttons) == ['best', '1080', '720', '480', '360', '240']
+        report('Video offers the qualities that video comes in, the first the source, '
+               'saying what it is, and file types',
+               list(page.quality_row.buttons) == ['best', '720', '480', '360', '240']
+               and page.quality_row.buttons['best'].text == 'Source (1080p)'
                and list(page.container_row.buttons) == ['mp4', 'mkv', 'any'],
                ', '.join(b.text for b in page.quality_row.buttons.values()))
         tap(page.quality_row.buttons['720'])
@@ -365,13 +375,19 @@ def check_page(app, report):
                list(page.audio_row.buttons) == ['audio_mp3', 'audio_m4a', 'audio_opus',
                                                 'audio_flac', 'audio_wav', 'audio_best'],
                ', '.join(b.text for b in page.audio_row.buttons.values()))
+        tap(page.audio_row.buttons['audio_mp3'])
+        before = page.sound_note.text
         tap(page.audio_row.buttons['audio_m4a'])
+        report("and says what the source's sound is - for M4A, the one already AAC",
+               before == 'Source: Opus 135 kbps · 48 kHz'
+               and page.sound_note.text == 'Source: AAC 129 kbps · 44.1 kHz',
+               f'{before} | {page.sound_note.text}')
         tap(page.go)
         wait_until(lambda: page.parent is None, 3)       # it fades out first
         result, choice = app.engine.added[-1] if app.engine.added else (None, {})
-        report('Download queues exactly that, and the page closes',
-               choice.get('quality') == 'audio_m4a' and page.parent is None and app.page is None,
-               str(choice))
+        report('Download queues exactly that, from the sound it named, and the page closes',
+               choice.get('quality') == 'audio_m4a' and choice.get('audio_format') == '140'
+               and page.parent is None and app.page is None, str(choice))
 
         app.input.text = site.url
         tap(app.download_button)

@@ -397,6 +397,8 @@ class MobileEngine:
             'entry_index': item.index,
             'duration': item.duration,
         }
+        if choice.get('audio_format'):          # the source's sound the page named
+            task.media['audio_format'] = choice['audio_format']
         if task.media['quality'] == 'frame':
             from grabbit import frames
             task.media['frame_at'] = float(choice.get('frame_at') or 0)

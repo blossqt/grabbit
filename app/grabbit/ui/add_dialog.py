@@ -404,7 +404,7 @@ class MediaCard(LinkCard):
 
     def requests(self):
         kind, fmt = self.kind.currentData(), self.format.currentData()
-        chosen = choices.choice(kind, fmt, self.quality.currentData() or '')
+        chosen = choices.choice(kind, fmt, self.quality.currentData() or '', self.source)
         request = {'type': 'media', 'item': self.item, 'probe': self.probe,
                    'quality': chosen.pop('quality'),
                    'container': chosen.pop('container', self.settings.video_container)}

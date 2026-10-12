@@ -36,25 +36,41 @@ class Stream:
     kbps: int = 0
     rate: int = 0
 
-    def describe(self) -> str:
-        bits = [self.codec or 'Audio']
-        if self.kbps:
-            bits.append(f'{self.kbps} kbps')
-        if self.rate:
+    def describe(self, rate: bool = True) -> str:
+        """'Opus 130 kbps · 48 kHz'."""
+        bits = [' '.join(b for b in (self.codec, f'{self.kbps} kbps' if self.kbps else '') if b)]
+        if rate and self.rate:
             bits.append(khz(self.rate))
-        return ' · '.join(bits)
+        return ' · '.join(b for b in bits if b) or 'Audio'
 
 
 @dataclass
 class Source:
     """What the source has: its picture sizes, tallest first, and its sounds."""
     sizes: list = field(default_factory=list)         # [(width, height)]
+    fps: dict = field(default_factory=dict)           # {height: frames a second}
     streams: list = field(default_factory=list)       # [Stream], best first
     picture: bool = True
     webm: bool = False
     rate: int = 0                                     # its best sound's, in Hz
     kbps: int = 0
     live: bool = False
+
+    def sound(self, fmt: str = '') -> Stream | None:
+        """The sound a download in that format starts from: the best - or for
+        M4A, the best already AAC, which needs no converting. A sound only
+        ever heard with the picture is described as well as it can be."""
+        if fmt == 'm4a':
+            aac = [s for s in self.streams if s.codec == 'AAC']
+            if aac:
+                return aac[0]
+        if self.streams:
+            return self.streams[0]
+        return Stream('', kbps=self.kbps, rate=self.rate) if self.kbps or self.rate else None
+
+    def size(self) -> str:
+        """Its picture, as it is - '1080p60', '' when unknown."""
+        return size_name(*self.sizes[0], self.fps.get(self.sizes[0][1], 0)) if self.sizes else ''
 
 
 def khz(rate: int) -> str:
@@ -80,6 +96,7 @@ def source_of(item, live: bool = False) -> Source:
             height = int(f.get('height') or 0)
             if height:
                 widest[height] = max(widest.get(height, 0), int(f.get('width') or 0))
+                source.fps[height] = max(source.fps.get(height, 0), round(f.get('fps') or 0))
             if f.get('ext') == 'webm':
                 source.webm = True
     source.sizes = sorted(((w, h) for h, w in widest.items()), key=lambda s: -s[1])
@@ -89,15 +106,21 @@ def source_of(item, live: bool = False) -> Source:
 
     seen = set()
     sounds = [f for f in formats if f.get('acodec') not in (None, 'none')]
-    for f in sorted(sounds, key=lambda f: -(f.get('abr') or f.get('tbr') or 0)):
+    ids = {str(f.get('format_id')) for f in sounds}
+    # Best first: the probe leaves the formats in yt-dlp's order, worst first.
+    for f in reversed(sounds):
         if f.get('vcodec') not in (None, 'none') or f.get('height'):
             continue                                           # sound with a picture
         stream = Stream(str(f.get('format_id') or ''), _codec(f.get('acodec')),
                         int(f.get('abr') or f.get('tbr') or 0), int(f.get('asr') or 0))
+        if stream.id.endswith('-drc') and stream.id[:-4] in ids:
+            continue            # YouTube's evened-out copy of a sound it has as it is
         key = (stream.codec, stream.kbps, stream.rate)
         if stream.id and key not in seen:
             seen.add(key)
             source.streams.append(stream)
+    if source.streams:          # the best, then the rest by their bitrate
+        source.streams[1:] = sorted(source.streams[1:], key=lambda s: -s.kbps)
     source.rate = max([int(f.get('asr') or 0) for f in sounds] or [0])
     source.kbps = max([int(f.get('abr') or 0) for f in sounds] or [0])
     # Every format a sound alone - SoundCloud, a podcast: nothing to see.
@@ -126,20 +149,32 @@ def formats(kind: str, source: Source) -> list:
     return list(IMAGE_TYPES)
 
 
-def _size(width: int, height: int) -> str:
-    """'1080p · 1920×1080', named by the shorter side, as a phone's tall
-    video is still called 1080p."""
+def size_name(width: int, height: int, fps: int = 0) -> str:
+    """'1080p', or '1080p60' for a fast one - named by the shorter side, as a
+    phone's tall video is still called 1080p."""
     short = min(width, height) if width else height
-    tag = ' (8K)' if short >= 4320 else ' (4K)' if short >= 2160 else ''
-    return f'{short}p · {width}×{height}{tag}' if width else f'{short}p{tag}'
+    return f'{short}p' + (str(fps) if fps > 30 else '')
+
+
+def _size(width: int, height: int, fps: int = 0, source: bool = False) -> str:
+    """'1080p · 1920×1080' - or 'Source (1080p · 1920×1080)', the source's own."""
+    short = min(width, height) if width else height
+    tag = '8K' if short >= 4320 else '4K' if short >= 2160 else ''
+    bits = [size_name(width, height, fps)] + ([f'{width}×{height}'] if width else [])
+    if source:
+        return f"Source ({' · '.join(bits + ([tag] if tag else []))})"
+    return ' · '.join(bits) + (f' ({tag})' if tag else '')
 
 
 def qualities(kind: str, fmt: str, source: Source, gif_width: int = 480, fps: int = 15) -> list:
-    """(value, label) for each quality the type and format allow, best first."""
+    """(value, label) for each quality the type and format allow, best first:
+    the first, where it keeps the source as it is, saying what that is."""
     if kind == 'video':
-        best = 'Best available' + (f' · {source.sizes[0][0]}×{source.sizes[0][1]}'
-                                   if source.sizes and source.sizes[0][0] else '')
-        return [('best', best)] + [(str(h), _size(w, h)) for w, h in source.sizes[:8]]
+        if not source.sizes:
+            return [('best', 'Best available')]
+        (width, height), *lower = source.sizes[:8]
+        return ([('best', _size(width, height, source.fps.get(height, 0), source=True))]
+                + [(str(h), _size(w, h, source.fps.get(h, 0))) for w, h in lower])
     if kind == 'audio':
         if fmt == 'best':
             if not source.streams:
@@ -147,18 +182,22 @@ def qualities(kind: str, fmt: str, source: Source, gif_width: int = 480, fps: in
             # Each one the very stream it names - the best too, rather than
             # whichever yt-dlp would favour, which need not be the one shown.
             first, *rest = source.streams
-            return ([(f'id:{first.id}', f'Best · {first.describe()}')]
+            return ([(f'id:{first.id}', f'Source ({first.describe()})')]
                     + [(f'id:{s.id}', s.describe()) for s in rest])
+        sound = source.sound(fmt)
         if fmt in LOSSLESS:
             # A site that does not say: no compressed sound is above 48 kHz.
-            ceiling = source.rate or 48001
+            ceiling = (sound and sound.rate) or 48001
             rates = [r for r in SAMPLE_RATES if r < ceiling]
-            top = f'Original · {khz(source.rate)}' if source.rate else 'Original sample rate'
+            top = f'Source ({sound.describe()})' if sound else 'Source sample rate'
             return [('', top)] + [(str(r), khz(r)) for r in rates]
         # A bitrate past the first one above the original's adds nothing to it.
-        ceiling = min([b for b in BITRATES if b >= source.kbps] or [BITRATES[0]])
-        rates = [b for b in BITRATES if not source.kbps or b <= ceiling]
-        return [('0', 'Highest · variable bitrate')] + [(str(b), f'{b} kbps') for b in rates]
+        kbps = sound.kbps if sound else 0
+        ceiling = min([b for b in BITRATES if b >= kbps] or [BITRATES[0]])
+        rates = [b for b in BITRATES if not kbps or b <= ceiling]
+        top = (f'Highest (source: {sound.describe(rate=False)})' if sound and (sound.codec or kbps)
+               else 'Highest · variable bitrate')
+        return [('0', top)] + [(str(b), f'{b} kbps') for b in rates]
     if kind == 'gif':
         widest = max([w for w, _ in source.sizes] or [0])
         widths = [w for w in GIF_WIDTHS if not widest or w <= widest] or [GIF_WIDTHS[-1]]
@@ -183,17 +222,22 @@ def remembered(quality: str, container: str) -> tuple:
     return 'video', container or 'mp4'
 
 
-def choice(kind: str, fmt: str, quality: str) -> dict:
+def choice(kind: str, fmt: str, quality: str, source: Source | None = None) -> dict:
     """What a download is queued with: the quality and container it always
     had, and what only some choices need - a bitrate, a sample rate, one of
-    the source's own sounds, a GIF's width, a picture's type."""
+    the source's own sounds, a GIF's width, a picture's type. A sound is
+    converted from the very one its quality menu named (Source.sound)."""
     if kind == 'video':
         return {'quality': quality or 'best', 'container': fmt}
     if kind == 'audio':
         chosen = {'quality': f'audio_{fmt}'}
         if quality.startswith('id:'):
             chosen['audio_format'] = quality[3:]
-        elif quality and fmt in LOSSLESS:
+            return chosen
+        sound = source.sound(fmt) if source else None
+        if sound and sound.id:
+            chosen['audio_format'] = sound.id
+        if quality and fmt in LOSSLESS:
             chosen['sample_rate'] = int(quality)
         elif quality:
             chosen['audio_quality'] = quality
