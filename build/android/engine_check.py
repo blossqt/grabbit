@@ -313,6 +313,12 @@ class Android:
     def unmetered(cls):
         return cls.free
 
+    indexed = []
+
+    @classmethod
+    def index(cls, paths):
+        cls.indexed.extend(paths)
+
 
 def check_background():
     Android.foreground, Android.refuse, Android.shown = False, False, []
@@ -360,6 +366,34 @@ def check_idle():
     report('but not while anything is downloading or seeding', not busy.stopping)
 
 
+def check_index():
+    """Android is told of each download's files once, as it finishes - and,
+    the first time, of every download that had already."""
+    def saved(name, state):
+        path = mobile_paths.downloads_dir() / name
+        path.write_bytes(b'x')
+        return Task(kind=KIND_HTTP, save_dir=str(DOWNLOADS), out=name,
+                    file_path=str(path), state=state)
+
+    Android.indexed = []
+    old = saved('old.mp4', State.COMPLETED)
+    host = Host(Settings(), service=None)
+    host.service = Android
+    host._index([old])
+    report('the first time, the downloads already finished are indexed',
+           Android.indexed == [old.file_path], str(Android.indexed))
+    Android.indexed = []
+    new = saved('new.mp4', State.DOWNLOADING)
+    later = Host(Settings(), service=None)
+    later.service = Android
+    later._index([old, new])
+    new.state = State.COMPLETED
+    later._index([old, new])
+    later._index([old, new])
+    report('after that, only each new one, once, as it finishes',
+           Android.indexed == [new.file_path], str(Android.indexed))
+
+
 def check_live(url):
     """The window's side and the downloader's, talking, with a real aria2."""
     settings = Settings()
@@ -399,6 +433,8 @@ def check_live(url):
     report('and finishes, file and all',
            wait_until(lambda: task.state == State.COMPLETED, 20)
            and (DOWNLOADS / 'small.bin').stat().st_size == 300_000, task.status_text if task else '')
+    report('and Android is told of it, for a gallery to find', wait_until(
+        lambda: any(os.path.basename(p) == 'small.bin' for p in Android.indexed), 5))
     report("the downloader's messages reach the window",
            wait_until(lambda: any('Added' in m for m in messages), 5), messages[-1] if messages else '')
 
@@ -494,6 +530,7 @@ def main():
     check_rules()
     check_background()
     check_idle()
+    check_index()
     server, url = serve()
     try:
         if aria2:

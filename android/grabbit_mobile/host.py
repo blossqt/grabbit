@@ -20,9 +20,10 @@ from collections import deque
 from grabbit.aria2rpc import Aria2Error
 from grabbit.settings import Settings
 
-from . import wire
+from . import paths, wire
 from .background import KEEP, Background
 from .engine import MobileEngine
+from .files import finished, finished_files
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +36,9 @@ TICK = 1.0
 # The details sheet's questions, which change nothing - the only aria2 calls
 # the window may make directly.
 QUERIES = {'aria2.getFiles', 'aria2.getPeers', 'aria2.tellStatus', 'aria2.getServers'}
+# Left in the app's folder once every download finished before Android was
+# told of each as it finished has been told of too (Host._index).
+INDEXED = 'indexed'
 
 
 class Host:
@@ -52,8 +56,8 @@ class Host:
         self.boot = secrets.token_hex(4)          # tells one run of it from the next
         self.secret = wire.new_secret()
         self.background = Background(service, clock=clock)
-        self.engine = MobileEngine(settings, on_message=self._message,
-                                   on_poll=self.background.follow)
+        self.engine = MobileEngine(settings, on_message=self._message, on_poll=self._polled)
+        self._whole = None                        # the downloads already finished, by id
         if service is not None:
             self.engine.online = service.online
         self.messages = deque(maxlen=40)          # (number, level, text)
@@ -127,6 +131,35 @@ class Host:
         held = (bool(getattr(self.settings, 'wifi_only', False))
                 and self.service is not None and not self.service.unmetered())
         self.engine.hold(held)
+
+    def _polled(self, tasks, stats=None):
+        """After every look at the downloads: the notification, and the files
+        that have just finished."""
+        self.background.follow(tasks, stats)
+        self._index(tasks)
+
+    def _index(self, tasks):
+        """Tell Android about each download's files as it finishes, so that a
+        gallery or a music app finds them.
+
+        Android keeps an index of what is on the phone, and a download can
+        fall out of it as it is written: it is written under a passing name,
+        and Android loses its record of the file as that gives way to the
+        real one. Moving the file in a file manager puts it back, which is
+        what this does at once. The first time it runs, it does the same for
+        every download already finished."""
+        if self.service is None:
+            return
+        whole = {task.id for task in tasks if finished(task)}
+        if self._whole is None:
+            marker = paths.data_dir() / INDEXED
+            self._whole = whole if marker.exists() else set()
+            marker.touch()
+        files = [path for task in tasks if task.id in whole - self._whole
+                 for path in finished_files(task)]
+        self._whole = whole
+        if files:
+            self.service.index(files)
 
     def _message(self, level: str, text: str):
         with self._lock:

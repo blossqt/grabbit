@@ -252,6 +252,7 @@ def service_controls():
             finish = JavaStaticMethod('()V')
             online = JavaStaticMethod('()Z')
             unmetered = JavaStaticMethod('()Z')
+            index = JavaStaticMethod('([Ljava/lang/String;)V')
         return DownloadService
     except Exception:
         log.exception('this build has no download service')

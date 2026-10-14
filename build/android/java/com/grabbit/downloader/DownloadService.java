@@ -7,6 +7,7 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
+import android.media.MediaScannerConnection;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
@@ -273,6 +274,20 @@ public class DownloadService extends PythonService {
             if (instance != null) {
                 instance.stopSelf();
             }
+        }
+    }
+
+    /** Tell Android's index of what is on the phone about files just
+     * finished, so a gallery or a music app finds them (host.py). */
+    public static void index(String[] paths) {
+        DownloadService service = instance;
+        if (service == null || paths == null || paths.length == 0) {
+            return;
+        }
+        try {
+            MediaScannerConnection.scanFile(service, paths, null, null);
+        } catch (RuntimeException e) {
+            Log.w(TAG, "could not tell Android about the finished files", e);
         }
     }
 
