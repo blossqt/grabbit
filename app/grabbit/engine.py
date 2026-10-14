@@ -675,8 +675,11 @@ class Engine(QObject):
         # meanwhile. What was done is still done.
         task.done = int(status.get('completedLength') or 0) or (
             task.done if state == 'paused' else 0)
-        task.down_speed = int(status.get('downloadSpeed') or 0)
-        task.up_speed = int(status.get('uploadSpeed') or 0)
+        # aria2 goes on giving a download that has just stopped the speed it
+        # last had, for a few seconds: only one that runs is moving.
+        moving = state == 'active'
+        task.down_speed = int(status.get('downloadSpeed') or 0) if moving else 0
+        task.up_speed = int(status.get('uploadSpeed') or 0) if moving else 0
         task.connections = int(status.get('connections') or 0)
         task.seeds = int(status.get('numSeeders') or 0)
         task.uploaded = task.uploaded_base + int(status.get('uploadLength') or 0)

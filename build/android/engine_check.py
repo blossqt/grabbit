@@ -161,6 +161,10 @@ def check_rules():
     engine._apply(halfway, {'status': 'paused', 'totalLength': '1000', 'completedLength': '0'})
     report('a paused torrent handed back to aria2 after a restart still shows what was done',
            halfway.done == 400, f'{halfway.done} of {halfway.total}')
+    engine._apply(halfway, {'status': 'paused', 'totalLength': '1000', 'completedLength': '400',
+                            'downloadSpeed': '67000', 'uploadSpeed': '1200'})
+    report('and one just paused shows no speed, nor time left, whatever aria2 still says',
+           not halfway.down_speed and not halfway.up_speed and halfway.eta is None)
 
     refused = Task(kind=KIND_MEDIA, name='Clip')
     waits = [engine._retry_wait(refused, 'HTTP Error 403: Forbidden') for _ in range(RETRY_REFUSED + 1)]
