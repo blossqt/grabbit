@@ -451,11 +451,13 @@ def check_live(url):
            wait_until(lambda: any('Added' in m for m in messages), 5), messages[-1] if messages else '')
 
     answers = []
+    hosts[-1].engine.store.get(task.id).add_log('a line for the details sheet')
     remote.fetch_log(task, answers.append)
     remote.fetch_files(task, answers.append)
-    report('the details sheet can ask for a log and a file list',
-           wait_until(lambda: len(answers) == 2, 5) and isinstance(answers[0], list),
-           f'{len(answers)} answer(s)')
+    report("the details sheet can ask for a log and a file list - that download's own log",
+           wait_until(lambda: len(answers) == 2, 5) and isinstance(answers[0], list)
+           and any('a line for the details sheet' in line for line in answers[0]),
+           f'{len(answers[0]) if answers else 0} log line(s)')
 
     remote.add_analysis(file_link(f'{url}/slow/large.bin'))
     wait_until(lambda: len(list(remote.store)) == 2, 10)

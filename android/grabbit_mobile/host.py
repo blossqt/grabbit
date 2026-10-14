@@ -195,7 +195,7 @@ class Host:
             except Aria2Error:
                 return None             # a finished download aria2 has forgotten
         if op == 'log':
-            task = engine.store.get(request.get('id', ''))
+            task = engine.store.get(request.get('task', ''))
             return list(task.log[-200:]) if task else []
         if op == 'settings':
             self.settings = Settings.load()

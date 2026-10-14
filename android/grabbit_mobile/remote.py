@@ -175,7 +175,8 @@ class RemoteEngine:
         self._query('aria2.tellStatus', [task.gid, keys], {}, callback) if task.gid else callback({})
 
     def fetch_log(self, task, callback):
-        self._ask({'op': 'log', 'id': task.id}, lambda result: callback(result or []))
+        # 'task', not 'id': every request's id is its number on the line (_call).
+        self._ask({'op': 'log', 'task': task.id}, lambda result: callback(result or []))
 
     def _query(self, method, args, default, callback):
         self._ask({'op': 'query', 'method': method, 'args': args},
