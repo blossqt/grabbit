@@ -33,13 +33,13 @@ source "$HERE/versions.sh"
 API="$P4A_API"
 MINSDK="${MIN_SDK:-24}"
 # yt-dlp-ejs carries the JavaScript that QuickJS runs for YouTube's challenges;
-# without it a JS runtime on its own gets nowhere. mutagen is deliberately left
-# out, as it is on the desktop: it is GPL, and yt-dlp only wants it to write
-# cover art into audio files.
+# without it a JS runtime on its own gets nowhere. mutagen is how yt-dlp writes
+# cover art into an M4A, an Opus or a FLAC - without it, those are saved with
+# none - and the desktop carries it too (THIRD-PARTY-NOTICES.md).
 #
 # build/android/recipes holds one local recipe, which takes requests out of
 # Kivy's optional dependencies; the file explains why it has to.
-REQUIREMENTS='python3,kivy,android,pyjnius,yt-dlp,yt-dlp-ejs,certifi,websockets'
+REQUIREMENTS='python3,kivy,android,pyjnius,yt-dlp,yt-dlp-ejs,mutagen,certifi,websockets'
 
 say() { printf '\n>> %s\n' "$*"; }
 

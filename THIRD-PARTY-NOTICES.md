@@ -17,6 +17,7 @@ Bundled into `Grabbit.exe` itself:
 | Library | Licence | Source |
 |---|---|---|
 | yt-dlp | Unlicense (public domain) | https://github.com/yt-dlp/yt-dlp |
+| mutagen | GPL-2.0-or-later (see below) | https://github.com/quodlibet/mutagen |
 | Qt for Python (PySide6) and Qt | LGPL-3.0 | https://download.qt.io/official_releases/QtForPython/ |
 | CPython and its bundled modules | PSF-2.0 | https://www.python.org/ |
 
@@ -88,6 +89,7 @@ The Python side of the APK contains:
 | Kivy, pyjnius, python-for-android | MIT | https://kivy.org |
 | SDL2, SDL2_image, SDL2_mixer, SDL2_ttf | Zlib | https://libsdl.org |
 | yt-dlp, yt-dlp-ejs | Unlicense | https://github.com/yt-dlp |
+| mutagen | GPL-2.0-or-later (see below) | https://github.com/quodlibet/mutagen |
 | certifi | MPL-2.0 | https://github.com/certifi/python-certifi |
 | websockets | BSD-3-Clause | https://github.com/python-websockets/websockets |
 | requests, urllib3, idna, charset-normalizer, filetype, six | Apache-2.0 / MIT | dependencies of Kivy |
@@ -106,6 +108,16 @@ versions, whose source PyPI and the projects' repositories publish.
 | requests 2.34.2 | Apache-2.0 | https://github.com/psf/requests |
 | urllib3 2.8.0 | MIT | https://github.com/urllib3/urllib3 |
 | idna 3.20 | BSD-3-Clause | https://github.com/kjd/idna |
+
+## mutagen (GPL-2.0-or-later)
+
+mutagen is the one GPL library inside Grabbit's own process rather than a
+program beside it: yt-dlp imports it to write cover art into M4A, Opus and
+FLAC files, in the Windows app and the APK alike. Grabbit's code is still MIT,
+which the GPL allows it to be combined with; a release that contains mutagen
+is offered under the GPL's terms as a whole, and its sources are this
+repository and mutagen's own, linked above, unmodified. Without mutagen,
+Grabbit saves those files without cover art and works otherwise unchanged.
 
 ## Qt (LGPL-3.0)
 

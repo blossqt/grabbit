@@ -17,12 +17,14 @@ import time
 from yt_dlp import YoutubeDL
 from yt_dlp.downloader.common import FileDownloader
 from yt_dlp.postprocessor.common import PostProcessor
-from yt_dlp.utils import DownloadCancelled, determine_protocol, traverse_obj
+from yt_dlp.postprocessor.embedthumbnail import EmbedThumbnailPP
+from yt_dlp.utils import (DownloadCancelled, PostProcessingError, determine_protocol,
+                          prepend_extension, traverse_obj)
 
 from . import extractors
 from .mediaitems import MediaItem, ProbeResult
 from .paths import find_tool
-from .util import CREATE_NO_WINDOW, safe_filename, site_name
+from .util import CREATE_NO_WINDOW, safe_filename, site_name, unique_path
 
 log = logging.getLogger(__name__)
 
@@ -421,7 +423,10 @@ def convert_to_gif(source: str, settings, log_sink=None, width: int = 0) -> str:
     fps = max(1, int(getattr(settings, 'gif_fps', 15) or 15))
     width = max(64, int(width or getattr(settings, 'gif_width', 480) or 480))
     limit = max(0, int(getattr(settings, 'gif_max_seconds', 30) or 0))
-    target = os.path.splitext(source)[0] + '.gif'
+    # Beside the video, under its name - or ' (2)' and so on, rather than
+    # over a GIF made from it before.
+    target = unique_path(os.path.dirname(source) or '.',
+                         os.path.splitext(os.path.basename(source))[0] + '.gif')
     palette = source + '.palette.png'
     scale = f'fps={fps},scale={width}:-1:flags=lanczos'
     duration = ['-t', str(limit)] if limit else []
@@ -450,6 +455,27 @@ def convert_to_gif(source: str, settings, log_sink=None, width: int = 0) -> str:
         log_sink(f'GIF ready: {os.path.basename(target)} ({size / 1048576:.1f} MiB, '
                  f'{fps} fps, {width}px wide)')
     return target
+
+
+def _names(folder: str) -> set:
+    """What is in a folder before a download that only needs a video on the
+    way to something else (_drop)."""
+    try:
+        return set(os.listdir(folder))
+    except OSError:
+        return set()
+
+
+def _drop(video: str, before: set) -> None:
+    """Remove a video fetched only to make a GIF or read a picture from -
+    unless it was there before. yt-dlp uses a video already saved under the
+    name rather than fetch it again, and that one is the user's to keep."""
+    if not video or os.path.basename(video) in before:
+        return
+    try:
+        os.remove(video)
+    except OSError:
+        pass
 
 
 def _clean_error(exc: Exception) -> str:
@@ -539,10 +565,35 @@ class Aria2BridgeFD(FileDownloader):
         return True
 
 
+class _CoverArt(EmbedThumbnailPP):
+    """yt-dlp's EmbedThumbnail, except that cover art it cannot add leaves the
+    download as it is rather than failing it - a WebM has nowhere to keep a
+    picture, and without mutagen neither has an Opus or a FLAC. What it wrote
+    on the way, the picture and a half-made copy, goes."""
+
+    def run(self, info):
+        try:
+            return super().run(info)
+        except PostProcessingError as exc:
+            self.report_warning(f'Saved without its cover art: {exc}')
+            left = [prepend_extension(info.get('filepath') or '', 'temp')]
+            for thumbnail in info.get('thumbnails') or []:
+                picture = thumbnail.get('filepath')
+                if picture:
+                    stem = os.path.splitext(picture)[0]
+                    left += [picture, stem + '.png', stem + '.jpg']
+            return [path for path in dict.fromkeys(left) if path and os.path.isfile(path)], info
+
+
 class GrabbitYDL(YoutubeDL):
     """YoutubeDL that routes plain http(s) streams through aria2."""
 
     grabbit_job = None
+
+    def add_post_processor(self, pp, when='post_process'):
+        if type(pp) is EmbedThumbnailPP:
+            pp = _CoverArt(self, already_have_thumbnail=pp._already_have_thumbnail)
+        super().add_post_processor(pp, when)
 
     def dl(self, name, info, subtitle=False, test=False):
         job = self.grabbit_job
@@ -673,10 +724,12 @@ class MediaJob(threading.Thread):
             raise JobPaused('paused')
         state = status.get('status')
         name = status.get('filename') or status.get('tmpfilename') or 'part'
-        if name not in self.parts and status.get('filename'):
+        if name not in self.parts and status.get('filename') and state == 'downloading':
             # Each file as it is begun - the video, its sound - so that
             # removing the download can take them with it, even if it never
-            # got as far as saying what it made (task_paths).
+            # got as far as saying what it made (task_paths). Only those it
+            # writes: one yt-dlp found already saved is only ever 'finished',
+            # and is not this download's to take.
             self._emit(self.task_id, 'file', {'path': status['filename']})
         part = self.parts.setdefault(name, {'done': 0, 'total': 0})
         if state in ('downloading', 'finished'):
@@ -753,6 +806,7 @@ class MediaJob(threading.Thread):
                 self._save_frame(ydl, info)
                 return
             self._emit(self.task_id, 'state', {'state': 'downloading', 'note': ''})
+            before = _names(self.save_dir)
             result = ydl.process_ie_result(info, download=True)
 
         filepath = (traverse_obj(result, ('requested_downloads', 0, 'filepath'))
@@ -764,10 +818,7 @@ class MediaJob(threading.Thread):
             video = filepath
             filepath = convert_to_gif(video, self.settings, self._log,
                                       width=int(self.media.get('gif_width') or 0))
-            try:
-                os.remove(video)          # the source clip was only a means to an end
-            except OSError:
-                pass
+            _drop(video, before)          # the source clip was only a means to an end
 
         size = os.path.getsize(filepath) if filepath and os.path.exists(filepath) else 0
         self._emit(self.task_id, 'finished', {'filepath': filepath, 'size': size})
@@ -819,6 +870,7 @@ class MediaJob(threading.Thread):
             self._log('No stream would give up the frame; downloading the video to read it '
                       'from that instead.')
             self._emit(self.task_id, 'state', {'state': 'downloading', 'note': ''})
+            before = _names(self.save_dir)
             result = ydl.process_ie_result(info, download=True)
             video = (traverse_obj(result, ('requested_downloads', 0, 'filepath'))
                      or result.get('filepath') or '')
@@ -829,10 +881,7 @@ class MediaJob(threading.Thread):
                                                    'note': f'Reading the frame at {frames.clock(at)}'})
                 frames.save(video, None, at, target)
             finally:
-                try:
-                    os.remove(video)          # only ever a means to the picture
-                except OSError:
-                    pass
+                _drop(video, before)          # only ever a means to the picture
         self._log(f'Saved the frame at {frames.clock(at)}: {os.path.basename(target)}')
         self._emit(self.task_id, 'finished', {'filepath': target, 'size': os.path.getsize(target)})
 

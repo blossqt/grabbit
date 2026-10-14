@@ -30,6 +30,7 @@ from grabbit.paths import find_tool             # noqa: E402
 from grabbit.settings import Settings           # noqa: E402
 from grabbit.torrentmeta import parse_torrent, select_file_spec  # noqa: E402
 from grabbit.util import human_size             # noqa: E402
+from yt_dlp.utils import traverse_obj           # noqa: E402
 
 HTTP_URL = 'https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip'
 TORRENT_INDEX = 'https://releases.ubuntu.com/24.04/'
@@ -233,6 +234,7 @@ class _JobRunner:
         self.events = []
         self.filepath = ''
         self.error = ''
+        self.files = []           # what it said it began writing
 
     def callbacks(self):
         return {
@@ -261,6 +263,8 @@ class _JobRunner:
                   end='\r', flush=True)
         elif event == 'state':
             print(f'      state: {payload.get("state")} {payload.get("note", "")}          ', flush=True)
+        elif event == 'file':
+            self.files.append(payload.get('path', ''))
         elif event == 'finished':
             self.filepath = payload.get('filepath', '')
         elif event == 'error':
@@ -418,10 +422,11 @@ def check_gif(folder):
     settings = _make_settings(folder)
     settings.gif_max_seconds = 5           # keep the check quick
     settings.gif_width = 320
+    folder = os.path.join(folder, 'gif')        # its own, to see exactly what it leaves
+    os.makedirs(folder, exist_ok=True)
     engine = Engine(folder)
-    try:
-        result = media_mod.probe(YOUTUBE_URL, settings)
-        item = result.items[0]
+
+    def make_gif(item):
         task = Task(kind='media', source=item.url or YOUTUBE_URL, save_dir=folder, name=item.title)
         task.media = {'quality': 'gif', 'container': 'mp4', 'info': item.info,
                       'info_time': time.time()}
@@ -430,17 +435,77 @@ def check_gif(folder):
         job.start()
         job.join(timeout=300)
         print()
+        return runner
+
+    try:
+        result = media_mod.probe(YOUTUBE_URL, settings)
+        item = result.items[0]
+        runner = make_gif(item)
         path = runner.filepath
         ok = bool(path) and os.path.exists(path) and path.lower().endswith('.gif')
         report('gif: produces a .gif', ok,
                f'{os.path.basename(path)} {human_size(os.path.getsize(path))}' if ok else runner.error)
-        if ok:
-            with open(path, 'rb') as handle:
-                header = handle.read(6)
-            report('gif: the file is a real GIF', header in (b'GIF89a', b'GIF87a'), header.decode('latin1'))
-            leftovers = [f for f in os.listdir(folder) if f.endswith(('.palette.png', '.mp4.palette.png'))]
-            report('gif: cleans up after itself', not leftovers, 'no palette files left')
+        if not ok:
+            return
+        with open(path, 'rb') as handle:
+            header = handle.read(6)
+        report('gif: the file is a real GIF', header in (b'GIF89a', b'GIF87a'), header.decode('latin1'))
+        left = sorted(set(os.listdir(folder)) - {os.path.basename(path)})
+        report('gif: cleans up after itself - the clip and the palette', not left, ', '.join(left))
+
+        # The very video the GIF would fetch, saved earlier as a download of
+        # its own: the GIF is made from it, and it stays where it is.
+        params = media_mod.download_params(settings, folder, 'gif', 'mp4')
+        params.pop('postprocessors', None)
+        with media_mod.make_ydl(settings, params) as ydl:
+            done = ydl.process_ie_result(dict(item.info), download=True)
+        saved = traverse_obj(done, ('requested_downloads', 0, 'filepath')) or ''
+        size = os.path.getsize(saved) if os.path.exists(saved) else 0
+        again = make_gif(item)
+        report('gif: a video already saved under its name is used and kept', bool(again.filepath)
+               and os.path.exists(saved) and os.path.getsize(saved) == size,
+               os.path.basename(saved) if saved else 'it could not be saved first')
+        report('gif: and is not counted among the GIF download\'s own files',
+               saved not in again.files, ', '.join(map(os.path.basename, again.files)))
+        report('gif: a second GIF of it is saved beside the first, not over it',
+               os.path.exists(path) and again.filepath != path,
+               os.path.basename(again.filepath))
     finally:
+        engine.stop()
+
+
+def check_cover_art(folder):
+    """Cover art that cannot be added - a WebM has nowhere to keep it, and
+    without mutagen (left out of a build) neither has an Opus - leaves the
+    download saved without it, rather than failing it."""
+    print('\n== cover art ==')
+    import yt_dlp.postprocessor.embedthumbnail as embed
+
+    from grabbit.tasks import Task
+    settings = _make_settings(folder)
+    settings.embed_thumbnail = True
+    engine = Engine(folder)
+    mutagen = embed.mutagen
+    try:
+        item = media_mod.probe(YOUTUBE_URL, settings).items[0]
+        for name, media, without in (('a WebM video', {'quality': 'best', 'container': 'webm'}, False),
+                                     ('an Opus, without mutagen', {'quality': 'audio_opus'}, True)):
+            here = os.path.join(folder, f'cover-{len(os.listdir(folder))}')
+            os.makedirs(here)
+            embed.mutagen = None if without else mutagen
+            task = Task(kind='media', source=item.url or YOUTUBE_URL, save_dir=here, name=item.title)
+            task.media = {'container': 'mp4', **media, 'info': item.info, 'info_time': time.time()}
+            runner = _JobRunner(engine, task)
+            job = media_mod.MediaJob(task, settings, runner.callbacks())
+            job.start()
+            job.join(timeout=300)
+            print()
+            left = sorted(os.listdir(here))
+            report(f'cover art: {name} is saved all the same, with nothing left over',
+                   bool(runner.filepath) and left == [os.path.basename(runner.filepath)],
+                   ', '.join(left) if runner.filepath else runner.error)
+    finally:
+        embed.mutagen = mutagen
         engine.stop()
 
 
@@ -563,7 +628,7 @@ def check_preview(url, label='preview'):
 def main():
     parser = argparse.ArgumentParser()
     for name in ('all', 'http', 'torrent', 'magnet', 'youtube', 'instagram', 'tiktok',
-                 'preview', 'sources', 'metalink', 'gif', 'probe'):
+                 'preview', 'sources', 'metalink', 'gif', 'cover', 'probe'):
         parser.add_argument(f'--{name}', action='store_true')
     parser.add_argument('--keep', action='store_true', help='keep the temporary download folder')
     args = parser.parse_args()
@@ -610,6 +675,8 @@ def main():
             run('metalink', check_metalink, folder)
         if args.all or args.gif:
             run('gif', check_gif, folder)
+        if args.all or args.cover:
+            run('cover art', check_cover_art, folder)
         if args.probe:
             for url in (YOUTUBE_URL, INSTAGRAM_URL, TIKTOK_PHOTO_URL, TIKTOK_VIDEO_URL):
                 check_probe(url, label=url.split('/')[2])
