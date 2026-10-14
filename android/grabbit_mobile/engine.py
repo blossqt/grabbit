@@ -848,7 +848,11 @@ class MobileEngine:
     def _apply(self, task: Task, status: dict):
         state = status.get('status')
         task.total = int(status.get('totalLength') or 0) or task.total
-        task.done = int(status.get('completedLength') or 0)
+        # A download handed back to aria2 paused, after a restart, is not
+        # read from its control file until it goes again - aria2 says 0 done
+        # meanwhile. What was done is still done.
+        task.done = int(status.get('completedLength') or 0) or (
+            task.done if state == 'paused' else 0)
         task.down_speed = int(status.get('downloadSpeed') or 0)
         task.up_speed = int(status.get('uploadSpeed') or 0)
         task.connections = int(status.get('connections') or 0)

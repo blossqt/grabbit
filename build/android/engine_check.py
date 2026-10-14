@@ -157,6 +157,11 @@ def check_rules():
     report('and one that got further before failing again starts the count afresh',
            engine._retry_wait(task, 'Read timed out') == FIRST_WAIT)
 
+    halfway = Task(kind=KIND_TORRENT, name='ubuntu.iso', total=1000, done=400)
+    engine._apply(halfway, {'status': 'paused', 'totalLength': '1000', 'completedLength': '0'})
+    report('a paused torrent handed back to aria2 after a restart still shows what was done',
+           halfway.done == 400, f'{halfway.done} of {halfway.total}')
+
     refused = Task(kind=KIND_MEDIA, name='Clip')
     waits = [engine._retry_wait(refused, 'HTTP Error 403: Forbidden') for _ in range(RETRY_REFUSED + 1)]
     report('a refused video is read again for a fresh address - twice, then left failed',

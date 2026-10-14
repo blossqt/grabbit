@@ -1122,12 +1122,18 @@ class GrabbitApp(App):
                               on_open=self.open_task, on_share=lambda i: self.share_tasks([i]),
                               on_hold=self.start_choosing, on_choose=self.toggle_chosen)
                 self._rows[task.id] = row
-                self.list.add_widget(row)
             row.show(task, selected=(task.id == self.selected_id),
                      choosing=(task.id in self.chosen) if self.choosing else None)
         for task_id in list(self._rows):
             if task_id not in seen:
                 self.list.remove_widget(self._rows.pop(task_id))
+        # Newest first, as on the desktop, so a download just asked for is
+        # in view. Kivy lays a column out from its last child down.
+        order = [self._rows[task.id] for task in sorted(tasks, key=lambda t: t.added_at)]
+        if self.list.children != order:
+            self.list.clear_widgets()
+            for row in reversed(order):
+                self.list.add_widget(row)
         if self.choosing:
             self._show_choosing()
 

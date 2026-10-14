@@ -1035,7 +1035,11 @@ def check(app):
     if not app.graph_shown:
         tap(app.graph_chip)
 
-    first = next(iter(app.engine.store))
+    # The row at the top of the list: the newest.
+    top = next(i for i, r in app._rows.items() if r is app.list.children[-1])
+    first = app.engine.store.get(top)
+    report('the newest download is at the top of the list, as on the desktop',
+           first is max(app.engine.store, key=lambda t: t.added_at), first.name)
     app.select_task('')          # start from nothing selected
     row = app._rows[first.id]
     tap(row.title)

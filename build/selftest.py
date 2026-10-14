@@ -368,13 +368,11 @@ def _check_magnet_engine(folder):
         return
     report('magnet: engine starts', True, f'aria2 {engine.aria2_version()}')
 
-    meta = parse_torrent(open(os.path.join(folder, 'test.torrent'), 'rb').read()) \
-        if os.path.exists(os.path.join(folder, 'test.torrent')) else None
-    if meta is None:
-        url = latest_ubuntu_torrent()
-        path = os.path.join(folder, 'test.torrent')
-        urllib.request.urlretrieve(url, path)
-        meta = parse_torrent(open(path, 'rb').read())
+    # The torrent check's copy, when it ran first; otherwise fetched here.
+    path = os.path.join(folder, 'test.torrent')
+    if not os.path.exists(path):
+        urllib.request.urlretrieve(latest_ubuntu_torrent(), path)
+    meta = parse_torrent(open(path, 'rb').read())
 
     magnet = f'magnet:?xt=urn:btih:{meta.info_hash}&dn={meta.name}'
     trackers = ''.join(f'&tr={t}' for t in meta.trackers[:3])
