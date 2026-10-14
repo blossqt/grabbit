@@ -161,6 +161,9 @@ def check_rules():
     waits = [engine._retry_wait(refused, 'HTTP Error 403: Forbidden') for _ in range(RETRY_REFUSED + 1)]
     report('a refused video is read again for a fresh address - twice, then left failed',
            waits[:RETRY_REFUSED] == [5.0] * RETRY_REFUSED and waits[-1] is None, str(waits))
+    misdirected = Task(kind=KIND_MEDIA, name='Clip')
+    report("and so is one TikTok's servers say was asked of the wrong one", engine._retry_wait(
+        misdirected, 'The response status is not successful. status=421') == 5.0)
     report('a failure waiting cannot fix fails at once',
            engine._retry_wait(Task(kind=KIND_MEDIA), 'Unsupported URL: https://example.com') is None)
 

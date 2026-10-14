@@ -47,9 +47,10 @@ NETWORK_SIGNS = ('timed out', 'timeout', 'connection', 'network', 'unreachable',
                  'errno 104', 'errno 110', 'errno 111', 'errno 113',
                  'aria2 could not download', 'unable to download')
 # YouTube, among others, sometimes refuses a video's address soon after giving
-# it out. Reading the page again gets a new one, which usually works; twice
+# it out - and TikTok's servers now and then say it was asked of the wrong one
+# (421). Reading the page again gets a new one, which usually works; twice
 # refused with fresh addresses means it.
-REFUSED_SIGNS = ('403', 'forbidden')
+REFUSED_SIGNS = ('403', 'forbidden', 'status=421', 'misdirected')
 RETRY_REFUSED = 2
 # A server that says it is being asked too much - often at the several
 # connections a download opens to it at once - is asked again after a pause,

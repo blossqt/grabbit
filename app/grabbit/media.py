@@ -18,8 +18,9 @@ from yt_dlp import YoutubeDL
 from yt_dlp.downloader.common import FileDownloader
 from yt_dlp.postprocessor.common import PostProcessor
 from yt_dlp.postprocessor.embedthumbnail import EmbedThumbnailPP
+from yt_dlp.postprocessor.ffmpeg import FFmpegVideoRemuxerPP, resolve_mapping
 from yt_dlp.utils import (DownloadCancelled, PostProcessingError, determine_protocol,
-                          prepend_extension, traverse_obj)
+                          prepend_extension, replace_extension, traverse_obj)
 
 from . import extractors
 from .mediaitems import MediaItem, ProbeResult
@@ -180,6 +181,11 @@ def format_selection(quality: str, container: str, options: dict | None = None) 
         elif container == 'webm':
             params['format_sort'] = ['res', 'ext:webm:webm']
             params['merge_output_format'] = 'webm'
+        if container in ('mp4', 'mkv', 'webm'):
+            # A video that comes as one file, picture and sound together, is
+            # not merged, so would keep whatever form the site gave it - an
+            # MP4 asked for as MKV. Put into the one asked for (_Remux).
+            postprocessors.append({'key': 'FFmpegVideoRemuxer', 'preferedformat': container})
     params['_postprocessors'] = postprocessors
     return params
 
@@ -585,14 +591,34 @@ class _CoverArt(EmbedThumbnailPP):
             return [path for path in dict.fromkeys(left) if path and os.path.isfile(path)], info
 
 
+class _Remux(FFmpegVideoRemuxerPP):
+    """yt-dlp's remuxer, except that a video whose picture or sound the
+    container asked for cannot hold - H.264 in a WebM - is kept as it came
+    rather than failing the download."""
+
+    def run(self, info):
+        try:
+            return super().run(info)
+        except PostProcessingError as exc:
+            self.report_warning(f'Kept as {info.get("ext")}: {exc}')
+            target, _ = resolve_mapping(info['ext'].lower(), self.mapping)
+            half = replace_extension(info['filepath'], target, info['ext'])
+            if half != info['filepath'] and os.path.isfile(half):
+                os.remove(half)
+            return [], info
+
+
 class GrabbitYDL(YoutubeDL):
     """YoutubeDL that routes plain http(s) streams through aria2."""
 
     grabbit_job = None
 
     def add_post_processor(self, pp, when='post_process'):
+        # yt-dlp's own, made never to fail a download that is already saved.
         if type(pp) is EmbedThumbnailPP:
             pp = _CoverArt(self, already_have_thumbnail=pp._already_have_thumbnail)
+        elif type(pp) is FFmpegVideoRemuxerPP:
+            pp = _Remux(self, preferedformat=pp.mapping)
         super().add_post_processor(pp, when)
 
     def dl(self, name, info, subtitle=False, test=False):

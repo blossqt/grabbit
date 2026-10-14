@@ -475,10 +475,11 @@ def check_gif(folder):
 
 
 def check_cover_art(folder):
-    """Cover art that cannot be added - a WebM has nowhere to keep it, and
-    without mutagen (left out of a build) neither has an Opus - leaves the
-    download saved without it, rather than failing it."""
-    print('\n== cover art ==')
+    """A video or a sound comes out in the form asked for - or, where that
+    cannot hold it, as it came - and cover art that cannot be added (a WebM
+    has nowhere to keep it; without mutagen, left out of a build, neither has
+    an Opus) leaves it saved without: never a failed download."""
+    print('\n== the form asked for, and cover art ==')
     import yt_dlp.postprocessor.embedthumbnail as embed
 
     from grabbit.tasks import Task
@@ -487,13 +488,20 @@ def check_cover_art(folder):
     engine = Engine(folder)
     mutagen = embed.mutagen
     try:
-        item = media_mod.probe(YOUTUBE_URL, settings).items[0]
-        for name, media, without in (('a WebM video', {'quality': 'best', 'container': 'webm'}, False),
-                                     ('an Opus, without mutagen', {'quality': 'audio_opus'}, True)):
+        youtube = media_mod.probe(YOUTUBE_URL, settings).items[0]
+        tiktok = media_mod.probe(TIKTOK_VIDEO_URL, settings).items[0]
+        for item, name, media, without, ext in (
+                (youtube, 'a WebM video', {'quality': 'best', 'container': 'webm'}, False, '.webm'),
+                (youtube, 'an Opus, without mutagen', {'quality': 'audio_opus'}, True, '.opus'),
+                # TikTok's video comes as one MP4, picture and sound together.
+                (tiktok, 'a one-file video, asked for as MKV', {'quality': 'best', 'container': 'mkv'},
+                 False, '.mkv'),
+                (tiktok, 'and as WebM, which cannot hold it', {'quality': 'best', 'container': 'webm'},
+                 False, '.mp4')):
             here = os.path.join(folder, f'cover-{len(os.listdir(folder))}')
             os.makedirs(here)
             embed.mutagen = None if without else mutagen
-            task = Task(kind='media', source=item.url or YOUTUBE_URL, save_dir=here, name=item.title)
+            task = Task(kind='media', source=item.url, save_dir=here, name=item.title)
             task.media = {'container': 'mp4', **media, 'info': item.info, 'info_time': time.time()}
             runner = _JobRunner(engine, task)
             job = media_mod.MediaJob(task, settings, runner.callbacks())
@@ -501,8 +509,8 @@ def check_cover_art(folder):
             job.join(timeout=300)
             print()
             left = sorted(os.listdir(here))
-            report(f'cover art: {name} is saved all the same, with nothing left over',
-                   bool(runner.filepath) and left == [os.path.basename(runner.filepath)],
+            report(f'saved as {ext}: {name}, with nothing left over',
+                   runner.filepath.endswith(ext) and left == [os.path.basename(runner.filepath)],
                    ', '.join(left) if runner.filepath else runner.error)
     finally:
         embed.mutagen = mutagen
