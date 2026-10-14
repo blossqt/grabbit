@@ -577,6 +577,10 @@ class _CoverArt(EmbedThumbnailPP):
     picture, and without mutagen neither has an Opus or a FLAC. What it wrote
     on the way, the picture and a half-made copy, goes."""
 
+    @classmethod
+    def pp_key(cls):
+        return EmbedThumbnailPP.pp_key()      # its name in the log, and _PP_NOTES
+
     def run(self, info):
         try:
             return super().run(info)
@@ -595,6 +599,10 @@ class _Remux(FFmpegVideoRemuxerPP):
     """yt-dlp's remuxer, except that a video whose picture or sound the
     container asked for cannot hold - H.264 in a WebM - is kept as it came
     rather than failing the download."""
+
+    @classmethod
+    def pp_key(cls):
+        return FFmpegVideoRemuxerPP.pp_key()
 
     def run(self, info):
         try:
@@ -659,16 +667,15 @@ class _RecordFormats(PostProcessor):
         return [], info
 
 
+# By yt-dlp's names for them (pp_key: the class's, less 'FFmpeg' and 'PP').
 _PP_NOTES = {
     'Merger': 'Merging video and audio',
-    'FFmpegMerger': 'Merging video and audio',
     'ExtractAudio': 'Converting audio',
-    'FFmpegExtractAudio': 'Converting audio',
     'EmbedThumbnail': 'Embedding thumbnail',
-    'FFmpegMetadata': 'Writing metadata',
-    'FFmpegEmbedSubtitle': 'Embedding subtitles',
-    'FFmpegVideoRemuxer': 'Remuxing',
-    'FFmpegVideoConvertor': 'Converting video',
+    'Metadata': 'Writing metadata',
+    'EmbedSubtitle': 'Embedding subtitles',
+    'VideoRemuxer': 'Remuxing',
+    'VideoConvertor': 'Converting video',
 }
 
 
