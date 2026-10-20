@@ -103,7 +103,8 @@ class _TileDelegate(QStyledItemDelegate):
         painter.setBrush(accent if checked else QColor(0, 0, 0, 120))
         painter.drawEllipse(marker)
         if checked:
-            painter.setPen(QPen(QColor('#ffffff'), 2.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            tick = palette.highlightedText().color()
+            painter.setPen(QPen(tick, 2.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
             left, top, size = marker.left(), marker.top(), marker.width()
             painter.drawPolyline([
                 QPointF(left + size * 0.27, top + size * 0.52),
@@ -113,7 +114,7 @@ class _TileDelegate(QStyledItemDelegate):
 
         if checked or (option.state & QStyle.StateFlag.State_HasFocus):
             painter.setBrush(Qt.NoBrush)
-            painter.setPen(QPen(accent, 2))
+            painter.setPen(QPen(palette.link().color(), 2))
             painter.drawPath(path)
         painter.restore()
 

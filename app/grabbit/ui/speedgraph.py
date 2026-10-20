@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QWidget
 from ..speeds import SpeedHistory
 from ..util import human_size, human_speed
 
-DOWN = QColor('#3a86ff')
+DOWN = QColor('#e64980')     # the suite's pink, deep enough for a line
 UP = QColor('#1faa59')
 
 GLOBAL = ''          # the key the totals are kept under

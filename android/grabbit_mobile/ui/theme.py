@@ -5,7 +5,7 @@ tonal palettes from the wallpaper (Material You), and they are turned here
 into the roles Android's own apps are drawn in - primary for what acts,
 containers for what is chosen, surfaces in steps of tone for what holds
 things. Older phones, and the desktop preview, get the same roles made from
-Grabbit's own blue (#3b5bdb, the suite's icon colour). Light or dark follows the phone; in the preview,
+Grabbit's own blue (#3b5bdb, once the suite's icon colour). Light or dark follows the phone; in the preview,
 GRABBIT_THEME=light or dark decides.
 
 Everything is worked out once, as this is first imported, and the rest of

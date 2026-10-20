@@ -1,10 +1,22 @@
-"""Light/dark handling and the handful of style rules Grabbit adds."""
+"""Light/dark handling and the handful of style rules Grabbit adds.
+
+The highlight is the suite's blossom pink - every suite app's icon tile -
+rather than the Windows accent, which on this kind of machine follows the
+wallpaper. It is too pale for white text or for lines on white, so text on it
+is deep rose (ON_ACCENT), and lines and icons drawn in it use ink().
+"""
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
-ACCENT = QColor('#3a86ff')
+ACCENT = QColor('#ffd1dc')
+ON_ACCENT = QColor('#a61e4d')
+
+
+def ink() -> QColor:
+    """The pink as a line, icon or link on the window: pale on dark, deep rose on white."""
+    return QColor('#ffd1dc') if is_dark() else QColor('#c2255c')
 
 _DARK = {
     'window': '#1e1f22', 'base': '#17181a', 'alt': '#232427', 'text': '#e6e6e6',
@@ -42,8 +54,20 @@ def apply_theme(app: QApplication, mode: str = 'system'):
     if mode == 'dark' or (mode == 'system' and is_dark()):
         _apply_dark_palette(app)
     else:
-        app.setPalette(app.style().standardPalette())
+        palette = app.style().standardPalette()
+        _pink(palette)
+        app.setPalette(palette)
     app.setStyleSheet(stylesheet())
+
+
+def _pink(palette: QPalette) -> None:
+    palette.setColor(QPalette.Highlight, ACCENT)
+    palette.setColor(QPalette.HighlightedText, ON_ACCENT)
+    palette.setColor(QPalette.Link, ink())
+    # Windows 11's style fills ticked boxes, radio buttons, sliders and
+    # progress bars with the accent, and ticks them in white on a light window:
+    # there the pink is deepened so a white tick still shows.
+    palette.setColor(QPalette.Accent, ACCENT if is_dark() else QColor('#e64980'))
 
 
 def _apply_dark_palette(app: QApplication):
@@ -58,9 +82,7 @@ def _apply_dark_palette(app: QApplication):
     palette.setColor(QPalette.ButtonText, QColor(c['text']))
     palette.setColor(QPalette.ToolTipBase, QColor(c['alt']))
     palette.setColor(QPalette.ToolTipText, QColor(c['text']))
-    palette.setColor(QPalette.Highlight, ACCENT)
-    palette.setColor(QPalette.HighlightedText, QColor('#ffffff'))
-    palette.setColor(QPalette.Link, ACCENT)
+    _pink(palette)
     palette.setColor(QPalette.PlaceholderText, QColor(c['dim']))
     for role in (QPalette.WindowText, QPalette.Text, QPalette.ButtonText):
         palette.setColor(QPalette.Disabled, role, QColor(c['dim']))
@@ -97,9 +119,10 @@ def stylesheet() -> str:
     QStatusBar::item {{ border: 0; }}
     QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QTextEdit {{
         border: 1px solid {c['border']}; border-radius: 6px; padding: 4px 7px;
-        background: {c['base']}; selection-background-color: {ACCENT.name()}; }}
+        background: {c['base']}; selection-background-color: {ACCENT.name()};
+        selection-color: {ON_ACCENT.name()}; }}
     QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus, QTextEdit:focus {{
-        border-color: {ACCENT.name()}; }}
+        border-color: {ink().name()}; }}
     QTabWidget::pane {{ border: 1px solid {c['border']}; border-radius: 8px; top: -1px; }}
     QTabBar::tab {{ padding: 6px 12px; border: 0; margin-right: 2px; border-radius: 6px; }}
     QTabBar::tab:selected {{ background: {c['hover']}; }}

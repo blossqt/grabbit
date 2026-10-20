@@ -19,8 +19,8 @@ HEADERS = ['Name', 'Size', 'Progress', 'Status', 'Seeds / Peers', 'Down speed',
            'Up speed', 'ETA', 'Ratio', 'Added', 'Save path']
 
 STATE_COLORS = {
-    State.DOWNLOADING: '#3a86ff',
-    State.EXTRACTING: '#3a86ff',
+    State.DOWNLOADING: '#e64980',
+    State.EXTRACTING: '#e64980',
     State.METADATA: '#8a7cff',
     State.PROCESSING: '#8a7cff',
     State.SEEDING: '#1faa59',
@@ -279,7 +279,7 @@ class ProgressDelegate(QStyledItemDelegate):
         if fraction > 0:
             fill = QRectF(rect)
             fill.setWidth(max(rect.height(), rect.width() * fraction))
-            painter.setBrush(QColor(STATE_COLORS.get(state, '#3a86ff')))
+            painter.setBrush(QColor(STATE_COLORS.get(state, '#e64980')))
             painter.drawRoundedRect(fill, radius, radius)
 
         text = f'{fraction * 100:.1f}%'
