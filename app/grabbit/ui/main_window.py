@@ -9,11 +9,12 @@ from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QKeySequen
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QDialog, QFileDialog,
                                QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
-                               QProgressDialog, QPushButton, QSplitter, QSystemTrayIcon,
+                               QProgressDialog, QPushButton, QSplitter,
                                QToolBar, QTreeView, QVBoxLayout, QWidget)
 
 from .. import APP_NAME, APP_VERSION, selfupdate, updates
 from ..paths import data_dir
+from ..suitetray import SuiteTray
 from ..tasks import KIND_MEDIA, RUNNING_STATES, State
 from ..torrentmeta import parse_torrent
 from ..util import extract_links, human_speed, open_path, reveal_in_explorer
@@ -377,20 +378,17 @@ class MainWindow(QMainWindow):
         bar.addPermanentWidget(self.up_label)
 
     def _build_tray(self):
-        self.tray = QSystemTrayIcon(icons.app_icon(), self)
-        self.tray.setToolTip(APP_NAME)
-        menu = QMenu()
-        show_action = menu.addAction('Show Grabbit')
-        show_action.triggered.connect(self._restore_window)
-        add_action = menu.addAction('Add link…')
-        add_action.triggered.connect(self.open_add_dialog)
-        menu.addSeparator()
-        quit_action = menu.addAction('Exit')
-        quit_action.triggered.connect(self.quit_app)
-        self.tray.setContextMenu(menu)
-        self.tray.activated.connect(
-            lambda reason: self._restore_window() if reason == QSystemTrayIcon.Trigger else None)
-        self.tray.show()
+        # In Hanami's cherry-blossom icon while Hanami runs, else an icon of its own.
+        self.tray = SuiteTray(APP_NAME, icons.app_icon(), self)
+        self._tray_items = [
+            {'id': 'show', 'text': 'Show Grabbit', 'default': True},
+            {'id': 'add', 'text': 'Add link…'},
+            {'separator': True},
+            {'id': 'quit', 'text': 'Exit'},
+        ]
+        actions = {'show': self._restore_window, 'add': self.open_add_dialog, 'quit': self.quit_app}
+        self.tray.clicked.connect(lambda item: actions[item]() if item in actions else None)
+        self.tray.set_menu(self._tray_items, APP_NAME)
 
     # ---------------------------------------------------------------- engine
     def _connect_engine(self):
@@ -416,7 +414,7 @@ class MainWindow(QMainWindow):
         limit_up = f' / {self.settings.upload_limit_kib} KiB/s' if self.settings.upload_limit_kib else ''
         self.down_label.setText(f'  ↓ {down}{limit_down}  ')
         self.up_label.setText(f'  ↑ {up}{limit_up}  ')
-        self.tray.setToolTip(f'{APP_NAME}\n↓ {down}   ↑ {up}')
+        self.tray.set_menu(self._tray_items, f'{APP_NAME}\n↓ {down}   ↑ {up}')
 
     def _on_engine_message(self, level: str, message: str):
         if level == 'error':
@@ -434,7 +432,7 @@ class MainWindow(QMainWindow):
             body = 'Download finished, now seeding'
         else:
             body = 'Download finished'
-        self.tray.showMessage(task.name or APP_NAME, body, icons.app_icon(), 5000)
+        self.tray.notify(task.name or APP_NAME, body, 5000)
 
     def _on_magnet_ready(self, task_id: str):
         task = self.engine.store.get(task_id)
@@ -663,8 +661,7 @@ class MainWindow(QMainWindow):
             # leave the question on the banner for when the window is opened.
             if answer.latest != self._update_announced:
                 self._update_announced = answer.latest
-                self.tray.showMessage(f'{APP_NAME} {answer.latest} is out',
-                                      'Open Grabbit to update.', icons.app_icon(), 8000)
+                self.tray.notify(f'{APP_NAME} {answer.latest} is out', 'Open Grabbit to update.', 8000)
             return
         blocked = selfupdate.blocker()
         active = sum(1 for task in self.engine.store if task.state in RUNNING_STATES)
@@ -981,8 +978,7 @@ class MainWindow(QMainWindow):
         self.banner_label.setText(f'Link copied: {first[:90]}{extra}')
         self.banner.show()
         if not self.isVisible() or self.isMinimized():
-            self.tray.showMessage(APP_NAME, 'Copied link ready to download—click to open',
-                                  icons.app_icon(), 4000)
+            self.tray.notify(APP_NAME, 'Copied link ready to download—click to open', 4000)
 
     def _banner_accept(self):
         self.banner.hide()
@@ -1085,13 +1081,12 @@ class MainWindow(QMainWindow):
         if self.settings.close_to_tray and not getattr(self, '_closing', False):
             event.ignore()
             self.hide()
-            self.tray.showMessage(APP_NAME, 'Still running in the notification area',
-                                  icons.app_icon(), 3000)
+            self.tray.notify(APP_NAME, 'Still running in the notification area', 3000)
             return
         # Get off the screen first: everything below is bookkeeping, and a
         # window that lingers while it happens just looks stuck.
         self.hide()
-        self.tray.hide()
+        self.tray.stop()
         QApplication.processEvents()
 
         self._save_layout()
