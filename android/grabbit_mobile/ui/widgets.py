@@ -301,7 +301,7 @@ def share_by_words(widgets, room=dp(20)):
 # ---------------------------------------------------------------- buttons
 # (fill, label, outline) for each kind of Material button.
 BUTTON_STYLES = {
-    'filled': (theme.PRIMARY, theme.ON_PRIMARY, None),
+    'filled': (theme.PRIMARY_CONTAINER, theme.ON_PRIMARY_CONTAINER, None),
     'tonal': (theme.SECONDARY_CONTAINER, theme.ON_SECONDARY_CONTAINER, None),
     'outlined': (theme.TRANSPARENT, theme.PRIMARY, theme.OUTLINE),
     'text': (theme.TRANSPARENT, theme.PRIMARY, None),
@@ -558,7 +558,8 @@ class Toggle(ButtonBehavior, Widget):
         self._thumb_color.rgba = self._mix(theme.OUTLINE, theme.ON_PRIMARY, share)
         self._thumb.pos = (cx - thumb / 2, self.center_y - thumb / 2)
         self._thumb.size = (thumb, thumb)
-        self._tick_color.rgba = theme.with_alpha(theme.ON_PRIMARY_CONTAINER, share)
+        # The track's own pink, as ON_PRIMARY_CONTAINER is the thumb's colour on dark.
+        self._tick_color.rgba = theme.with_alpha(theme.PRIMARY, share)
         _draw_tick(self._tick, cx - dp(8), self.center_y - dp(8), dp(16))
 
 

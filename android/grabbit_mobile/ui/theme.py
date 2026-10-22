@@ -1,12 +1,19 @@
 """Material 3's colours, type and shapes, in the form Kivy wants them.
 
-On Android 12 and later the colours are the phone's own: Android makes five
-tonal palettes from the wallpaper (Material You), and they are turned here
-into the roles Android's own apps are drawn in - primary for what acts,
-containers for what is chosen, surfaces in steps of tone for what holds
-things. Older phones, and the desktop preview, get the same roles made from
-Grabbit's own blue (#3b5bdb, once the suite's icon colour). Light or dark follows the phone; in the preview,
-GRABBIT_THEME=light or dark decides.
+The colours are the suite's blossom pink, as in every suite app - Hanami's
+suitetheme.py on the desktop, Homework Hub's dashboard - and never the
+wallpaper's, which Android 12 and later would offer. They fill the roles
+Android's own apps are drawn in:
+
+- PRIMARY is the pink as words, a line or progress: deep rose #c2255c on
+  light, where the pale pink would vanish, and #ffd1dc on dark.
+- PRIMARY_CONTAINER is the one main button of a screen: #ffd1dc with #a61e4d
+  on it, light or dark, as the suite's buttons are.
+- SECONDARY_CONTAINER is what is chosen - chips, segments, rows - and the
+  other buttons: a soft pink with the pink as words, as in Homework Hub.
+- Surfaces are the suite's cool greys, in steps of tone for what holds things.
+
+Light or dark follows the phone; in the preview, GRABBIT_THEME=light or dark decides.
 
 Everything is worked out once, as this is first imported, and the rest of
 the app reads the results as constants.
@@ -98,10 +105,6 @@ def at_tone(tone: float, a: float, b: float) -> tuple:
 
 
 # --------------------------------------------------------------- palettes
-# The tones of Android's thirteen palette steps, 0 to 1000.
-STEPS = (100, 99, 95, 90, 80, 70, 60, 50, 40, 30, 20, 10, 0)
-
-
 class Palette:
     """One hue at every tone from black to white, as Material builds them."""
 
@@ -122,25 +125,16 @@ class Palette:
         return at_tone(tone, a1 + (a2 - a1) * share, b1 + (b2 - b1) * share)
 
 
-# Grabbit's own palettes, for a phone that makes none: its blue at every tone,
-# with the quieter blues, the neighbouring hue and the near-greys Material's
-# default scheme puts beside it. Worked out once, in Oklab - which keeps a
-# hue as it lightens, where CIELAB turns blue to lilac - at CIELAB's tones.
+# The palettes beside the pink: Material's lilac for work in progress, the
+# suite's cool greys for surfaces and outlines, and green and amber for
+# finished and checking.
 def _table(tones: dict) -> Palette:
     return Palette({tone: rgba(value) for tone, value in tones.items()})
 
 
-_PRIMARY = {
-    100: '#ffffff', 99: '#fbfcff', 95: '#ebf1ff', 90: '#d7e2ff', 80: '#b0c6ff', 70: '#89a9ff',
-    60: '#708ee2', 50: '#5873c5', 40: '#415aa9', 30: '#2b418e', 20: '#172973', 10: '#080f5a',
-    0: '#000000'}
-_SECONDARY = {
-    100: '#ffffff', 99: '#fbfcff', 95: '#ebf1ff', 90: '#d7e2ff', 80: '#bac6e5', 70: '#9fabc9',
-    60: '#8591ad', 50: '#6c7793', 40: '#545e79', 30: '#3d4660', 20: '#273048', 10: '#131b31',
-    0: '#000000'}
 _TERTIARY = {
-    100: '#ffffff', 99: '#fffbff', 95: '#ffebfe', 90: '#ffd6fd', 80: '#e7b8e4', 70: '#ca9dc8',
-    60: '#af82ad', 50: '#946992', 40: '#7a5078', 30: '#60395f', 20: '#482247', 10: '#310c30',
+    100: '#ffffff', 99: '#fffbfe', 95: '#f6edff', 90: '#eaddff', 80: '#d0bcff', 70: '#b69df8',
+    60: '#9a82db', 50: '#7f67be', 40: '#6750a4', 30: '#4f378b', 20: '#381e72', 10: '#21005d',
     0: '#000000'}
 _NEUTRAL = {
     100: '#ffffff', 99: '#fbfcff', 95: '#edf1f9', 90: '#dfe2eb', 80: '#c3c6cf', 70: '#a8abb3',
@@ -160,54 +154,30 @@ _AMBER = {
     0: '#000000'}
 
 
-def _seeded():
-    """Primary, secondary, tertiary, neutral and neutral variant palettes."""
-    return tuple(_table(tones) for tones in (_PRIMARY, _SECONDARY, _TERTIARY, _NEUTRAL, _VARIANT))
-
-
-def _from_android(colors):
-    """The five palettes Android made from the wallpaper (Look.java)."""
-    palettes = []
-    for start in range(0, len(colors), len(STEPS)):
-        known = {}
-        for tone, value in zip(STEPS, colors[start:start + len(STEPS)]):
-            value &= 0xffffffff
-            known[tone] = ((value >> 16 & 255) / 255, (value >> 8 & 255) / 255,
-                           (value & 255) / 255, 1.0)
-        palettes.append(Palette(known))
-    return tuple(palettes)
-
-
-def _phone():
-    """(dark, palettes) as the phone has them - palettes None before
-    Android 12 - or (None, None) off a phone."""
+def _phone_is_dark():
+    """Whether the phone is set to its dark theme - or None off a phone."""
     try:
         from jnius import JavaClass, JavaStaticMethod, MetaJavaClass, autoclass
     except ImportError:
-        return None, None
+        return None
     try:
         class Look(JavaClass, metaclass=MetaJavaClass):
             __javaclass__ = 'com/grabbit/downloader/Look'
-            palettes = JavaStaticMethod('(Landroid/app/Activity;)[I')
             night = JavaStaticMethod('(Landroid/app/Activity;)Z')
 
-        activity = autoclass('org.kivy.android.PythonActivity').mActivity
-        colors = list(Look.palettes(activity))
-        palettes = _from_android(colors) if len(colors) == 5 * len(STEPS) else None
-        return bool(Look.night(activity)), palettes
+        return bool(Look.night(autoclass('org.kivy.android.PythonActivity').mActivity))
     except Exception:
-        log.exception("could not read the phone's colours")
-        return True, None
+        log.exception('could not read whether the phone is dark')
+        return True
 
 
-_night, _palettes = _phone()
+_night = _phone_is_dark()
 if _night is None:
     _night = os.environ.get('GRABBIT_THEME', 'dark') != 'light'
 DARK = _night
-DYNAMIC = _palettes is not None
-_primary, _secondary, _tertiary, _neutral, _variant = _palettes or _seeded()
+_tertiary, _neutral, _variant = _table(_TERTIARY), _table(_NEUTRAL), _table(_VARIANT)
 
-# Material's own error colours, which no wallpaper changes.
+# Material's own error colours.
 _error = Palette({tone: rgba(value) for tone, value in {
     100: '#ffffff', 99: '#fffbf9', 95: '#fceeee', 90: '#f9dedc', 80: '#f2b8b5', 70: '#ec928e',
     60: '#e46962', 50: '#dc362e', 40: '#b3261e', 30: '#8c1d18', 20: '#601410', 10: '#410e0b',
@@ -223,13 +193,19 @@ def _role(palette, light: int, dark: int) -> tuple:
 
 
 # ------------------------------------------------------------------ roles
-PRIMARY = _role(_primary, 40, 80)
-ON_PRIMARY = _role(_primary, 100, 20)
-PRIMARY_CONTAINER = _role(_primary, 90, 30)
-ON_PRIMARY_CONTAINER = _role(_primary, 10, 90)
-SECONDARY = _role(_secondary, 40, 80)
-SECONDARY_CONTAINER = _role(_secondary, 90, 30)
-ON_SECONDARY_CONTAINER = _role(_secondary, 10, 90)
+# The suite's pink: ACCENT filled, ON_ACCENT on it, ROSE for the pink as
+# words or a line on light. The same three as Hanami's suitetheme.py.
+ACCENT = rgba('#ffd1dc')
+ON_ACCENT = rgba('#a61e4d')
+ROSE = rgba('#c2255c')
+
+PRIMARY = ACCENT if DARK else ROSE
+ON_PRIMARY = ON_ACCENT if DARK else rgba('#ffffff')
+PRIMARY_CONTAINER = ACCENT
+ON_PRIMARY_CONTAINER = ON_ACCENT
+SECONDARY = PRIMARY
+SECONDARY_CONTAINER = rgba('#3a1f2a' if DARK else '#fff0f4')
+ON_SECONDARY_CONTAINER = PRIMARY
 TERTIARY = _role(_tertiary, 40, 80)
 TERTIARY_CONTAINER = _role(_tertiary, 90, 30)
 ON_TERTIARY_CONTAINER = _role(_tertiary, 10, 90)
