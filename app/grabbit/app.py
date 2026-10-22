@@ -142,6 +142,7 @@ def main(argv=None) -> int:
     settings = Settings.load()
 
     from .ui import theme
+    theme.install(app)
     theme.apply_theme(app, settings.theme)
 
     engine = Engine(settings)

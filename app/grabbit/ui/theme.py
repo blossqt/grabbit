@@ -1,22 +1,20 @@
 """Light/dark handling and the handful of style rules Grabbit adds.
 
-The highlight is the suite's blossom pink - every suite app's icon tile -
-rather than the Windows accent, which on this kind of machine follows the
-wallpaper. It is too pale for white text or for lines on white, so text on it
-is deep rose (ON_ACCENT), and lines and icons drawn in it use ink().
+The suite's look - its pink, the check boxes SuiteStyle draws, ink() - comes
+from suitetheme.py, the shared file Hanami keeps in step across the suite's
+apps. Grabbit adds a palette of its own here, for a window built from Qt's
+standard widgets rather than painted cards.
+
+The pink is too pale for white text or for lines on white, so text on it is
+deep rose (ON_ACCENT), and lines and icons drawn in it use ink().
 """
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
-ACCENT = QColor('#ffd1dc')
-ON_ACCENT = QColor('#a61e4d')
-
-
-def ink() -> QColor:
-    """The pink as a line, icon or link on the window: pale on dark, deep rose on white."""
-    return QColor('#ffd1dc') if is_dark() else QColor('#c2255c')
+from .suitetheme import *  # noqa: F401,F403 - the suite's look, used as theme.<name>
+from .suitetheme import ACCENT, ON_ACCENT, ink, is_dark
 
 _DARK = {
     'window': '#1e1f22', 'base': '#17181a', 'alt': '#232427', 'text': '#e6e6e6',
@@ -26,16 +24,6 @@ _LIGHT = {
     'window': '#f4f5f7', 'base': '#ffffff', 'alt': '#fafafa', 'text': '#1a1c1e',
     'dim': '#5f6368', 'border': '#d8dade', 'hover': '#eceef1', 'bar': '#e9ebef',
 }
-
-
-def is_dark() -> bool:
-    app = QApplication.instance()
-    if app is None:
-        return False
-    try:
-        return app.styleHints().colorScheme() == Qt.ColorScheme.Dark
-    except AttributeError:
-        return app.palette().window().color().lightness() < 128
 
 
 def colors() -> dict:
@@ -61,13 +49,13 @@ def apply_theme(app: QApplication, mode: str = 'system'):
 
 
 def _pink(palette: QPalette) -> None:
-    palette.setColor(QPalette.Highlight, ACCENT)
-    palette.setColor(QPalette.HighlightedText, ON_ACCENT)
-    palette.setColor(QPalette.Link, ink())
-    # Windows 11's style fills ticked boxes, radio buttons, sliders and
-    # progress bars with the accent, and ticks them in white on a light window:
-    # there the pink is deepened so a white tick still shows.
-    palette.setColor(QPalette.Accent, ACCENT if is_dark() else QColor('#e64980'))
+    palette.setColor(QPalette.Highlight, QColor(ACCENT))
+    palette.setColor(QPalette.HighlightedText, QColor(ON_ACCENT))
+    palette.setColor(QPalette.Link, QColor(ink()))
+    # Windows 11's style fills radio buttons, sliders and progress bars with
+    # the accent (check boxes are SuiteStyle's), and marks them in white on a
+    # light window: there the pink is deepened so the white still shows.
+    palette.setColor(QPalette.Accent, QColor(ACCENT if is_dark() else '#e64980'))
 
 
 def _apply_dark_palette(app: QApplication):
@@ -119,10 +107,10 @@ def stylesheet() -> str:
     QStatusBar::item {{ border: 0; }}
     QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QTextEdit {{
         border: 1px solid {c['border']}; border-radius: 6px; padding: 4px 7px;
-        background: {c['base']}; selection-background-color: {ACCENT.name()};
-        selection-color: {ON_ACCENT.name()}; }}
+        background: {c['base']}; selection-background-color: {ACCENT};
+        selection-color: {ON_ACCENT}; }}
     QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus, QTextEdit:focus {{
-        border-color: {ink().name()}; }}
+        border-color: {ink()}; }}
     QTabWidget::pane {{ border: 1px solid {c['border']}; border-radius: 8px; top: -1px; }}
     QTabBar::tab {{ padding: 6px 12px; border: 0; margin-right: 2px; border-radius: 6px; }}
     QTabBar::tab:selected {{ background: {c['hover']}; }}

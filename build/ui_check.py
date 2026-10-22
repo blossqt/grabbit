@@ -228,6 +228,7 @@ def check_choices(app):
 
 def main():
     app = QApplication([])
+    theme.install(app)
     theme.apply_theme(app, 'dark')
 
     from grabbit import APP_VERSION, updates
