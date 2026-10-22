@@ -11,9 +11,9 @@ from PySide6.QtCore import QTimer
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from . import APP_NAME, APP_VERSION
+from . import APP_NAME, APP_VERSION, suitelog
 from .engine import Engine
-from .paths import logs_dir
+from .paths import data_dir, logs_dir
 from .settings import Settings
 from .util import hide_child_consoles
 
@@ -118,6 +118,8 @@ def main(argv=None) -> int:
         return self_test(switches['--self-test'])
 
     hide_child_consoles()
+    # Prints, uncaught tracebacks and a native crash's stack: logging has none of them.
+    suitelog.start(APP_NAME, data_dir())
     setup_logging()
     log.info('%s %s starting', APP_NAME, APP_VERSION)
 
