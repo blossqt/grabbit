@@ -975,9 +975,15 @@ def _frosting() -> _Frosting:
 # milliseconds over each, which a window being dragged would otherwise spend waiting, frame after
 # frame, and its dragging would stutter. A framed window repaints only its rim as it is dragged
 # (_update_rim) - the rest of it does not change - and gauges its tint again once it settles.
+#
+# Something being dragged (a file, say) has its image drawn by Windows under the cursor, above
+# everything, and a shot catches it: the glass would show a copy of it frozen, then trailing the
+# real one. So shots have it taken out (_heal), and a still window's glass waits while a mouse
+# button is held (_button_down).
 
 _WDA_NONE, _WDA_EXCLUDEFROMCAPTURE = 0, 0x11
 _MARGIN = 56              # how far beyond a window's edges its shot of the screen reaches
+_MARGIN_FRAMELESS = 160   # a pop-up's, further: one dragged fast stays within its last shot until the next comes
 # band: how far in from the rim the glass bends light; reach: how far beyond the edge the light
 # shown at the rim comes from, falling off towards the flat middle - by power over the band, or
 # (rate) as exp(-rate x distance in), a thin rim bending hard, as liquid-glass-js's "rim" does;
@@ -1009,12 +1015,14 @@ def _clear(window: QWidget) -> bool:
 
 def _where(window: QWidget):
     """Where a window's shot of the screen is taken from: its screen, the part of the screen wanted
-    (the window and a margin around it) and the part of that on the screen - None if none is."""
+    (the window and a margin around it), the part of that on the screen - None if none is - and
+    the margin."""
     g = window.frameGeometry()
     screen = QGuiApplication.screenAt(g.center()) or window.screen() or QGuiApplication.primaryScreen()
-    want = g.adjusted(-_MARGIN, -_MARGIN, _MARGIN, _MARGIN)
+    margin = _MARGIN_FRAMELESS if _frameless(window) else _MARGIN
+    want = g.adjusted(-margin, -margin, margin, margin)
     got = want.intersected(screen.geometry())
-    return None if got.isEmpty() else (screen, got, want)
+    return None if got.isEmpty() else (screen, got, want, margin)
 
 
 def _capture(window: QWidget) -> None:
@@ -1023,25 +1031,89 @@ def _capture(window: QWidget) -> None:
     where = _where(window)
     if where is None:
         return
-    screen, got, want = where
+    screen, got, want, margin = where
     area = screen.geometry()
     shot = screen.grabWindow(0, got.x() - area.x(), got.y() - area.y(), got.width(), got.height())
     if not shot.isNull():
-        _took(window, *_made(shot, got, want, _LENSES[look()]['blur'], not _frameless(window), True))
+        _took(window, *_made(shot, got, want, _LENSES[look()]['blur'], not _frameless(window), True, margin,
+                             _drag_images(_native(screen, got))))
 
 
-def _made(shot, got: QRect, want: QRect, blur: int, framed: bool, tone: bool) -> tuple:
+def _made(shot, got: QRect, want: QRect, blur: int, framed: bool, tone: bool, margin: int = _MARGIN,
+          dragged: list = ()) -> tuple:
     """A shot of the screen made into glass, on any thread (a QImage away from the windows' own):
-    made up to the size wanted, softened, and - if tone - with how bright and busy what is behind
-    the window is. What is behind a frameless window is in the shot; a framed one's isn't (the
-    window itself is there), so its tint goes by what is around it."""
+    the images of anything being dragged taken out of it (dragged, in its pixels: _heal), made up
+    to the size wanted, softened, and - if tone - with how bright and busy what is behind the window
+    is. What is behind a frameless window is in the shot; a framed one's isn't (the window itself
+    is there), so its tint goes by what is around it."""
+    if dragged:
+        shot = _heal(shot, dragged)
     if got != want:
         shot = _fill_out(shot, got, want)
     told = None
     if tone:
-        inside = QRectF(_MARGIN, _MARGIN, want.width() - 2 * _MARGIN, want.height() - 2 * _MARGIN)
+        inside = QRectF(margin, margin, want.width() - 2 * margin, want.height() - 2 * margin)
         told = _tone_around(shot, inside) if framed else _tone(shot, inside)
     return _soften(shot, blur), want.topLeft(), told
+
+
+def _drag_images(native: QRect) -> list:
+    """Where the images of things being dragged lie in a part of the screen (in Windows' own
+    pixels), relative to it. Windows draws each in a window of its own, which follows the cursor
+    above everything."""
+    user32 = _gdi()[0]
+    found, hwnd = [], None
+    for _ in range(8):
+        hwnd = user32.FindWindowExW(None, hwnd, 'SysDragImage', None)
+        if not hwnd:
+            break
+        box = wintypes.RECT()
+        if user32.IsWindowVisible(hwnd) and user32.GetWindowRect(hwnd, ctypes.byref(box)):
+            part = QRect(box.left, box.top, box.right - box.left, box.bottom - box.top).intersected(native)
+            if not part.isEmpty():
+                found.append(part.translated(-native.topLeft()))
+    return found
+
+
+def _heal(shot, parts: list) -> QImage:
+    """A shot with parts of it (in its own pixels) painted over from just around each, as though
+    nothing were there: the image of something being dragged, which caught in a shot would sit
+    frozen in the glass, then trail the real one about. Each part takes its edges blended across
+    it, side to side and top to bottom. (Of a QPixmap, or on any thread a QImage.)"""
+    image = (shot.toImage() if isinstance(shot, QPixmap) else QImage(shot)).convertToFormat(QImage.Format_RGB32)
+    dpr = image.devicePixelRatio()
+    image.setDevicePixelRatio(1.0)
+    whole = image.rect()
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.SmoothPixmapTransform)
+    for part in parts:
+        part = part.adjusted(-2, -2, 2, 2).intersected(whole)              # and its soft edge
+        if part.isEmpty():
+            continue
+        xs = [x for x in (part.left() - 1, part.right() + 1) if whole.left() <= x <= whole.right()]
+        ys = [y for y in (part.top() - 1, part.bottom() + 1) if whole.top() <= y <= whole.bottom()]
+        blends = []
+        if xs:
+            across = QImage(2, part.height(), QImage.Format_RGB32)
+            edges = QPainter(across)
+            edges.drawImage(0, 0, image.copy(xs[0], part.top(), 1, part.height()))
+            edges.drawImage(1, 0, image.copy(xs[-1], part.top(), 1, part.height()))
+            edges.end()
+            blends.append(across)
+        if ys:
+            down = QImage(part.width(), 2, QImage.Format_RGB32)
+            edges = QPainter(down)
+            edges.drawImage(0, 0, image.copy(part.left(), ys[0], part.width(), 1))
+            edges.drawImage(0, 1, image.copy(part.left(), ys[-1], part.width(), 1))
+            edges.end()
+            blends.append(down)
+        for n, blend in enumerate(blends):
+            painter.setOpacity(1.0 / (n + 1))                               # the two, evenly
+            painter.drawImage(QRectF(part), blend)
+        painter.setOpacity(1.0)
+    painter.end()
+    image.setDevicePixelRatio(dpr)
+    return image
 
 
 def _took(window: QWidget, shot, at: QPoint, tone: tuple | None) -> None:
@@ -1074,9 +1146,10 @@ def _capture_later(window: QWidget, final: bool) -> bool:
         if final:
             _stop_live(window)
         return True
-    screen, got, want = where
+    screen, got, want, margin = where
     blur, framed = _LENSES[look()]['blur'], not _frameless(window)
     tone = final or not framed
+    native = _native(screen, got)
     ref = weakref.ref(window)
 
     def then(made):
@@ -1088,8 +1161,9 @@ def _capture_later(window: QWidget, final: bool) -> bool:
         if final and not _live(w):
             _stop_live(w)                   # back in shots, now the last one is taken
 
-    return _grabber().take(('shot', id(window)), _native(screen, got), screen.devicePixelRatio(),
-                           lambda image: _made(image, got, want, blur, framed, tone), then)
+    return _grabber().take(('shot', id(window)), native, screen.devicePixelRatio(),
+                           lambda image: _made(image, got, want, blur, framed, tone, margin, _drag_images(native)),
+                           then)
 
 
 def _native(screen, rect: QRect) -> QRect:
@@ -1119,6 +1193,11 @@ def _gdi():
         user32, gdi32 = ctypes.WinDLL('user32'), ctypes.WinDLL('gdi32')
         user32.GetDC.argtypes, user32.GetDC.restype = [wintypes.HWND], wintypes.HDC
         user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+        user32.FindWindowExW.argtypes = [wintypes.HWND, wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR]
+        user32.FindWindowExW.restype = wintypes.HWND
+        user32.IsWindowVisible.argtypes = [wintypes.HWND]
+        user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+        user32.GetAsyncKeyState.argtypes, user32.GetAsyncKeyState.restype = [ctypes.c_int], ctypes.c_short
         gdi32.CreateCompatibleDC.argtypes, gdi32.CreateCompatibleDC.restype = [wintypes.HDC], wintypes.HDC
         gdi32.CreateDIBSection.argtypes = [wintypes.HDC, ctypes.c_void_p, wintypes.UINT,
                                            ctypes.POINTER(ctypes.c_void_p), wintypes.HANDLE, wintypes.DWORD]
@@ -1425,7 +1504,7 @@ def _watch_around(window: QWidget, start: bool = False, stop: bool = False) -> N
         window._suite_around = None
         timer.start()
         return
-    if not window.isVisible() or _live(window) or not _screen_glass(window):
+    if not window.isVisible() or _live(window) or not _screen_glass(window) or _button_down():
         return
     g = window.frameGeometry()
     screen = QGuiApplication.screenAt(g.center()) or window.screen() or QGuiApplication.primaryScreen()
@@ -1450,6 +1529,14 @@ def _watch_around(window: QWidget, start: bool = False, stop: bool = False) -> N
 
 
 _AROUND = 4, 12         # the strips a still window watches: how far out from its edges they start, how wide
+
+
+def _button_down() -> bool:
+    """Whether a mouse button is held: something being dragged about, most likely, near the
+    window - which a still window's glass leaves out, rather than chase it with shots that would
+    each show it a moment late. Once the button is let go, the glass catches up."""
+    keys = _gdi()[0].GetAsyncKeyState
+    return any(keys(key) & 0x8000 for key in (0x01, 0x02, 0x04))      # left, right, middle
 
 
 def _around(shot, outer: QRect, g: QRect) -> list:
