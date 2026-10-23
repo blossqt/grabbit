@@ -815,6 +815,7 @@ class _Frosting(QObject):
                 _paint_clear(obj, event)
             elif glass_on():
                 painter = QPainter(obj)
+                _paint_bridge(painter, obj)
                 painter.fillRect(event.rect(), veil())
                 _paint_framed_rim(painter, obj)
                 painter.end()
@@ -824,6 +825,8 @@ class _Frosting(QObject):
             if _screen_glass(obj):
                 _capture(obj)                       # not on screen yet: what is behind it, as it is
                 _watch_around(obj, start=True)
+            elif glass_on() and not _frameless(obj):
+                _bridge(obj)
             if glass_on():
                 _apply_glass(obj)
             _animate_parts(obj)
@@ -845,6 +848,73 @@ class _Frosting(QObject):
         elif kind == QEvent.ChildAdded and obj.isVisible():
             QTimer.singleShot(0, obj, lambda: _animate_parts(obj))
         return False
+
+
+_BRIDGE_HOLD, _BRIDGE_FADE = 1200, 350    # ms: how long a frosted window's own glass stays, then fades
+
+
+def _bridge(window: QWidget) -> None:
+    """Windows takes about a second to bring a newly shown frosted window's Acrylic up, and until
+    then the window is only its veil over what is behind - far too clear. So it opens over frosted
+    glass of its own, made from the screen behind it (taken now, before it is on screen), which
+    fades away as the Acrylic comes."""
+    g = window.geometry()
+    screen = QGuiApplication.screenAt(g.center()) or window.screen() or QGuiApplication.primaryScreen()
+    area = screen.geometry()
+    got = g.intersected(area)
+    if got.isEmpty():
+        return
+    shot = screen.grabWindow(0, got.x() - area.x(), got.y() - area.y(), got.width(), got.height())
+    if not shot.isNull():
+        _bridge_from(window, shot if got == g else _fill_out(shot, got, g))
+
+
+def _bridge_from(window: QWidget, shot: QPixmap) -> None:
+    """_bridge, from a shot of what is behind the window: blurred and tinted as Acrylic is (mostly
+    its tint, a little of what is behind showing through), kept while Windows brings its own up,
+    then faded out."""
+    glass = _soften(shot, 16)
+    painter = QPainter(glass)
+    painter.fillRect(QRectF(0, 0, glass.width(), glass.height()),
+                     QColor(44, 44, 44, 205) if is_dark() else QColor(250, 250, 250, 190))
+    painter.end()
+    window._suite_bridge = glass
+    window._suite_bridge_opacity = 1.0
+    ref = weakref.ref(window)
+
+    def fade() -> None:
+        w = ref()
+        if w is None or getattr(w, '_suite_bridge', None) is not glass:
+            return
+        if not motion_on():
+            done(w)
+            return
+        animation = QVariantAnimation(w)
+        animation.setDuration(_BRIDGE_FADE)
+        animation.setStartValue(1.0)
+        animation.setEndValue(0.0)
+        animation.setEasingCurve(QEasingCurve.InOutQuad)
+        animation.valueChanged.connect(lambda value: (setattr(w, '_suite_bridge_opacity', float(value)),
+                                                      w.update()))
+        animation.finished.connect(lambda: done(w))
+        _keep(animation)
+        animation.start()
+
+    def done(w) -> None:
+        if getattr(w, '_suite_bridge', None) is glass:
+            w._suite_bridge = None
+            w.update()
+
+    QTimer.singleShot(_BRIDGE_HOLD, fade)
+
+
+def _paint_bridge(painter, window: QWidget) -> None:
+    """A frosted window's own glass, while it opens (_bridge), under its veil."""
+    glass = getattr(window, '_suite_bridge', None)
+    if glass is not None:
+        painter.setOpacity(window._suite_bridge_opacity)
+        painter.drawPixmap(0, 0, glass)
+        painter.setOpacity(1.0)
 
 
 BACKDROP_OPACITY = 0.10       # a backdrop picture is this faint, so text over it reads as well as ever
