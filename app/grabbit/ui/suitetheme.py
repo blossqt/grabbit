@@ -613,17 +613,19 @@ def app_mode(name: str) -> None:
     _apply_mode()
 
 
+def _scheme() -> Qt.ColorScheme:
+    """Light or dark as chosen - the app's own choice, else the suite's; Unknown: as Windows is."""
+    chosen = _app_mode if _app_mode != 'system' else mode()
+    return {'light': Qt.ColorScheme.Light, 'dark': Qt.ColorScheme.Dark}.get(chosen, Qt.ColorScheme.Unknown)
+
+
 def _apply_mode(starting: bool = False) -> None:
     """Show the app light or dark, as chosen. Qt then says the scheme changed, and everything
     restyles (install). As the app starts, a choice of Windows' leaves Qt as it is."""
     app = QGuiApplication.instance()
-    if app is None:
+    if app is None or (starting and _scheme() == Qt.ColorScheme.Unknown):
         return
-    chosen = _app_mode if _app_mode != 'system' else mode()
-    if starting and chosen == 'system':
-        return
-    app.styleHints().setColorScheme({'light': Qt.ColorScheme.Light, 'dark': Qt.ColorScheme.Dark}.get(
-        chosen, Qt.ColorScheme.Unknown))
+    app.styleHints().setColorScheme(_scheme())
 
 
 def _look_changed() -> None:
@@ -896,10 +898,10 @@ _MARGIN = 56              # how far beyond a window's edges its shot of the scre
 # shrink: the rings' corners.
 _LENSES = {
     'frosted': dict(band=24, reach=24, power=1.5, blur=7, steps=8, corner=GLASS_RADIUS * 2, shrink=1.0),
-    'liquid': dict(band=6, reach=40, rate=0.85, blur=2, steps=9, corner=LIQUID_RADIUS, shrink=1.0),
+    'liquid': dict(band=9, reach=48, rate=0.55, blur=2, steps=10, corner=LIQUID_RADIUS, shrink=1.0),
     # a framed window's rim in the liquid look: only the rings that bend in light from beyond its
     # edges (the window itself fills the rest of its shot)
-    'rim': dict(band=3, reach=40, rate=0.85, blur=2, steps=5, corner=GLASS_RADIUS, shrink=1.0),
+    'rim': dict(band=5, reach=56, rate=0.55, blur=2, steps=6, corner=GLASS_RADIUS, shrink=1.0),
 }
 _LIVE_MS = 33             # how often a moving window takes the screen behind it again
 _SETTLE = 0.35            # and for how long after it stops
@@ -1012,10 +1014,12 @@ def _lens_for(window: QWidget) -> QPixmap | None:
     corner = window.mapToGlobal(QPoint(0, 0))
     framed = not _frameless(window)
     spec = _LENSES['rim' if framed else look()]
+    above = _ABOVE if framed else 0
     key = (look(), framed, window.width(), window.height(), corner.x() - at.x(), corner.y() - at.y(),
            shot.cacheKey())
     if getattr(window, '_suite_lens_key', None) != key:
-        window._suite_lens = _lens(shot, key[4], key[5], window.width(), window.height(), spec, rim_only=framed)
+        window._suite_lens = _lens(shot, key[4], key[5] - above, window.width(), window.height() + above, spec,
+                                   rim_only=framed)
         window._suite_lens_key = key
     return window._suite_lens
 
@@ -1198,6 +1202,9 @@ def _lean(window: QWidget) -> float:
     return max(-0.5, min(0.5, (middle - area.center().x()) / max(1, area.width())))
 
 
+_ABOVE = 40      # a framed window's glass runs on up behind its title bar: no rim or corners along its top
+
+
 def _clear_tint(window: QWidget) -> int:
     """How much a framed window's clear glass tints what is behind it: clear where that is calm,
     more where its text would be hard to read - as _liquid_tint, from a little more, as a window
@@ -1218,19 +1225,33 @@ def _paint_clear(window: QWidget, event) -> None:
     painter.setRenderHint(QPainter.SmoothPixmapTransform)
     painter.setClipRect(event.rect())
     r = QRectF(window.rect())
+    # The rim first - the glass runs on up behind the title bar, so its top edge, rim and corners
+    # are out of sight - then the tint over all of it, the rim as much as the rest.
+    lens = _lens_for(window)
+    if lens is not None:
+        dpr = lens.devicePixelRatio()
+        painter.drawPixmap(QRectF(0, -_ABOVE, lens.width() / dpr, lens.height() / dpr), lens, QRectF(lens.rect()))
     alpha = _clear_tint(window)
     tint = QLinearGradient(r.topLeft(), r.bottomLeft())
     tint.setColorAt(0.0, QColor(46, 43, 54, alpha) if dark else QColor(255, 255, 255, alpha))
     tint.setColorAt(1.0, QColor(20, 18, 26, alpha) if dark else QColor(232, 232, 238, alpha))
     painter.fillRect(r, tint)
-    lens = _lens_for(window)
-    if lens is not None:
-        dpr = lens.devicePixelRatio()
-        painter.drawPixmap(QRectF(0, 0, lens.width() / dpr, lens.height() / dpr), lens, QRectF(lens.rect()))
     light = 120 - 50 * _lean(window)
-    edge = r.adjusted(0.5, 0.5, -0.5, -0.5)
-    _edge_light(painter, edge, GLASS_RADIUS, light, 120 if dark else 200, 1.0)
+    edge = r.adjusted(0.5, 0.5 - _ABOVE, -0.5, -0.5)
+    _rim_glow(painter, edge, GLASS_RADIUS, light, 46 if dark else 80)
+    _edge_light(painter, edge, GLASS_RADIUS, light, 175 if dark else 245, 1.3)
     painter.end()
+
+
+def _rim_glow(painter, r: QRectF, radius: float, light: float, alpha: int, depth: int = 7) -> None:
+    """The rim's own light, inside the edge: brightest at the edge and fading smoothly inwards over
+    depth pixels, by which way each bit of the edge faces - the glass's thickness catching the
+    light, without a hard line where the rim meets the rest."""
+    for k in range(depth):
+        inset = 1.0 + k
+        fade = (1 - k / depth) ** 2
+        _edge_light(painter, r.adjusted(inset, inset, -inset, -inset), max(0.5, radius - inset), light,
+                    int(alpha * fade), 1.0)
 
 
 def _paint_frosted(painter, rect, radius: float, lens: QPixmap) -> None:
@@ -1321,8 +1342,8 @@ def _paint_liquid(painter, rect, window: QWidget, lens: QPixmap) -> None:
     shade.setColorAt(1.0, QColor(0, 0, 0, 0))
     painter.fillPath(path, shade)
     light = 120 - 50 * _lean(window)                        # the light's direction, from above-left
-    _edge_light(painter, r, radius, light, 150 if dark else 200, 1.2)
-    _edge_light(painter, r.adjusted(1.6, 1.6, -1.6, -1.6), radius - 1.6, light, 45 if dark else 70, 1.0)
+    _rim_glow(painter, r, radius, light, 40 if dark else 85)
+    _edge_light(painter, r, radius, light, 180 if dark else 245, 1.3)
     painter.restore()
 
 

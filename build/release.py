@@ -259,6 +259,27 @@ def sign_release(version: str, notes: str, archive: Path, apk: Path, secret: str
 
 # -------------------------------------------------------------------- state
 
+def require_shared_files_current() -> None:
+    """The suite's shared files in this app (ui\\suitetheme.py, suitelink.py and the rest) must be
+    Hanami's originals: a release with a stale copy ships an app that looks or links differently
+    from the rest of the suite - it happened once, the glass's rim fixes left out of three apps.
+    Hanami's tests\\check_copies.py says which differ; for Hanami itself, a warning will do."""
+    checker = Path.home() / 'Documents' / 'Hanami' / 'tests' / 'check_copies.py'
+    if not checker.is_file():
+        return
+    result = subprocess.run([sys.executable, str(checker)], text=True, capture_output=True,
+                            encoding='utf-8', errors='replace')
+    stale = [line.strip() for line in result.stdout.splitlines() if line.startswith(('DIFFERS', 'MISSING'))]
+    if ROOT.name.lower() == 'hanami':
+        for line in stale:
+            print(f'   warning: {line} - copy it over before releasing that app', flush=True)
+        return
+    mine = [line for line in stale if str(ROOT).lower() in line.lower()]
+    if mine:
+        fail("shared files here differ from Hanami's originals - run Hanami's tests\\check_copies.py "
+             '--sync, commit, then release:\n   ' + '\n   '.join(mine))
+
+
 def require_clean_and_pushed() -> str:
     if run('git', 'status', '--porcelain').stdout.strip():
         fail('there are uncommitted changes - commit or stash them first, so the release '
@@ -594,6 +615,7 @@ def main() -> int:
             fail(f'{args.version} is not a version like 1.3.0')
         if not updates.is_newer(args.version, version) and args.version != version:
             fail(f'{args.version} is not newer than {version}')
+    require_shared_files_current()
     head = require_clean_and_pushed()
     # Before anything slow: a release that cannot be signed is not worth building.
     secret = load_update_key()
