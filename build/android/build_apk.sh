@@ -25,8 +25,9 @@ OUTDIR="$ROOT/dist/android"
 DIST=grabbit
 PKG=com.grabbit.downloader
 NAME=Grabbit
-# One version for both platforms: the shared package is where it is written.
-VERSION="${GRABBIT_VERSION:-$(sed -n "s/^APP_VERSION = '\(.*\)'/\1/p" "$ROOT/app/grabbit/__init__.py")}"
+# The version this commit carries (app/grabbit/version.py). An APK is only built when the phone
+# app changed, so it is the release's own number then; releases between carry it unchanged.
+VERSION="${GRABBIT_VERSION:-$(sed -n "s/^APP_VERSION = '\(.*\)'/\1/p" "$ROOT/app/grabbit/version.py")}"
 ARCH=arm64-v8a
 # shellcheck source=versions.sh
 source "$HERE/versions.sh"
@@ -89,6 +90,7 @@ cp -r "$ROOT/android/grabbit_mobile" "$APPDIR/grabbit_mobile"
 cp -r "$ROOT/app/grabbit" "$APPDIR/shared/grabbit"
 # The desktop front-end has no place on a phone: it is Qt, and nothing here
 # imports it. The engine module is the Qt orchestration; the phone has its own.
+# (The workflow's push paths and ANDROID_INPUTS in build/release.py leave out the same files.)
 rm -rf "$APPDIR/shared/grabbit/ui" \
        "$APPDIR/shared/grabbit/app.py" \
        "$APPDIR/shared/grabbit/engine.py" \

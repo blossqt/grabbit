@@ -11,11 +11,21 @@ on:
         description: 'Recompile aria2, FFmpeg, QuickJS and dav1d instead of reusing the cache'
         type: boolean
         default: false
+  # Only what the phone app is made from - not the version number on its own, nor the Windows
+  # app's own parts, which build_apk.sh leaves out. ANDROID_INPUTS in build/release.py is the same
+  # list: a release that changes none of these carries the last APK as it is.
   push:
     branches: [main]
     paths:
       - 'android/**'
       - 'app/grabbit/**'
+      - '!app/grabbit/version.py'
+      - '!app/grabbit/ui/**'
+      - '!app/grabbit/app.py'
+      - '!app/grabbit/engine.py'
+      - '!app/grabbit/associations.py'
+      - '!app/grabbit/player.py'
+      - '!app/grabbit/selfupdate.py'
       - 'build/android/**'
       - '.github/workflows/android.yml'
 
@@ -315,7 +325,7 @@ jobs:
           if [ "$signer" != "$pinned" ]; then
             echo "::warning::signed with a throwaway key: this APK cannot be released or installed over Grabbit"
           fi
-          version=$(sed -n "s/^APP_VERSION = '\(.*\)'/\1/p" app/grabbit/__init__.py)
+          version=$(sed -n "s/^APP_VERSION = '\(.*\)'/\1/p" app/grabbit/version.py)
           final="dist/android/Grabbit-${version}-arm64-${GITHUB_SHA::7}.apk"
           mv "$built" "$final"
           sha256sum "$final" | tee "$final.sha256"

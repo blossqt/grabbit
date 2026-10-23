@@ -20,8 +20,12 @@ What it does:
      is not one to publish.
   3. Builds the Windows app (build_app.ps1), checks the exe carries the version,
      and zips it.
-  4. Gets the APK for this exact commit from the Android workflow - an existing
-     run if there is one, otherwise it starts one and waits for it.
+  4. Gets the APK. If nothing the phone app is made from (ANDROID_INPUTS) has
+     changed since the latest release's APK was built, that APK goes into this
+     release as it is, under its own older version - a build takes ten minutes
+     or more, for nothing. Otherwise it is this commit's, from the Android
+     workflow - an existing run if there is one, otherwise it starts one and
+     waits for it - and carries this release's version.
   5. Reads the APK's signature and refuses it unless it was signed with the
      release key, whose fingerprint build\android\signing-sha256.txt pins. An
      APK signed with anything else would install on no phone that has Grabbit.
@@ -144,11 +148,14 @@ def write_checksum(path: Path) -> Path:
 
 # ------------------------------------------------------------------ version
 
+VERSION_FILE = ROOT / 'app' / 'grabbit' / 'version.py'
+
+
 def project_version() -> str:
-    text = (ROOT / 'app' / 'grabbit' / '__init__.py').read_text(encoding='utf-8')
+    text = VERSION_FILE.read_text(encoding='utf-8')
     match = re.search(r"^APP_VERSION = '([^']+)'", text, re.M)
     if not match:
-        fail('could not find APP_VERSION in app/grabbit/__init__.py')
+        fail('could not find APP_VERSION in app/grabbit/version.py')
     return match.group(1)
 
 
@@ -163,8 +170,7 @@ def rewrite(path: Path, pattern: str, replacement: str, count: int) -> None:
 
 def set_project_version(version: str) -> None:
     major, minor, patch = version.split('.')
-    rewrite(ROOT / 'app' / 'grabbit' / '__init__.py',
-            r"^APP_VERSION = '[^']+'", f"APP_VERSION = '{version}'", 1)
+    rewrite(VERSION_FILE, r"^APP_VERSION = '[^']+'", f"APP_VERSION = '{version}'", 1)
     info = ROOT / 'build' / 'version_info.txt'
     rewrite(info, r'(filevers|prodvers)=\(\d+, \d+, \d+, \d+\)',
             rf'\1=({major}, {minor}, {patch}, 0)', 2)
@@ -237,17 +243,18 @@ def make_update_key() -> int:
     return 0
 
 
-def sign_release(version: str, notes: str, archive: Path, apk: Path, secret: str) -> list:
+def sign_release(version: str, notes: str, archive: Path, apk: Path, secret: str, apk_version: str) -> list:
     """Write latest.json and its signature, and prove the apps will believe them."""
     published = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
     manifest = updates.build_manifest(version, notes=notes, published_at=published,
-                                      desktop=archive, android=apk)
+                                      desktop=archive, android=apk, android_version=apk_version)
     signature = updates.sign_manifest(manifest, secret)
     try:
         release = updates.verify_and_parse(manifest, signature, key=recorded_public_key())
     except updates.UpdateError as error:
         fail(f'the signed manifest does not verify: {error}')
-    if release.version != version or release.desktop is None or release.android is None:
+    if (release.version != version or release.desktop is None or release.android is None
+            or release.android.version != apk_version):
         fail('the signed manifest does not describe this release')
     manifest_path = DIST / updates.MANIFEST_NAME
     signature_path = DIST / updates.SIGNATURE_NAME
@@ -415,9 +422,15 @@ def apk_signer_sha256(path: Path) -> str:
     raise ValueError('it is not signed with scheme v2 or v3')
 
 
-# What the Android workflow builds from: its push paths. A commit that changes
-# none of these builds exactly the APK the commit before it did.
-ANDROID_INPUTS = ('android', 'app/grabbit', 'build/android', '.github/workflows/android.yml')
+# What the phone app is made from: the Android workflow's push paths, less the
+# version number on its own and the Windows app's parts build_apk.sh leaves out.
+# A commit that changes none of these builds the APK the commit before it did.
+ANDROID_INPUTS = ('android', 'app/grabbit', 'build/android', '.github/workflows/android.yml',
+                  ':(exclude)app/grabbit/version.py', ':(exclude)app/grabbit/ui',
+                  ':(exclude)app/grabbit/app.py', ':(exclude)app/grabbit/engine.py',
+                  ':(exclude)app/grabbit/associations.py', ':(exclude)app/grabbit/player.py',
+                  ':(exclude)app/grabbit/selfupdate.py')
+_APK_NAME = re.compile(r'^Grabbit-(\d+\.\d+\.\d+)-arm64')
 
 
 def recent_runs() -> list:
@@ -469,7 +482,9 @@ def android_build(sha: str, dry_run: bool) -> int:
     # script - starts no Android build of its own, and needs none.
     for earlier in recent_runs():
         if (earlier['status'] == 'completed' and earlier['conclusion'] == 'success'
-                and same_apk_inputs(earlier['headSha'], sha)):
+                and same_apk_inputs(earlier['headSha'], sha)
+                and run('git', 'diff', '--quiet', earlier['headSha'], sha, '--', 'app/grabbit/version.py',
+                        check=False).returncode == 0):          # and so named for this version
             say(f'reusing the APK built from {earlier["headSha"][:7]}: nothing it is made '
                 'from has changed since')
             return earlier['databaseId']
@@ -503,23 +518,67 @@ def fetch_apk(version: str, sha: str, dry_run: bool) -> Path:
         recorded = built.with_name(built.name + '.sha256')
         if recorded.exists() and recorded.read_text().split()[0] != sha256_of(built):
             fail(f'{built.name} does not match the checksum the build recorded for it')
-
-        pinned = PIN.read_text(encoding='ascii').strip()
-        try:
-            signer = apk_signer_sha256(built)
-        except ValueError as error:
-            fail(f'could not read the APK signature: {error}')
-        if signer != pinned:
-            fail(f'the APK is signed by {signer[:16]}…, not the release key {pinned[:16]}… '
-                 '(build/android/signing-sha256.txt). It would not install over Grabbit on '
-                 'any phone - check the ANDROID_KEYSTORE_B64 secret.')
-        print(f'   signed with the release key ({signer[:16]}…)')
+        require_release_signed(built)
 
         final = DIST / f'Grabbit-{version}-arm64.apk'
         DIST.mkdir(exist_ok=True)
         shutil.copyfile(built, final)
     print(f'   {final.name}  {final.stat().st_size / 1e6:.1f} MB')
     return final
+
+
+def require_release_signed(apk: Path) -> None:
+    pinned = PIN.read_text(encoding='ascii').strip()
+    try:
+        signer = apk_signer_sha256(apk)
+    except ValueError as error:
+        fail(f'could not read the APK signature: {error}')
+    if signer != pinned:
+        fail(f'the APK is signed by {signer[:16]}…, not the release key {pinned[:16]}… '
+             '(build/android/signing-sha256.txt). It would not install over Grabbit on '
+             'any phone - check the ANDROID_KEYSTORE_B64 secret.')
+    print(f'   signed with the release key ({signer[:16]}…)')
+
+
+def released_apk():
+    """The APK the latest release carries, as the phones see it: its own version and the signed
+    manifest's entry for it - None if there is none, or the release can't be read."""
+    try:
+        release = updates.latest_release()
+    except updates.UpdateError as error:
+        say(f'could not read the latest release ({error})')
+        return None
+    if release.android is None:
+        return None
+    own = release.android.version
+    if not own:                     # from before an APK carried a version of its own: in its name
+        match = _APK_NAME.match(release.android.name)
+        own = match.group(1) if match else release.version
+    return own, release.android
+
+
+def apk_for(version: str, sha: str, dry_run: bool) -> tuple[Path, str]:
+    """This release's APK, and its version. If nothing the phone app is made from has changed
+    since the latest release's APK was built (at the tag of its own version), that APK as it is,
+    under its version; otherwise this commit's, under this release's."""
+    last = released_apk()
+    if last is not None:
+        own, asset = last
+        run('git', 'fetch', '--quiet', '--tags', 'origin')
+        built = run('git', 'rev-parse', '--verify', '--quiet', f'refs/tags/v{own}^{{commit}}',
+                    check=False).stdout.strip()
+        if built and same_apk_inputs(built, sha):
+            say(f'the phone app has not changed since Grabbit {own}: carrying its APK over as it is')
+            DIST.mkdir(exist_ok=True)
+            try:
+                final = updates.download(asset, DIST)       # held to the signed manifest's size and hash
+            except updates.UpdateError as error:
+                fail(f'could not fetch the last APK: {error}')
+            require_release_signed(final)
+            print(f'   {final.name}  {final.stat().st_size / 1e6:.1f} MB')
+            return final, own
+        say(f'the phone app has changed since Grabbit {own}: building a new APK')
+    return fetch_apk(version, sha, dry_run), version
 
 
 # -------------------------------------------------------------------- notes
@@ -627,7 +686,7 @@ def main() -> int:
         else:
             say(f'setting the version to {version}')
             set_project_version(version)
-            run('git', 'add', 'app/grabbit/__init__.py', 'build/version_info.txt')
+            run('git', 'add', 'app/grabbit/version.py', 'build/version_info.txt')
             run('git', 'commit', '--quiet', '-m', f'Grabbit {version}')
             run('git', 'push', '--quiet', 'origin', 'HEAD:main')
             head = run('git', 'rev-parse', 'HEAD').stdout.strip()
@@ -655,10 +714,10 @@ def main() -> int:
         say(f'dry run: would build the Windows app and the APK as {version}')
     else:
         archive = build_windows(version, head, build=not args.no_build)
-        apk = fetch_apk(version, head, args.dry_run)
+        apk, apk_version = apk_for(version, head, args.dry_run)
         say('signing the release')
         files = [archive, write_checksum(archive), apk, write_checksum(apk),
-                 *sign_release(version, notes, archive, apk, secret)]
+                 *sign_release(version, notes, archive, apk, secret, apk_version)]
 
     say('ready to publish')
     print(f'   tag      {tag} on {head[:7]}')

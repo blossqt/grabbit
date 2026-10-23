@@ -79,14 +79,18 @@ def main():
     zip_file.write_bytes(b'zip' * 1000)
     apk_file.write_bytes(b'apk' * 1000)
 
-    def publish(version='9.0.0', desktop=zip_file, android=apk_file, key=secret, tamper=None):
+    def publish(version='9.0.0', desktop=zip_file, android=apk_file, key=secret, tamper=None, android_version=None):
         manifest = updates.build_manifest(version, notes='What changed.', published_at='now',
-                                          desktop=desktop, android=android)
+                                          desktop=desktop, android=android, android_version=android_version)
         signature = updates.sign_manifest(manifest, key.hex())
         if tamper:
             manifest = tamper(manifest)
-        (latest / updates.MANIFEST_NAME).write_bytes(manifest)
-        (latest / updates.SIGNATURE_NAME).write_text(signature)
+        own = site / 'releases' / 'download' / f'v{version}'      # in the release, as on GitHub
+        own.mkdir(parents=True, exist_ok=True)
+        for where in (own, latest):
+            (where / updates.MANIFEST_NAME).write_bytes(manifest)
+            (where / updates.SIGNATURE_NAME).write_text(signature)
+        return manifest
 
     print('\nagainst a stand-in for GitHub')
     publish()
@@ -108,6 +112,27 @@ def main():
     report('a release with nothing for Windows is not offered there',
            not updates.check('windows', current='1.2.0').available)
 
+    # A Windows-only fix carries the last APK over as it is, under its own older version.
+    publish('9.1.0', android_version='9.0.0')
+    phone = updates.check('android', current='9.0.0')
+    report("a phone already on the carried-over APK isn't offered it again",
+           not phone.available and not phone.error, f'latest for the phone {phone.latest}')
+    phone = updates.check('android', current='1.2.0')
+    report('an older phone is offered the carried-over APK, under its own version',
+           phone.available and phone.latest == '9.0.0', phone.latest)
+    desktop = updates.check('windows', current='9.0.0')
+    report('Windows is offered the release itself', desktop.available and desktop.latest == '9.1.0',
+           desktop.latest)
+
+    # GitHub caches the "latest release" files apart: just after a release, the manifest can still
+    # be the last one's while the signature is already the new one's.
+    last = publish('9.0.0')
+    publish('9.2.0')
+    (latest / updates.MANIFEST_NAME).write_bytes(last)
+    stale = updates.check('windows', current='1.2.0')
+    report('a stale cache of the latest release is no forgery: the last release, believed',
+           stale.available and stale.latest == '9.0.0' and not stale.error, stale.latest or stale.error)
+
     print('\nwhat must be refused')
     stranger = ed25519.generate_secret()
     for what, kwargs, expect in (
@@ -120,13 +145,16 @@ def main():
 
     other = updates.build_manifest('9.0.0', notes='', published_at='now', desktop=zip_file,
                                    android=None).replace(b'"Grabbit"', b'"HomeworkHub"')
-    (latest / updates.MANIFEST_NAME).write_bytes(other)
-    (latest / updates.SIGNATURE_NAME).write_text(updates.sign_manifest(other, secret.hex()))
+    tagged = site / 'releases' / 'download' / 'v9.0.0'
+    for where in (tagged, latest):
+        (where / updates.MANIFEST_NAME).write_bytes(other)
+        (where / updates.SIGNATURE_NAME).write_text(updates.sign_manifest(other, secret.hex()))
     answer = updates.check('windows', current='1.2.0')
     report("another app's release is refused, even signed", not answer.available
            and 'different app' in answer.error, answer.error)
 
-    (latest / updates.SIGNATURE_NAME).write_text('not base64 at all!')
+    for where in (tagged, latest):
+        (where / updates.SIGNATURE_NAME).write_text('not base64 at all!')
     answer = updates.check('windows', current='1.2.0')
     report('an unreadable signature is refused', 'unreadable' in answer.error, answer.error)
 

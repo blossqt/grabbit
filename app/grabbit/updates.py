@@ -3,12 +3,15 @@
 Releases are published on GitHub by build/release.py. Besides the Windows zip
 and the Android APK, each one carries:
 
-    latest.json        which version this is, and each file's size and SHA-256
+    latest.json        which version this is, and each file's size and SHA-256 -
+                       and the APK's own version, older than the release's when
+                       the phone app has not changed since an earlier release
     latest.json.sig    an Ed25519 signature over latest.json's exact bytes
 
 Both apps fetch the newest manifest from GitHub's stable "latest release"
-address, and believe it only when the signature checks out against the public
-key built into the app (release_key.py). The key that signs never leaves the
+address (and its signature from the release it names), and believe it only
+when the signature checks out against the public key built into the app
+(release_key.py). The key that signs never leaves the
 machine that publishes, so even someone who got into the GitHub account could
 not ship an update Grabbit would install. The phone has a second line of
 defence of its own: Android refuses an update not signed like the installed app.
@@ -98,6 +101,7 @@ class Asset:
     size: int
     sha256: str
     url: str
+    version: str = ''       # its own, when older than the release's: an APK carried over unchanged
 
 
 @dataclass(frozen=True)
@@ -128,16 +132,21 @@ def file_digest(path: Path) -> tuple:
 
 
 def build_manifest(version: str, *, notes: str, published_at: str,
-                   desktop: Path | None, android: Path | None) -> bytes:
-    """The bytes release.py signs and uploads."""
+                   desktop: Path | None, android: Path | None, android_version: str | None = None) -> bytes:
+    """The bytes release.py signs and uploads. The APK can carry a version of its own: one
+    carried over from an earlier release, as nothing in the phone app changed since."""
     if parse_version(version) is None:
         raise ValueError(f'not a version: {version!r}')
+    if android_version is not None and parse_version(android_version) is None:
+        raise ValueError(f'not a version: {android_version!r}')
     body = {'schema': SCHEMA, 'app': APP_NAME, 'version': version,
             'published_at': published_at, 'notes': notes, 'desktop': None, 'android': None}
     for key, path in (('desktop', desktop), ('android', android)):
         if path is not None:
             size, sha = file_digest(path)
             body[key] = {'file': Path(path).name, 'size': size, 'sha256': sha}
+    if body['android'] is not None:
+        body['android']['version'] = android_version or version
     return (json.dumps(body, indent=2) + '\n').encode('utf-8')
 
 
@@ -160,7 +169,10 @@ def _asset(entry, version: str, label: str) -> Asset | None:
         size = -1
     if not _FILE.match(name) or not _HEX32.match(sha) or size <= 0:
         raise UpdateError(f'The {label} entry in the update is missing its file, size or hash.')
-    return Asset(name, size, sha, f'{site()}/releases/download/v{version}/{name}')
+    own = str(entry.get('version') or '')
+    if own and parse_version(own) is None:
+        raise UpdateError(f'The {label} entry in the update has no usable version.')
+    return Asset(name, size, sha, f'{site()}/releases/download/v{version}/{name}', own)
 
 
 def verify_and_parse(manifest: bytes, signature, key: str | None = None) -> Release:
@@ -215,12 +227,34 @@ def _fetch(url: str, timeout: float) -> bytes:
         return response.read(1 << 20)          # a manifest is a few hundred bytes
 
 
+def _named_version(manifest: bytes) -> str | None:
+    """The version a manifest says it is, before it is believed - only to know which release's
+    signature to fetch for it, so only as plain numbers."""
+    try:
+        version = parse_version(json.loads(manifest.decode('utf-8')).get('version'))
+    except (UnicodeDecodeError, ValueError, AttributeError):
+        return None
+    return '.'.join(map(str, version)) if version else None
+
+
 def latest_release(timeout: float = 15) -> Release:
-    """The newest release, verified. Raises UpdateError and nothing else."""
+    """The newest release, verified. Raises UpdateError and nothing else.
+
+    The signature is fetched from the release the manifest names, not from the "latest release"
+    address as the manifest is: GitHub caches the two files apart, and for a few minutes after a
+    release one can be the new release's and the other the last one's - a pair that would never
+    match, and would look like a forgery."""
     base = f'{site()}/releases/latest/download'
     try:
         manifest = _fetch(f'{base}/{MANIFEST_NAME}', timeout)
-        signature = _fetch(f'{base}/{SIGNATURE_NAME}', timeout)
+        named = _named_version(manifest)
+        try:
+            signature = _fetch(f'{site()}/releases/download/v{named}/{SIGNATURE_NAME}' if named
+                               else f'{base}/{SIGNATURE_NAME}', timeout)
+        except urllib.error.HTTPError as error:
+            if error.code != 404 or not named:
+                raise
+            signature = _fetch(f'{base}/{SIGNATURE_NAME}', timeout)
     except urllib.error.HTTPError as error:
         if error.code == 404:
             raise UpdateError('No update information has been published yet.') from None
@@ -280,12 +314,16 @@ class Check:
     @property
     def available(self) -> bool:
         # A release with nothing for this platform - an Android-only fix, say -
-        # is not an update for it.
+        # is not an update for it; nor is one carrying this platform's file over
+        # unchanged from an earlier release (the APK of a Windows-only fix).
         return (self.release is not None and self.asset is not None
-                and is_newer(self.release.version, self.current))
+                and is_newer(self.latest, self.current))
 
     @property
     def latest(self) -> str:
+        """The newest version for this platform: the file's own, or the release's."""
+        if self.asset is not None and self.asset.version:
+            return self.asset.version
         return self.release.version if self.release else ''
 
 
