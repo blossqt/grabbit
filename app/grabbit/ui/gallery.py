@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QListWidget, QListW
                                QPushButton, QSizePolicy, QStyle, QStyledItemDelegate, QVBoxLayout)
 
 from ..util import human_duration, human_size
-from . import thumbs
+from . import theme, thumbs
 
 ITEM_ROLE = Qt.UserRole + 1
 PIXMAP_ROLE = Qt.UserRole + 2
@@ -228,6 +228,7 @@ class PreviewDialog(QDialog):
 
     def __init__(self, items, start: int, checked: list, parent=None):
         super().__init__(parent)
+        theme.frost(self)
         self.setWindowTitle('Preview')
         self.resize(900, 720)
         self.items = items

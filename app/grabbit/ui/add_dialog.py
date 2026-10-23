@@ -13,7 +13,7 @@ from .. import analyze as analyze_mod
 from .. import choices
 from ..torrentmeta import parse_torrent
 from ..util import extract_links, host_of, human_size, site_name
-from . import icons, preview, thumbs
+from . import icons, preview, theme, thumbs
 from .framepicker import FramePicker
 from .gallery import GalleryGrid, PreviewDialog
 
@@ -503,6 +503,7 @@ class GalleryCard(LinkCard):
 class AddDialog(QDialog):
     def __init__(self, settings, parent=None, text: str = ''):
         super().__init__(parent)
+        theme.frost(self)
         self.settings = settings
         self.requests: list = []
         self.start_now = True

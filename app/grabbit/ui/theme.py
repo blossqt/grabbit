@@ -14,7 +14,7 @@ from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
 from .suitetheme import *  # noqa: F401,F403 - the suite's look, used as theme.<name>
-from .suitetheme import ACCENT, ON_ACCENT, ink, is_dark
+from .suitetheme import ACCENT, ON_ACCENT, glass_on, ink, is_dark
 
 _DARK = {
     'window': '#1e1f22', 'base': '#17181a', 'alt': '#232427', 'text': '#e6e6e6',
@@ -26,7 +26,17 @@ _LIGHT = {
 }
 
 
+# On glass (suitetheme.frost), the window's own colour is the suite's veil, painted under it, so
+# the style sheet leaves it see-through and keeps its panels and lists faint.
+_DARK_GLASS = {**_DARK, 'window': '#00000000', 'base': '#10ffffff', 'alt': '#18ffffff', 'border': '#2effffff',
+               'hover': '#20ffffff', 'bar': '#2affffff'}
+_LIGHT_GLASS = {**_LIGHT, 'window': '#00000000', 'base': '#8cffffff', 'alt': '#5affffff', 'border': '#22000000',
+                'hover': '#14000000', 'bar': '#20000000'}
+
+
 def colors() -> dict:
+    if glass_on():
+        return dict(_DARK_GLASS if is_dark() else _LIGHT_GLASS)
     return dict(_DARK if is_dark() else _LIGHT)
 
 

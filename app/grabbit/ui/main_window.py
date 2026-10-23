@@ -62,6 +62,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, engine, settings):
         super().__init__()
+        theme.frost(self)
         self.engine = engine
         self.settings = settings
         self._clipboard_seen = ''

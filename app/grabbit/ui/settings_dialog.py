@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
 from .. import APP_NAME, APP_VERSION, associations
 from ..paths import data_dir, find_tool
 from ..settings import COOKIE_BROWSERS, VIDEO_QUALITIES
+from . import theme
 
 
 def _page(tabs: QTabWidget, title: str) -> QFormLayout:
@@ -29,6 +30,7 @@ def _page(tabs: QTabWidget, title: str) -> QFormLayout:
 class SettingsDialog(QDialog):
     def __init__(self, settings, parent=None):
         super().__init__(parent)
+        theme.frost(self)
         self.settings = settings
         self.restart_needed = False
         self.setWindowTitle('Options')

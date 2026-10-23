@@ -17,3 +17,6 @@ __pycache__/
 
 # Android build output
 vendor/android/
+
+# Scratch scripts
+.dev/

@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFileDialog
                                QLabel, QPushButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout)
 
 from ..util import human_size
-from . import icons
+from . import icons, theme
 
 INDEX_ROLE = Qt.UserRole + 1
 SIZE_ROLE = Qt.UserRole + 2
@@ -16,6 +16,7 @@ SIZE_ROLE = Qt.UserRole + 2
 class TorrentFilesDialog(QDialog):
     def __init__(self, meta, selected=None, save_dir: str = '', recent_dirs=None, parent=None):
         super().__init__(parent)
+        theme.frost(self)
         self.meta = meta
         self.setWindowTitle('Torrent contents')
         self.resize(760, 560)
