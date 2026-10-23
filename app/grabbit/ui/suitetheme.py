@@ -28,7 +28,8 @@ Personalisation > Colours); without them everything stays solid, as before.
 Two looks, chosen in Hanami for the whole suite (look(), set_look()):
 
 - Frosted, the default: clear glass that softens what is behind it, and
-  gathers a little of what lies beyond a pop-up's edges in at its rim.
+  gathers a little of what lies beyond a pop-up's edges in at its rim -
+  lit as liquid glass's rim is.
 - Liquid glass, after Apple's: what is behind stays sharp in the middle and
   bends at the edges and round the corners, as through a polished lens, under
   a tint that adapts to it. The bending moves with the glass as it rises into
@@ -47,18 +48,21 @@ the look and Windows' light or dark as they change.
 from __future__ import annotations
 
 import ctypes
+import itertools
 import math
 import os
+import queue
 import sys
+import threading
 import time
 import weakref
 from ctypes import wintypes
 from dataclasses import dataclass, replace
 
 from PySide6.QtCore import (QEasingCurve, QEvent, QObject, QPoint, QPointF, QPropertyAnimation, QRect, QRectF, Qt,
-                            QTimer, QVariantAnimation)
-from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QFont, QGuiApplication, QLinearGradient, QPainter,
-                           QPainterPath, QPalette, QPen, QPixmap, QRadialGradient)
+                            QTimer, QVariantAnimation, Signal)
+from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QFont, QGuiApplication, QImage, QLinearGradient,
+                           QPainter, QPainterPath, QPalette, QPen, QPixmap, QRadialGradient, QRegion)
 from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QGraphicsOpacityEffect, QLineEdit,
                                QProxyStyle, QPushButton, QStackedWidget, QStyle, QToolButton, QWidget)
 
@@ -315,7 +319,7 @@ def paint_glass(painter, rect, radius: float = GLASS_RADIUS, fill: QColor | None
         if look() == 'liquid':
             _paint_liquid(painter, rect, window, lens)
         else:
-            _paint_frosted(painter, rect, radius, lens)
+            _paint_frosted(painter, rect, radius, window, lens)
         return
     dark = is_dark()
     r = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5)
@@ -798,8 +802,9 @@ def _refrost_all() -> None:
 
 class _Frosting(QObject):
     """Watches the glass windows: glass as each is shown, then its animations - and, under a framed
-    one's contents, the veil, which Qt leaves unpainted on a see-through window. A frameless one's
-    glass is taken from the screen as it opens, and follows it as it moves or changes size."""
+    one's contents, the veil, which Qt leaves unpainted on a see-through window, and its rim's
+    light. A frameless one's glass is taken from the screen as it opens, and follows it as it
+    moves or changes size."""
 
     def eventFilter(self, obj, event):
         kind = event.type()
@@ -811,6 +816,7 @@ class _Frosting(QObject):
             elif glass_on():
                 painter = QPainter(obj)
                 painter.fillRect(event.rect(), veil())
+                _paint_framed_rim(painter, obj)
                 painter.end()
             if getattr(obj, '_suite_backdrop', None):
                 return _paint_backdrop(obj, event)
@@ -829,7 +835,13 @@ class _Frosting(QObject):
         elif kind in (QEvent.Move, QEvent.Resize) and obj.isVisible() and _screen_glass(obj):
             if not getattr(obj, '_suite_gliding', False):
                 _follow(obj)
-            obj.update()
+            if kind == QEvent.Move and not _frameless(obj):
+                _update_rim(obj)                    # only its rim changes as it is dragged
+            else:
+                obj.update()
+        elif kind == QEvent.Move and obj.isVisible() and glass_on() and obj.property(_FROSTED) \
+                and not _frameless(obj) and _light_of(obj) != getattr(obj, '_suite_rim_light', None):
+            _update_rim(obj)                        # the light on its rim shifts as it goes
         elif kind == QEvent.ChildAdded and obj.isVisible():
             QTimer.singleShot(0, obj, lambda: _animate_parts(obj))
         return False
@@ -888,6 +900,11 @@ def _frosting() -> _Frosting:
 # glass made from the last shot, shifted, in between; and a still window looks now and then at
 # what is around it, and takes the screen again when that changed. While it is left out, the
 # window is missing from screenshots and screen sharing too - only for those moments.
+#
+# Those later shots are taken on a thread of the glass's own (_Grabber): Windows takes several
+# milliseconds over each, which a window being dragged would otherwise spend waiting, frame after
+# frame, and its dragging would stutter. A framed window repaints only its rim as it is dragged
+# (_update_rim) - the rest of it does not change - and gauges its tint again once it settles.
 
 _WDA_NONE, _WDA_EXCLUDEFROMCAPTURE = 0, 0x11
 _MARGIN = 56              # how far beyond a window's edges its shot of the screen reaches
@@ -920,48 +937,234 @@ def _clear(window: QWidget) -> bool:
     return glass_on() and look() == 'liquid' and not _frameless(window) and bool(window.property(_FROSTED))
 
 
-def _capture(window: QWidget) -> None:
-    """Take what is behind a frameless window, a little beyond its edges, for its glass."""
+def _where(window: QWidget):
+    """Where a window's shot of the screen is taken from: its screen, the part of the screen wanted
+    (the window and a margin around it) and the part of that on the screen - None if none is."""
     g = window.frameGeometry()
     screen = QGuiApplication.screenAt(g.center()) or window.screen() or QGuiApplication.primaryScreen()
-    area = screen.geometry()
     want = g.adjusted(-_MARGIN, -_MARGIN, _MARGIN, _MARGIN)
-    got = want.intersected(area)
-    if got.isEmpty():
+    got = want.intersected(screen.geometry())
+    return None if got.isEmpty() else (screen, got, want)
+
+
+def _capture(window: QWidget) -> None:
+    """Take what is behind a window, a little beyond its edges, for its glass - now, as it opens.
+    (Later shots are taken on the glass's own thread: _capture_later.)"""
+    where = _where(window)
+    if where is None:
         return
+    screen, got, want = where
+    area = screen.geometry()
     shot = screen.grabWindow(0, got.x() - area.x(), got.y() - area.y(), got.width(), got.height())
-    if shot.isNull():
-        return
+    if not shot.isNull():
+        _took(window, *_made(shot, got, want, _LENSES[look()]['blur'], not _frameless(window), True))
+
+
+def _made(shot, got: QRect, want: QRect, blur: int, framed: bool, tone: bool) -> tuple:
+    """A shot of the screen made into glass, on any thread (a QImage away from the windows' own):
+    made up to the size wanted, softened, and - if tone - with how bright and busy what is behind
+    the window is. What is behind a frameless window is in the shot; a framed one's isn't (the
+    window itself is there), so its tint goes by what is around it."""
     if got != want:
         shot = _fill_out(shot, got, want)
-    window._suite_shot = _soften(shot, _LENSES[look()]['blur'])
-    window._suite_shot_at = want.topLeft()
-    inside = QRectF(_MARGIN, _MARGIN, g.width(), g.height())
-    # What is behind a frameless window is in the shot; a framed one's isn't (the window itself is
-    # there), so its tint goes by what is around it.
-    tone = _tone(shot, inside) if _frameless(window) else _tone_around(shot, inside)
-    old = getattr(window, '_suite_tone', None)
-    if old is not None and (_live(window) or not _frameless(window)):
-        tone = tuple(0.6 * a + 0.4 * b for a, b in zip(old, tone))
-    window._suite_tone = tone
-    window.update()
+    told = None
+    if tone:
+        inside = QRectF(_MARGIN, _MARGIN, want.width() - 2 * _MARGIN, want.height() - 2 * _MARGIN)
+        told = _tone_around(shot, inside) if framed else _tone(shot, inside)
+    return _soften(shot, blur), want.topLeft(), told
 
 
-def _fill_out(shot: QPixmap, got: QRect, want: QRect) -> QPixmap:
+def _took(window: QWidget, shot, at: QPoint, tone: tuple | None) -> None:
+    """A window has a new shot for its glass: shown - for a framed window only along its rim,
+    unless the tint changed with it."""
+    if isinstance(shot, QImage):
+        shot = QPixmap.fromImage(shot)
+    window._suite_shot = shot
+    window._suite_shot_at = at
+    framed = not _frameless(window)
+    tint = _clear_tint(window) if framed else None
+    if tone is not None:
+        old = getattr(window, '_suite_tone', None)
+        if old is not None and (_live(window) or framed):
+            tone = tuple(0.6 * a + 0.4 * b for a, b in zip(old, tone))
+        window._suite_tone = tone
+    if framed and _clear_tint(window) == tint:
+        _update_rim(window)
+    else:
+        window.update()
+
+
+def _capture_later(window: QWidget, final: bool) -> bool:
+    """Take what is behind a window again, on the glass's own thread, and show it when it comes. A
+    framed window's tint is gauged again only from the last one (final), once it has settled, so
+    as it is dragged only its rim repaints; a frameless window repaints whole anyway. False if a
+    shot for the window is on its way already."""
+    where = _where(window)
+    if where is None:
+        if final:
+            _stop_live(window)
+        return True
+    screen, got, want = where
+    blur, framed = _LENSES[look()]['blur'], not _frameless(window)
+    tone = final or not framed
+    ref = weakref.ref(window)
+
+    def then(made):
+        w = ref()
+        if w is None or not w.isVisible():
+            return
+        if made is not None:
+            _took(w, *made)
+        if final and not _live(w):
+            _stop_live(w)                   # back in shots, now the last one is taken
+
+    return _grabber().take(('shot', id(window)), _native(screen, got), screen.devicePixelRatio(),
+                           lambda image: _made(image, got, want, blur, framed, tone), then)
+
+
+def _native(screen, rect: QRect) -> QRect:
+    """A part of a screen in Windows' own pixels: Qt's are scaled by the screen's DPI from its corner."""
+    dpr = screen.devicePixelRatio()
+    origin = screen.geometry().topLeft()
+    return QRect(origin.x() + round((rect.x() - origin.x()) * dpr), origin.y() + round((rect.y() - origin.y()) * dpr),
+                 round(rect.width() * dpr), round(rect.height() * dpr))
+
+
+class _BitmapHeader(ctypes.Structure):
+    _fields_ = [('size', wintypes.DWORD), ('width', wintypes.LONG), ('height', wintypes.LONG),
+                ('planes', wintypes.WORD), ('bit_count', wintypes.WORD), ('compression', wintypes.DWORD),
+                ('image_size', wintypes.DWORD), ('x_ppm', wintypes.LONG), ('y_ppm', wintypes.LONG),
+                ('used', wintypes.DWORD), ('important', wintypes.DWORD)]
+
+
+_SRCCOPY, _CAPTUREBLT = 0x00CC0020, 0x40000000
+_gdi_calls = None
+
+
+def _gdi():
+    """user32 and gdi32 for taking shots of the screen - copies of their own, so the types set on
+    them here touch no other code's."""
+    global _gdi_calls
+    if _gdi_calls is None:
+        user32, gdi32 = ctypes.WinDLL('user32'), ctypes.WinDLL('gdi32')
+        user32.GetDC.argtypes, user32.GetDC.restype = [wintypes.HWND], wintypes.HDC
+        user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+        gdi32.CreateCompatibleDC.argtypes, gdi32.CreateCompatibleDC.restype = [wintypes.HDC], wintypes.HDC
+        gdi32.CreateDIBSection.argtypes = [wintypes.HDC, ctypes.c_void_p, wintypes.UINT,
+                                           ctypes.POINTER(ctypes.c_void_p), wintypes.HANDLE, wintypes.DWORD]
+        gdi32.CreateDIBSection.restype = wintypes.HBITMAP
+        gdi32.SelectObject.argtypes, gdi32.SelectObject.restype = [wintypes.HDC, wintypes.HGDIOBJ], wintypes.HGDIOBJ
+        gdi32.BitBlt.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.HDC,
+                                 ctypes.c_int, ctypes.c_int, wintypes.DWORD]
+        gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+        gdi32.DeleteDC.argtypes = [wintypes.HDC]
+        _gdi_calls = user32, gdi32
+    return _gdi_calls
+
+
+def _screen_image(rect: QRect) -> QImage | None:
+    """A part of the screen (in Windows' own pixels) as it is shown, as Qt's grabWindow takes it -
+    on any thread."""
+    width, height = rect.width(), rect.height()
+    if width <= 0 or height <= 0:
+        return None
+    user32, gdi32 = _gdi()
+    screen = user32.GetDC(None)
+    if not screen:
+        return None
+    memory = gdi32.CreateCompatibleDC(screen)
+    header = _BitmapHeader(ctypes.sizeof(_BitmapHeader), width, -height, 1, 32)     # top row first
+    bits = ctypes.c_void_p()
+    bitmap = gdi32.CreateDIBSection(screen, ctypes.byref(header), 0, ctypes.byref(bits), None, 0)
+    image = None
+    if bitmap and bits.value:
+        old = gdi32.SelectObject(memory, bitmap)
+        if gdi32.BitBlt(memory, 0, 0, width, height, screen, rect.x(), rect.y(), _SRCCOPY | _CAPTUREBLT):
+            image = QImage(ctypes.string_at(bits, width * height * 4), width, height, width * 4,
+                           QImage.Format_RGB32).copy()
+        gdi32.SelectObject(memory, old)
+    if bitmap:
+        gdi32.DeleteObject(bitmap)
+    gdi32.DeleteDC(memory)
+    user32.ReleaseDC(None, screen)
+    return image
+
+
+class _Grabber(QObject):
+    """The glass's own thread: it takes shots of the screen, makes them into glass (make, given
+    the shot as a QImage) and hands that back to the windows' thread (then) - one shot at a time
+    for each key."""
+
+    _done = Signal(object, object)
+
+    def __init__(self):
+        super().__init__()
+        self._jobs = queue.SimpleQueue()
+        self._waiting: dict = {}            # token: (key, then)
+        self._busy: set = set()
+        self._tokens = itertools.count()
+        self._done.connect(self._finish)
+        threading.Thread(target=self._work, name='suite-glass', daemon=True).start()
+
+    def take(self, key, rect: QRect, dpr: float, make, then) -> bool:
+        if key in self._busy:
+            return False
+        token = next(self._tokens)
+        self._busy.add(key)
+        self._waiting[token] = (key, then)
+        self._jobs.put((token, rect, dpr, make))
+        return True
+
+    def _work(self) -> None:
+        while True:
+            token, rect, dpr, make = self._jobs.get()
+            try:
+                made = _screen_image(rect)
+                if made is not None:
+                    made.setDevicePixelRatio(dpr)
+                    made = make(made)
+            except Exception:                   # noqa: BLE001 - no shot this time: the glass keeps the last
+                made = None
+            try:
+                self._done.emit(token, made)
+            except RuntimeError:                # the app is closing
+                return
+
+    def _finish(self, token, made) -> None:
+        key, then = self._waiting.pop(token, (None, None))
+        self._busy.discard(key)
+        if then is not None:
+            then(made)
+
+
+_grabber_thread = None
+
+
+def _grabber() -> _Grabber:
+    global _grabber_thread
+    if _grabber_thread is None:
+        _grabber_thread = _Grabber()
+    return _grabber_thread
+
+
+def _fill_out(shot, got: QRect, want: QRect):
     """A shot cut short by the screen's edge, made up to the size wanted: beyond the edge, roughly
-    what is at it."""
+    what is at it. (A QPixmap, or on any thread a QImage.)"""
     dpr = shot.devicePixelRatio()
-    full = QPixmap(round(want.width() * dpr), round(want.height() * dpr))
+    size = round(want.width() * dpr), round(want.height() * dpr)
+    image = isinstance(shot, QImage)
+    full = QImage(*size, QImage.Format_RGB32) if image else QPixmap(*size)
     full.setDevicePixelRatio(dpr)
     painter = QPainter(full)
     painter.setRenderHint(QPainter.SmoothPixmapTransform)
-    painter.drawPixmap(QRectF(0, 0, want.width(), want.height()), shot, QRectF(shot.rect()))
-    painter.drawPixmap(QPointF(got.x() - want.x(), got.y() - want.y()), shot)
+    draw = painter.drawImage if image else painter.drawPixmap
+    draw(QRectF(0, 0, want.width(), want.height()), shot, QRectF(shot.rect()))
+    draw(QPointF(got.x() - want.x(), got.y() - want.y()), shot)
     painter.end()
     return full
 
 
-def _soften(shot: QPixmap, factor: int) -> QPixmap:
+def _soften(shot, factor: int):
     if factor <= 1:
         return shot
     small = shot.scaled(max(1, shot.width() // factor), max(1, shot.height() // factor), Qt.IgnoreAspectRatio,
@@ -971,19 +1174,19 @@ def _soften(shot: QPixmap, factor: int) -> QPixmap:
     return soft
 
 
-def _luma(color: QColor) -> float:
-    return 0.2126 * color.redF() + 0.7152 * color.greenF() + 0.0722 * color.blueF()
-
-
-def _tone(shot: QPixmap, inner: QRectF) -> tuple[float, float]:
+def _tone(shot, inner: QRectF) -> tuple[float, float]:
     """How bright what is behind the window is (0 to 1), and how busy (how much it changes from
-    one spot to the next) - so the liquid glass's tint can keep text on it easy to read."""
+    one spot to the next) - so the liquid glass's tint can keep text on it easy to read. (Of a
+    QPixmap, or on any thread a QImage.)"""
     dpr = shot.devicePixelRatio()
     part = shot.copy(QRect(round(inner.x() * dpr), round(inner.y() * dpr), max(1, round(inner.width() * dpr)),
                            max(1, round(inner.height() * dpr))))
     n = 32
-    image = part.toImage().scaled(n, n, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-    lum = [[_luma(image.pixelColor(x, y)) for x in range(n)] for y in range(n)]
+    image = (part.toImage() if isinstance(part, QPixmap) else part).scaled(
+        n, n, Qt.IgnoreAspectRatio, Qt.SmoothTransformation).convertToFormat(QImage.Format_RGB32)
+    raw, line = image.constBits(), image.bytesPerLine()          # blue, green, red, - for each spot
+    lum = [[(0.0722 * raw[i] + 0.7152 * raw[i + 1] + 0.2126 * raw[i + 2]) / 255
+            for i in range(y * line, y * line + 4 * n, 4)] for y in range(n)]
     mean = sum(map(sum, lum)) / (n * n)
     busy = sum(abs(lum[y][x] - lum[y][x + 1]) + abs(lum[y][x] - lum[y + 1][x])
                for y in range(n - 1) for x in range(n - 1)) / ((n - 1) ** 2)
@@ -1117,10 +1320,11 @@ def _live_frame(window: QWidget) -> None:
         return
     now = time.monotonic()
     hidden_at = window._suite_hidden_at
-    if hidden_at is None or now - hidden_at >= _HIDDEN_FOR:
-        _capture(window)
-        if now >= window._suite_settle:
-            _stop_live(window)
+    if hidden_at is not None and now - hidden_at < _HIDDEN_FOR:
+        return
+    final = now >= window._suite_settle
+    if _capture_later(window, final) and final:
+        window._suite_live.stop()                   # (left out of shots until that last one comes)
 
 
 def _stop_live(window: QWidget) -> None:
@@ -1153,24 +1357,35 @@ def _watch_around(window: QWidget, start: bool = False, stop: bool = False) -> N
         return
     if not window.isVisible() or _live(window) or not _screen_glass(window):
         return
-    now = _around(window)
-    last = getattr(window, '_suite_around', None)
-    window._suite_around = now
-    if now is not None and last is not None and len(now) == len(last) \
-            and sum(abs(a - b) for a, b in zip(now, last)) / len(now) > 0.025:
-        _follow(window)
-
-
-def _around(window: QWidget) -> list | None:
-    """The colours of the strips of screen just around a window, a few of each."""
     g = window.frameGeometry()
     screen = QGuiApplication.screenAt(g.center()) or window.screen() or QGuiApplication.primaryScreen()
-    area = screen.geometry()
-    gap, strip = 4, 12
-    outer = g.adjusted(-gap - strip, -gap - strip, gap + strip, gap + strip).intersected(area)
-    shot = screen.grabWindow(0, outer.x() - area.x(), outer.y() - area.y(), outer.width(), outer.height())
-    if shot.isNull():
-        return None
+    gap, strip = _AROUND
+    outer = g.adjusted(-gap - strip, -gap - strip, gap + strip, gap + strip).intersected(screen.geometry())
+    if outer.isEmpty():
+        return
+    ref = weakref.ref(window)
+
+    def then(now):
+        w = ref()
+        if w is None or not w.isVisible() or _live(w):
+            return
+        last = getattr(w, '_suite_around', None)
+        w._suite_around = now
+        if now is not None and last is not None and len(now) == len(last) \
+                and sum(abs(a - b) for a, b in zip(now, last)) / len(now) > 0.025:
+            _follow(w)
+
+    _grabber().take(('around', id(window)), _native(screen, outer), screen.devicePixelRatio(),
+                    lambda shot: _around(shot, outer, g), then)
+
+
+_AROUND = 4, 12         # the strips a still window watches: how far out from its edges they start, how wide
+
+
+def _around(shot, outer: QRect, g: QRect) -> list:
+    """The colours of the strips of screen just around a window (g), a few of each, from a shot of
+    outer - on any thread."""
+    gap = _AROUND[0]
     dpr = shot.devicePixelRatio()
     x0, y0 = g.x() - outer.x(), g.y() - outer.y()
     parts = [QRect(0, 0, outer.width(), y0 - gap),                                     # above
@@ -1185,8 +1400,8 @@ def _around(window: QWidget) -> list | None:
         piece = shot.copy(QRect(round(part.x() * dpr), round(part.y() * dpr), round(part.width() * dpr),
                                 round(part.height() * dpr)))
         wide = part.width() >= part.height()
-        image = piece.toImage().scaled(8 if wide else 1, 1 if wide else 8, Qt.IgnoreAspectRatio,
-                                       Qt.SmoothTransformation)
+        image = (piece.toImage() if isinstance(piece, QPixmap) else piece).scaled(
+            8 if wide else 1, 1 if wide else 8, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
         for i in range(8):
             color = image.pixelColor(i if wide else 0, 0 if wide else i)
             values += [color.redF(), color.greenF(), color.blueF()]
@@ -1202,7 +1417,50 @@ def _lean(window: QWidget) -> float:
     return max(-0.5, min(0.5, (middle - area.center().x()) / max(1, area.width())))
 
 
+def _light_of(window: QWidget) -> int:
+    """The angle the light on a window's glass comes from, in whole degrees, from above-left - a
+    little more from the left the further right it is."""
+    return round(120 - 50 * _lean(window))
+
+
 _ABOVE = 40      # a framed window's glass runs on up behind its title bar: no rim or corners along its top
+_RIM_SPAN = 12   # how far in from a framed window's edges its rim, its light and the bending reach
+
+
+def _update_rim(window: QWidget) -> None:
+    """Repaint only a framed window's rim - its sides and bottom (the top is under the title
+    bar) - where its glass changes as it is dragged: not the rest of it, nor the parts on it."""
+    r = window.rect()
+    window.update(QRegion(r).subtracted(QRegion(r.adjusted(_RIM_SPAN, 0, -_RIM_SPAN, -_RIM_SPAN))))
+
+
+def _rim_light(window: QWidget, r: QRectF, radius: float, light: int, alphas: tuple[int, int]) -> QPixmap:
+    """The light on a glass rim - its soft glow inside the edge (_rim_glow, alphas[0]) and the
+    bright edge (_edge_light, alphas[1]) - drawn once into a picture the window's size and kept:
+    it takes a few milliseconds to draw, and a dragged window repaints its rim frame after frame.
+    The light kept to whole degrees, it is drawn again only now and then as the window goes."""
+    dpr = window.devicePixelRatioF()
+    key = (window.width(), window.height(), dpr, r.getRect(), radius, light, alphas)
+    if getattr(window, '_suite_rim_key', None) != key:
+        layer = QPixmap(max(1, round(window.width() * dpr)), max(1, round(window.height() * dpr)))
+        layer.setDevicePixelRatio(dpr)
+        layer.fill(Qt.transparent)
+        painter = QPainter(layer)
+        painter.setRenderHint(QPainter.Antialiasing)
+        _rim_glow(painter, r, radius, light, alphas[0])
+        _edge_light(painter, r, radius, light, alphas[1], 1.3)
+        painter.end()
+        window._suite_rim, window._suite_rim_key = layer, key
+    window._suite_rim_light = light
+    return window._suite_rim
+
+
+def _paint_framed_rim(painter, window: QWidget) -> None:
+    """The light on a framed glass window's rim, in either look - none along its top, as its glass
+    runs on up behind the title bar."""
+    edge = QRectF(window.rect()).adjusted(0.5, 0.5 - _ABOVE, -0.5, -0.5)
+    alphas = (46, 175) if is_dark() else (80, 245)
+    painter.drawPixmap(0, 0, _rim_light(window, edge, GLASS_RADIUS, _light_of(window), alphas))
 
 
 def _clear_tint(window: QWidget) -> int:
@@ -1236,10 +1494,7 @@ def _paint_clear(window: QWidget, event) -> None:
     tint.setColorAt(0.0, QColor(46, 43, 54, alpha) if dark else QColor(255, 255, 255, alpha))
     tint.setColorAt(1.0, QColor(20, 18, 26, alpha) if dark else QColor(232, 232, 238, alpha))
     painter.fillRect(r, tint)
-    light = 120 - 50 * _lean(window)
-    edge = r.adjusted(0.5, 0.5 - _ABOVE, -0.5, -0.5)
-    _rim_glow(painter, edge, GLASS_RADIUS, light, 46 if dark else 80)
-    _edge_light(painter, edge, GLASS_RADIUS, light, 175 if dark else 245, 1.3)
+    _paint_framed_rim(painter, window)
     painter.end()
 
 
@@ -1254,10 +1509,10 @@ def _rim_glow(painter, r: QRectF, radius: float, light: float, alpha: int, depth
                     int(alpha * fade), 1.0)
 
 
-def _paint_frosted(painter, rect, radius: float, lens: QPixmap) -> None:
+def _paint_frosted(painter, rect, radius: float, window: QWidget, lens: QPixmap) -> None:
     """Frosted glass: what is behind, softened, through the lens's rim, under a light veil for
-    reading, a glow where the light falls, and rims that catch it - bright at the top left and
-    bottom right."""
+    reading, a glow where the light falls, and the liquid glass's rim catching the light by which
+    way each bit of it faces."""
     dark = is_dark()
     r = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5)
     path = QPainterPath()
@@ -1275,23 +1530,7 @@ def _paint_frosted(painter, rect, radius: float, lens: QPixmap) -> None:
     glow.setColorAt(0, QColor(255, 255, 255, 38 if dark else 70))
     glow.setColorAt(1, QColor(255, 255, 255, 0))
     painter.fillPath(path, glow)
-    rim = QLinearGradient(r.topLeft(), r.bottomRight())
-    rim.setColorAt(0.0, QColor(255, 255, 255, 235))
-    rim.setColorAt(0.3, QColor(255, 255, 255, 60))
-    rim.setColorAt(0.7, QColor(255, 255, 255, 40))
-    rim.setColorAt(1.0, QColor(255, 255, 255, 190))
-    painter.setPen(QPen(QBrush(rim), 1.6))
-    painter.setBrush(Qt.NoBrush)
-    painter.drawPath(path)
-    inner = QPainterPath()
-    inner.addRoundedRect(r.adjusted(2.5, 2.5, -2.5, -2.5), max(1.0, radius - 2.5), max(1.0, radius - 2.5))
-    shine = QLinearGradient(r.topLeft(), r.bottomLeft())
-    shine.setColorAt(0.0, QColor(255, 255, 255, 110))
-    shine.setColorAt(0.2, QColor(255, 255, 255, 0))
-    shine.setColorAt(0.85, QColor(255, 255, 255, 0))
-    shine.setColorAt(1.0, QColor(255, 255, 255, 70))
-    painter.setPen(QPen(QBrush(shine), 1))
-    painter.drawPath(inner)
+    painter.drawPixmap(0, 0, _rim_light(window, r, radius, _light_of(window), (40, 180) if dark else (85, 245)))
     painter.restore()
 
 
@@ -1341,9 +1580,7 @@ def _paint_liquid(painter, rect, window: QWidget, lens: QPixmap) -> None:
     shade.setColorAt(0.5, QColor(255, 255, 255, 0))
     shade.setColorAt(1.0, QColor(0, 0, 0, 0))
     painter.fillPath(path, shade)
-    light = 120 - 50 * _lean(window)                        # the light's direction, from above-left
-    _rim_glow(painter, r, radius, light, 40 if dark else 85)
-    _edge_light(painter, r, radius, light, 180 if dark else 245, 1.3)
+    painter.drawPixmap(0, 0, _rim_light(window, r, radius, _light_of(window), (40, 180) if dark else (85, 245)))
     painter.restore()
 
 
