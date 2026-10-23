@@ -1,5 +1,5 @@
 """suitetheme: the suite's look in a Qt app - its pink, check boxes, colours, fonts and cards,
-its frosted glass and its animations.
+its glass and its animations.
 
 SHARED FILE - the same file sits in the ui folder of the suite's Qt apps
 (Keytap, Dropshift, Grabbit). This copy, in Hanami, is the original: change
@@ -15,115 +15,176 @@ machine follows the wallpaper and could be any colour at all. It is too pale
 for white text or for lines on white: text on it is ON_ACCENT, and the pink as
 text or a line on the window is ink().
 
-Frosted glass: every window of the suite is a pane of glass - whatever is
-behind it shows through, blurred - as Windows 11's own are. An app calls
-frost(window) once, before the window is first shown. A framed window then
-takes Windows' Acrylic; a frameless one (a card, a menu, a toast), which
-Windows leaves solid, takes the older acrylic blur behind, tinted, with
-Windows' own rounded corners and shadow - so it paints no shadow of its own
-(glass_on() says which). colors() turns see-through to match, and
-paint_glass() draws a pane on it: a veil, light along its top edge and a
-bright rim. Glass needs Windows 11 22H2 and Windows' transparency effects on
-(Settings > Personalisation > Colours); without them everything stays solid,
-as before. frost() also brings the suite's animations: frameless windows fade
-in, a window's stacked pages fade in as they change, and check boxes tick
-smoothly.
+Glass: every window of the suite is a pane of glass, as Windows 11's own are.
+An app calls frost(window) once, before the window is first shown. A framed
+window then takes Windows' Acrylic under a veil of the suite's own; a
+frameless one (a card, a menu, a toast, a shelf) draws its glass itself, from
+the screen behind it (see "glass from the screen"), with Windows' rounded
+corners and shadow - so it paints no shadow of its own (glass_on() says
+which). colors() turns see-through to match, and paint_glass() draws the pane.
+Glass needs Windows 11 22H2 and Windows' transparency effects on (Settings >
+Personalisation > Colours); without them everything stays solid, as before.
 
-Two looks, chosen in Hanami for the whole suite (look(), set_look()): frosted,
-as above, and liquid glass, after Apple's - clearer, and bending what is
-behind a pop-up near its edges, as a lens does. Windows has no such material,
-so a liquid pop-up draws its glass from the screen behind it (see the liquid
-glass section).
+Two looks, chosen in Hanami for the whole suite (look(), set_look()):
+
+- Frosted, the default: clear glass that softens what is behind it, and
+  gathers a little of what lies beyond a pop-up's edges in at its rim.
+- Liquid glass, after Apple's: what is behind stays sharp in the middle and
+  bends at the edges and round the corners, as through a polished lens, under
+  a tint that adapts to it. The bending moves with the glass as it rises into
+  place, unfolds, is dragged or changes size. Buttons and boxes are capsules,
+  check boxes are switches, and buttons and panels catch a light under the
+  pointer that brightens as they are pressed.
+
+frost() also brings the suite's animations, unless they are off (motion_on()):
+pop-ups fade in (rising and unfolding into place in the liquid look), a
+window's stacked pages fade in as they change (sliding in, in the liquid
+look), and check boxes tick (switches spring across) smoothly. A style sheet
+made from this module's colours should be set with restyle(), so it follows
+the look and Windows' light or dark as they change.
 """
 
 from __future__ import annotations
 
 import ctypes
+import math
 import os
 import sys
+import time
+import weakref
 from ctypes import wintypes
 from dataclasses import dataclass, replace
 
-from PySide6.QtCore import (QEasingCurve, QEvent, QObject, QPointF, QPropertyAnimation, QRectF, Qt, QTimer,
-                            QVariantAnimation)
-from PySide6.QtGui import (QBrush, QColor, QFont, QGuiApplication, QLinearGradient, QPainter, QPainterPath, QPalette,
-                           QPen, QPixmap, QRadialGradient)
-from PySide6.QtWidgets import (QApplication, QCheckBox, QGraphicsOpacityEffect, QProxyStyle, QStackedWidget, QStyle,
-                               QWidget)
+from PySide6.QtCore import (QEasingCurve, QEvent, QObject, QPoint, QPointF, QPropertyAnimation, QRect, QRectF, Qt,
+                            QTimer, QVariantAnimation)
+from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QFont, QGuiApplication, QLinearGradient, QPainter,
+                           QPainterPath, QPalette, QPen, QPixmap, QRadialGradient)
+from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QGraphicsOpacityEffect, QLineEdit,
+                               QProxyStyle, QPushButton, QStackedWidget, QStyle, QToolButton, QWidget)
 
 __all__ = ['ACCENT', 'ACCENT_HOVER', 'ON_ACCENT', 'ROSE', 'SuiteStyle', 'install', 'Colors', 'is_dark', 'veil',
-           'colors', 'ink', 'font', 'paint_shadow', 'card_style', 'GLASS_RADIUS', 'glass_on', 'frost',
-           'paint_glass', 'css', 'fade_in', 'LOOKS', 'look', 'set_look']
+           'colors', 'ink', 'font', 'paint_shadow', 'card_style', 'liquid_controls_css', 'panel_css', 'GLASS_RADIUS',
+           'LIQUID_RADIUS', 'glass_on', 'frost', 'paint_glass', 'css', 'fade_in', 'LOOKS', 'look', 'set_look',
+           'motion_on', 'motion_chosen', 'set_motion', 'MODES', 'mode', 'set_mode', 'app_mode', 'restyle',
+           'on_restyle', 'light_up', 'BACKDROP_OPACITY']
 
 ACCENT = '#ffd1dc'         # the suite's blossom pink: buttons, ticks, highlights
 ACCENT_HOVER = '#ffe0e8'
 ON_ACCENT = '#a61e4d'      # text and ticks drawn on ACCENT, which is too pale for white
 ROSE = '#c2255c'           # the mark on the icons: the pink as text or a line on white
 GLASS_RADIUS = 8           # the corners Windows 11 rounds a frameless glass window to
+LIQUID_RADIUS = 14         # a liquid glass pop-up's corners, rounder (Windows' own rounding lies outside them)
 
 
 class SuiteStyle(QProxyStyle):
-    """Windows' own style, with check boxes drawn in the suite's pink.
+    """Windows' own style, with check boxes drawn in the suite's pink - as switches in the liquid look.
 
     Windows 11's style loses a ticked box's fill once a style sheet is in
     play, leaving a bare tick that looks cut off. Drawing the box here keeps
     it whole, in any mode, whatever the accent colour of the day. A box that
-    frost() wired up ticks smoothly: its fill and tick follow _TICK, which
-    its animation moves from 0 to 1.
+    frost() wired up ticks smoothly (a switch springs across): its fill and
+    tick follow _TICK, which its animation moves from 0 to 1.
     """
 
     SIZE = 18
+    SWITCH = (34, 20)
 
     def pixelMetric(self, metric, option=None, widget=None):
-        if metric in (QStyle.PM_IndicatorWidth, QStyle.PM_IndicatorHeight):
-            return self.SIZE
+        if metric == QStyle.PM_IndicatorWidth:
+            return self.SWITCH[0] if _liquid_look() else self.SIZE
+        if metric == QStyle.PM_IndicatorHeight:
+            return self.SWITCH[1] if _liquid_look() else self.SIZE
         return super().pixelMetric(metric, option, widget)
 
     def drawPrimitive(self, element, option, painter, widget=None):
         if element != QStyle.PE_IndicatorCheckBox:
             super().drawPrimitive(element, option, painter, widget)
             return
-        c = colors()
         state = option.state
-        ticked = bool(state & QStyle.State_On)
         partly = bool(state & QStyle.State_NoChange)
         step = widget.property(_TICK) if isinstance(widget, QCheckBox) else None
-        step = float(step) if step is not None else (1.0 if ticked or partly else 0.0)
-        side = min(option.rect.width(), option.rect.height(), self.SIZE) - 1
-        box = QRectF(0, 0, side, side)
-        box.moveCenter(QRectF(option.rect).center())
+        moving = step is not None
+        if not moving:
+            step = 1.0 if state & QStyle.State_On else 0.5 if partly and _liquid_look() else 1.0 if partly else 0.0
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing)
         if not state & QStyle.State_Enabled:
             painter.setOpacity(0.45)
+        if _liquid_look():
+            self._switch(option, painter, float(step), moving)
+        else:
+            self._box(option, painter, float(step), partly)
+        painter.restore()
+
+    def _box(self, option, painter, step, partly):
+        c = colors()
+        state = option.state
+        base = painter.opacity()
+        side = min(option.rect.width(), option.rect.height(), self.SIZE) - 1
+        box = QRectF(0, 0, side, side)
+        box.moveCenter(QRectF(option.rect).center())
         hover = state & QStyle.State_MouseOver and state & QStyle.State_Enabled
         painter.setPen(QPen(c.edge if hover or step > 0.5 else c.dim, 1))
         painter.setBrush(c.chip)
         painter.drawRoundedRect(box, side * 0.22, side * 0.22)
-        if step > 0:
-            # The pink fills in from the middle, then the tick draws itself.
-            fill = QColor(ACCENT)
-            grow = 0.55 + 0.45 * min(1.0, step * 1.6)
-            inner = QRectF(0, 0, side * grow, side * grow)
-            inner.moveCenter(box.center())
-            painter.setPen(QPen(c.edge, 1) if grow >= 1 else Qt.NoPen)
-            painter.setBrush(fill)
-            painter.setOpacity(painter.opacity() * min(1.0, step * 2))
-            painter.drawRoundedRect(inner, inner.width() * 0.22, inner.width() * 0.22)
-            painter.setOpacity(1.0 if state & QStyle.State_Enabled else 0.45)
-            pen = QPen(QColor(ON_ACCENT), max(1.6, side * 0.12), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
-            painter.setPen(pen)
-            painter.setBrush(Qt.NoBrush)
-            x, y = box.x(), box.y()
-            if partly:
-                painter.drawLine(QPointF(x + side * 0.28, y + side / 2), QPointF(x + side * 0.72, y + side / 2))
-            elif step > 0.35:
-                tick = QPainterPath(QPointF(x + side * 0.26, y + side * 0.52))
-                tick.lineTo(x + side * 0.43, y + side * 0.69)
-                tick.lineTo(x + side * 0.75, y + side * 0.33)
-                drawn = (step - 0.35) / 0.65
-                painter.drawPath(tick if drawn >= 1 else _part_of(tick, drawn))
-        painter.restore()
+        if step <= 0:
+            return
+        # The pink fills in from the middle, then the tick draws itself.
+        grow = 0.55 + 0.45 * min(1.0, step * 1.6)
+        inner = QRectF(0, 0, side * grow, side * grow)
+        inner.moveCenter(box.center())
+        painter.setPen(QPen(c.edge, 1) if grow >= 1 else Qt.NoPen)
+        painter.setBrush(QColor(ACCENT))
+        painter.setOpacity(base * min(1.0, step * 2))
+        painter.drawRoundedRect(inner, inner.width() * 0.22, inner.width() * 0.22)
+        painter.setOpacity(base)
+        pen = QPen(QColor(ON_ACCENT), max(1.6, side * 0.12), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        x, y = box.x(), box.y()
+        if partly:
+            painter.drawLine(QPointF(x + side * 0.28, y + side / 2), QPointF(x + side * 0.72, y + side / 2))
+        elif step > 0.35:
+            tick = QPainterPath(QPointF(x + side * 0.26, y + side * 0.52))
+            tick.lineTo(x + side * 0.43, y + side * 0.69)
+            tick.lineTo(x + side * 0.75, y + side * 0.33)
+            drawn = (step - 0.35) / 0.65
+            painter.drawPath(tick if drawn >= 1 else _part_of(tick, drawn))
+
+    def _switch(self, option, painter, step, moving):
+        """A switch, as Apple's: the pink fills the track as the knob crosses it, and the knob
+        stretches as it travels - turning to glass while it does - and springs into place."""
+        c = colors()
+        state = option.state
+        base = painter.opacity()
+        width, height = self.SWITCH
+        rect = QRectF(option.rect)
+        track = QRectF(rect.x() + 0.5, rect.center().y() - height / 2 + 0.5, width - 1, height - 1)
+        bend = track.height() / 2
+        on = min(1.0, max(0.0, step))
+        hover = state & QStyle.State_MouseOver and state & QStyle.State_Enabled
+        painter.setPen(QPen(c.edge if hover else c.dim, 1))
+        painter.setBrush(c.chip)
+        painter.drawRoundedRect(track, bend, bend)
+        if on > 0:
+            painter.setOpacity(base * on)
+            painter.setPen(QPen(c.edge, 1))
+            painter.setBrush(QColor(ACCENT))
+            painter.drawRoundedRect(track, bend, bend)
+            painter.setOpacity(base)
+        size = track.height() - 4
+        stretch = 6 * math.sin(math.pi * on) if moving else 0.0
+        x = track.x() + 2 + (track.width() - size - 4) * step - stretch / 2
+        x = min(max(x, track.x() + 1.5), track.right() - 1.5 - size - stretch)
+        knob = QRectF(x, track.center().y() - size / 2, size + stretch, size)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 45))
+        painter.drawRoundedRect(knob.translated(0, 0.8), size / 2, size / 2)
+        painter.setBrush(QColor(255, 255, 255, int(255 - 120 * stretch / 6)))
+        painter.drawRoundedRect(knob, size / 2, size / 2)
+        painter.setPen(QPen(QColor(255, 255, 255, 235), 1))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(knob.adjusted(0.5, 0.5, -0.5, -0.5), size / 2 - 0.5, size / 2 - 0.5)
 
 
 def _part_of(path: QPainterPath, share: float) -> QPainterPath:
@@ -137,24 +198,26 @@ def _part_of(path: QPainterPath, share: float) -> QPainterPath:
 
 
 _style = None
-_look_watch = None
+_watch = None
 
 
 def install(app) -> None:
     """Give the app the suite's style, right after making the QApplication.
 
-    Kept here so Python never frees it under Qt. Frosted windows follow
-    Windows between light and dark from here on too.
+    Kept here so Python never frees it under Qt. The suite's light or dark is
+    taken now; Windows going light or dark, and the look, the animations or
+    light or dark changing in Hanami, are followed from here on.
     """
-    global _style, _look_watch
+    global _style, _watch
     _style = SuiteStyle()
     app.setStyle(_style)
-    app.styleHints().colorSchemeChanged.connect(lambda *_: _refrost_all())
+    _apply_mode(starting=True)
+    app.styleHints().colorSchemeChanged.connect(lambda *_: _suite_changed())
     # The look is chosen in Hanami, for the whole suite: each app looks for a change now and then.
-    _look_watch = QTimer(app)
-    _look_watch.setInterval(2000)
-    _look_watch.timeout.connect(_look_changed)
-    _look_watch.start()
+    _watch = QTimer(app)
+    _watch.setInterval(2000)
+    _watch.timeout.connect(_look_changed)
+    _watch.start()
 
 
 @dataclass(frozen=True)
@@ -203,10 +266,11 @@ def colors() -> Colors:
 
 def veil() -> QColor:
     """A framed glass window's own tint over Windows' Acrylic: enough that text stays easy to read
-    whatever is behind the window - and a little clearer in the liquid look."""
+    whatever is behind the window. (In the liquid look, the tint of its clear glass, as it is
+    mostly - see _paint_clear.)"""
     if look() == 'liquid':
-        return QColor(24, 22, 30, 150) if is_dark() else QColor(250, 247, 249, 150)
-    return QColor(26, 24, 31, 190) if is_dark() else QColor(250, 247, 249, 190)
+        return QColor(30, 28, 38, 150) if is_dark() else QColor(250, 249, 252, 140)
+    return QColor(24, 22, 30, 150) if is_dark() else QColor(250, 247, 249, 150)
 
 
 def css(color: QColor) -> str:
@@ -242,13 +306,16 @@ def paint_shadow(painter, rect, radius: float, depth: int, color: QColor) -> Non
 
 
 def paint_glass(painter, rect, radius: float = GLASS_RADIUS, fill: QColor | None = None) -> None:
-    """A pane of glass on a frosted window: a veil (fill, else the card colour), light along its
-    top edge and a bright rim, brightest where the light falls - glass catching the light. In the
-    liquid look, a frameless window's pane is drawn from what is behind it (see _liquid)."""
+    """A frameless window's pane of glass, made from the screen behind it (see "glass from the
+    screen"): frosted, or liquid. Should that fail, a veil (fill, else the card colour) over
+    Windows' blur, light along its top edge and a bright rim."""
     window = painter.device()
-    lens = getattr(window, '_suite_lens', None) if look() == 'liquid' else None
+    lens = _lens_for(window) if isinstance(window, QWidget) and _screen_glass(window) else None
     if lens is not None:
-        _paint_liquid(painter, rect, radius, lens)
+        if look() == 'liquid':
+            _paint_liquid(painter, rect, window, lens)
+        else:
+            _paint_frosted(painter, rect, radius, lens)
         return
     dark = is_dark()
     r = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5)
@@ -271,17 +338,15 @@ def paint_glass(painter, rect, radius: float = GLASS_RADIUS, fill: QColor | None
 
 
 def card_style() -> str:
-    """Stylesheet for the inputs and buttons that sit on a card: glassy, lit from above."""
+    """Stylesheet for the inputs and buttons that sit on a card: glassy, lit from above - and in
+    the liquid look, capsules of glass. Set it with restyle(), so it follows the look."""
     c = colors()
     text, dim, chip, border = c.text.name(), c.dim.name(), css(c.chip), css(c.border)
     edge = c.edge.name()
     dark = is_dark()
     shine = css(QColor(255, 255, 255, 26 if dark else 170))
     rim = css(QColor(255, 255, 255, 34 if dark else 200))
-    return f"""
-        QLabel {{ color: {text}; background: transparent; }}
-        QLabel[role="dim"] {{ color: {dim}; }}
-        QLabel[role="error"] {{ color: {c.error.name()}; }}
+    controls = liquid_controls_css() or f"""
         QLineEdit {{
             color: {text}; background: {chip}; border: 1px solid {border};
             border-radius: 8px; padding: 7px 10px; selection-background-color: {ACCENT};
@@ -307,12 +372,17 @@ def card_style() -> str:
         QPushButton:checked {{ color: {ON_ACCENT}; background: {ACCENT}; border: 1px solid {edge}; font-weight: 600; }}
         QPushButton:disabled {{ color: {dim}; }}
         QPushButton[role="primary"]:disabled {{ color: {ON_ACCENT}; background: {chip}; border: 1px solid {border}; }}
-        QProgressBar {{ background: {chip}; border: none; border-radius: 3px; max-height: 6px; }}
-        QProgressBar::chunk {{ background: {edge}; border-radius: 3px; }}
         QToolButton {{ color: {dim}; background: transparent; border: 1px solid transparent;
                        border-radius: 8px; padding: 0px 8px 2px 8px; }}
-        QToolButton:hover {{ color: {text}; }}
-        QToolButton:hover {{ border: 1px solid {edge}; }}
+        QToolButton:hover {{ color: {text}; border: 1px solid {edge}; }}
+    """
+    return f"""
+        QLabel {{ color: {text}; background: transparent; }}
+        QLabel[role="dim"] {{ color: {dim}; }}
+        QLabel[role="error"] {{ color: {c.error.name()}; }}
+        {controls}
+        QProgressBar {{ background: {chip}; border: none; border-radius: 3px; max-height: 6px; }}
+        QProgressBar::chunk {{ background: {edge}; border-radius: 3px; }}
         QToolButton::menu-indicator {{ image: none; width: 0; }}
         QCheckBox {{ color: {text}; background: transparent; spacing: 8px; }}
         QListView {{ background: transparent; border: none; outline: none; }}
@@ -323,10 +393,81 @@ def card_style() -> str:
     """
 
 
-# --------------------------------------------------------------------------- frosted glass
+def liquid_controls_css() -> str:
+    """In the liquid look, style sheet rules for buttons, tool buttons and text boxes as capsules
+    of glass - lit along the top, catching light at the bottom, the main button glass tinted
+    pink; '' in the other. card_style() has them; an app with a style sheet of its own adds them.
+    (Each one's corners are set to half its height as it is shown: see _round.)"""
+    if not _liquid_look():
+        return ''
+    c = colors()
+    text, dim, border, edge = c.text.name(), c.dim.name(), css(c.border), c.edge.name()
+    if is_dark():
+        top, middle, low = (255, 255, 255, 50), (255, 255, 255, 22), (255, 255, 255, 14)
+        rim, side, under = (255, 255, 255, 96), (255, 255, 255, 34), (255, 255, 255, 56)
+        lit = (255, 255, 255, 64)
+        field, field_top = (0, 0, 0, 60), (0, 0, 0, 90)
+    else:
+        top, middle, low = (255, 255, 255, 240), (255, 255, 255, 160), (255, 255, 255, 125)
+        rim, side, under = (255, 255, 255, 255), (0, 0, 0, 26), (0, 0, 0, 40)
+        lit = (255, 255, 255, 255)
+        field, field_top = (255, 255, 255, 120), (0, 0, 0, 40)
+    top, middle, low, rim, side, under, lit, field, field_top = (
+        css(QColor(*v)) for v in (top, middle, low, rim, side, under, lit, field, field_top))
+    return f"""
+        QLineEdit {{
+            color: {text}; background: {field}; border: 1px solid {side}; border-top-color: {field_top};
+            border-bottom-color: {rim}; border-radius: 13px; padding: 7px 12px;
+            selection-background-color: {ACCENT}; selection-color: {ON_ACCENT};
+        }}
+        QLineEdit:focus {{ border: 1px solid {edge}; }}
+        QPushButton {{
+            color: {text}; border: 1px solid {side}; border-top-color: {rim}; border-bottom-color: {under};
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {top}, stop:0.55 {middle}, stop:1 {low});
+            border-radius: 13px; padding: 6px 18px;
+        }}
+        QPushButton:hover {{ border-top-color: {lit}; }}
+        QPushButton:pressed {{ background: {middle}; }}
+        QPushButton[role="primary"], QPushButton:checked {{
+            color: {ON_ACCENT}; border: 1px solid #fff4f7; border-bottom-color: {edge}; font-weight: 600;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #e6fff3f6, stop:0.5 #e6ffd6e1,
+                                        stop:1 #e6ffc2d2);
+        }}
+        QPushButton[role="primary"]:pressed {{ background: {ACCENT}; }}
+        QPushButton:disabled {{ color: {dim}; }}
+        QPushButton[role="primary"]:disabled {{ color: {ON_ACCENT}; background: {middle}; border: 1px solid {border}; }}
+        QToolButton {{ color: {dim}; background: transparent; border: 1px solid transparent;
+                       border-radius: 13px; padding: 0px 8px 2px 8px; }}
+        QToolButton:hover {{ color: {text}; border: 1px solid {side}; border-top-color: {rim};
+                             background: {middle}; }}
+    """
+
+
+def panel_css(selector: str, radius: int = 12) -> str:
+    """Style sheet for a panel sitting on a window (an app's card, a box of settings): faintly
+    tinted - and in the liquid look, a slab of glass lit from above, with bright rims and rounder
+    corners. light_up() gives it the light under the pointer too."""
+    c = colors()
+    if not _liquid_look():
+        return (f'{selector} {{ background: {css(c.tile)}; border: 1px solid {css(c.border)}; '
+                f'border-radius: {radius}px; }}')
+    if is_dark():
+        top, low, rim, side, under = (255, 255, 255, 30), (255, 255, 255, 12), (255, 255, 255, 84), \
+            (255, 255, 255, 30), (255, 255, 255, 46)
+    else:
+        top, low, rim, side, under = (255, 255, 255, 200), (255, 255, 255, 110), (255, 255, 255, 255), \
+            (0, 0, 0, 20), (0, 0, 0, 30)
+    top, low, rim, side, under = (css(QColor(*v)) for v in (top, low, rim, side, under))
+    return (f'{selector} {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {top}, stop:1 {low}); '
+            f'border: 1px solid {side}; border-top-color: {rim}; border-bottom-color: {under}; '
+            f'border-radius: {radius + 6}px; }}')
+
+
+# --------------------------------------------------------------------------- glass
 
 _glass: bool | None = None
 _TICK = '_suite_tick'          # a check box's step through its animation, 0 to 1
+_UNFOLD = '_suite_unfold'      # a liquid pop-up's step through its opening, 0 to 1
 _FROSTED = '_suite_frosted'
 
 
@@ -355,16 +496,23 @@ def _glass_possible() -> bool:
         return True
 
 
-# --------------------------------------------------------------------------- looks
+def _liquid_look() -> bool:
+    return glass_on() and look() == 'liquid'
+
+
+# --------------------------------------------------------------------------- the suite's choices
 
 LOOKS = {'frosted': 'Frosted', 'liquid': 'Liquid glass'}
+MODES = {'system': 'Follow Windows', 'light': 'Light', 'dark': 'Dark'}
 _LOOK_KEY = r'Software\blossqt\Suite'
 _look: str | None = None
+_motion: bool | None = None
+_mode: str | None = None
+_app_mode = 'system'
 
 
 def look() -> str:
-    """The suite's glass, as chosen in Hanami: 'frosted' (Windows' Acrylic) or 'liquid' (clearer,
-    with what is behind a pop-up bent at its edges, as through a lens)."""
+    """The suite's glass, as chosen in Hanami: 'frosted' (the default) or 'liquid' (Apple's)."""
     global _look
     if _look is None:
         _look = _read_look()
@@ -374,31 +522,165 @@ def look() -> str:
 def _read_look() -> str:
     if os.environ.get('SUITE_LOOK') in LOOKS:             # tests and screenshots
         return os.environ['SUITE_LOOK']
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _LOOK_KEY) as key:
-            value = str(winreg.QueryValueEx(key, 'Look')[0])
-    except OSError:
-        return 'frosted'
+    value = _suite_value('Look')
     return value if value in LOOKS else 'frosted'
 
 
-def set_look(name: str) -> None:
-    """Choose the suite's glass (Hanami's window does). Every suite app running takes it within a
-    couple of seconds, without starting again."""
+def _suite_value(name: str):
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _LOOK_KEY) as key:
+            return winreg.QueryValueEx(key, name)[0]
+    except OSError:
+        return None
+
+
+def _set_suite_value(name: str, kind: int, value) -> None:
     import winreg
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _LOOK_KEY) as key:
-        winreg.SetValueEx(key, 'Look', 0, winreg.REG_SZ, name if name in LOOKS else 'frosted')
+        winreg.SetValueEx(key, name, 0, kind, value)
+
+
+def set_look(name: str) -> None:
+    """Choose the suite's glass (Hanami's settings do). Every suite app running takes it within a
+    couple of seconds, without starting again."""
+    import winreg
+    _set_suite_value('Look', winreg.REG_SZ, name if name in LOOKS else 'frosted')
     _look_changed()
 
 
-def _look_changed() -> None:
-    global _look
-    now = _read_look()
-    if now != _look:
-        _look = now
-        _refrost_all()
+def motion_on() -> bool:
+    """Whether the suite animates: unless turned off in Hanami (motion_chosen()), or in Windows
+    (Settings > Accessibility > Visual effects > Animation effects)."""
+    global _motion
+    if _motion is None:
+        _motion = _read_motion()
+    return _motion
 
+
+def motion_chosen() -> bool:
+    """Animations as chosen in Hanami, whatever Windows says."""
+    if os.environ.get('SUITE_MOTION') in ('0', '1'):
+        return os.environ['SUITE_MOTION'] == '1'
+    return _suite_value('Motion') != 0
+
+
+def _read_motion() -> bool:
+    if not motion_chosen():
+        return False
+    if sys.platform == 'win32':
+        on = wintypes.BOOL(1)
+        if ctypes.windll.user32.SystemParametersInfoW(0x1042, 0, ctypes.byref(on), 0) and not on.value:
+            return False                                    # SPI_GETCLIENTAREAANIMATION
+    return True
+
+
+def set_motion(on: bool) -> None:
+    """Turn the suite's animations on or off (Hanami's settings do), for every app within seconds."""
+    import winreg
+    _set_suite_value('Motion', winreg.REG_DWORD, 1 if on else 0)
+    _look_changed()
+
+
+def mode() -> str:
+    """Light or dark for the whole suite, as chosen in Hanami: 'system' (as Windows is), 'light'
+    or 'dark'."""
+    global _mode
+    if _mode is None:
+        _mode = _read_mode()
+    return _mode
+
+
+def _read_mode() -> str:
+    if os.environ.get('SUITE_MODE') in MODES:
+        return os.environ['SUITE_MODE']
+    value = _suite_value('Mode')
+    return value if value in MODES else 'system'
+
+
+def set_mode(name: str) -> None:
+    """Choose light or dark for the whole suite (Hanami's settings do); every suite app running
+    takes it within a couple of seconds."""
+    import winreg
+    _set_suite_value('Mode', winreg.REG_SZ, name if name in MODES else 'system')
+    _look_changed()
+
+
+def app_mode(name: str) -> None:
+    """An app's own choice of light or dark, over the suite's ('system' leaves it to the suite)."""
+    global _app_mode
+    _app_mode = name if name in MODES else 'system'
+    _apply_mode()
+
+
+def _apply_mode(starting: bool = False) -> None:
+    """Show the app light or dark, as chosen. Qt then says the scheme changed, and everything
+    restyles (install). As the app starts, a choice of Windows' leaves Qt as it is."""
+    app = QGuiApplication.instance()
+    if app is None:
+        return
+    chosen = _app_mode if _app_mode != 'system' else mode()
+    if starting and chosen == 'system':
+        return
+    app.styleHints().setColorScheme({'light': Qt.ColorScheme.Light, 'dark': Qt.ColorScheme.Dark}.get(
+        chosen, Qt.ColorScheme.Unknown))
+
+
+def _look_changed() -> None:
+    """The look, the animations or light or dark may have changed (in Hanami, or Windows): if so,
+    take them."""
+    global _look, _motion, _mode
+    now = (_read_look(), _read_motion(), _read_mode())
+    if now != (_look, _motion, _mode):
+        mode_changed = now[2] != _mode
+        _look, _motion, _mode = now
+        if mode_changed:
+            _apply_mode()
+        _suite_changed()
+
+
+# --------------------------------------------------------------------------- following changes
+
+_restyled: weakref.WeakSet = weakref.WeakSet()
+_callbacks: list = []
+
+
+def restyle(widget: QWidget, make) -> None:
+    """Give a widget the style sheet make() returns - now, and again whenever the look, the
+    animations or Windows' light or dark change."""
+    widget._suite_restyle = make
+    _restyled.add(widget)
+    widget.setStyleSheet(make())
+
+
+def on_restyle(callback) -> None:
+    """Call callback() whenever the look, the animations or Windows' light or dark change - for an
+    app that styles itself (a style sheet for the whole app, say)."""
+    _callbacks.append(callback)
+
+
+def _suite_changed() -> None:
+    """The look, the animations or Windows' light or dark changed: style sheets are made again,
+    check boxes become switches (or back), and glass windows take the new glass."""
+    for widget in list(_restyled):
+        try:
+            widget.setStyleSheet(widget._suite_restyle())
+        except RuntimeError:                                # gone
+            _restyled.discard(widget)
+    for callback in list(_callbacks):
+        callback()
+    app = QApplication.instance()
+    if app is not None:
+        for widget in app.allWidgets():
+            if isinstance(widget, QCheckBox):
+                widget.updateGeometry()
+                widget.update()
+            elif getattr(widget, '_suite_lit', False):
+                _round(widget)
+    _refrost_all()
+
+
+# --------------------------------------------------------------------------- windows
 
 class _Margins(ctypes.Structure):
     _fields_ = [('left', ctypes.c_int), ('right', ctypes.c_int), ('top', ctypes.c_int), ('bottom', ctypes.c_int)]
@@ -415,8 +697,9 @@ class _CompositionData(ctypes.Structure):
 _DWMWA_USE_IMMERSIVE_DARK_MODE = 20
 _DWMWA_WINDOW_CORNER_PREFERENCE = 33
 _DWMWA_SYSTEMBACKDROP_TYPE = 38
-_DWMWCP_ROUND, _DWMSBT_TRANSIENTWINDOW = 2, 3          # rounded corners; Acrylic
-_WCA_ACCENT_POLICY, _ACCENT_ENABLE_ACRYLICBLURBEHIND = 19, 4
+_DWMWCP_ROUND, _DWMSBT_NONE, _DWMSBT_TRANSIENTWINDOW = 2, 1, 3     # rounded corners; no backdrop; Acrylic
+_WCA_ACCENT_POLICY = 19
+_ACCENT_DISABLED, _ACCENT_ENABLE_TRANSPARENTGRADIENT, _ACCENT_ENABLE_ACRYLICBLURBEHIND = 0, 2, 4
 
 
 def _dwm(hwnd: int, attribute: int, value: int) -> None:
@@ -429,24 +712,37 @@ def _frameless(window: QWidget) -> bool:
 
 
 def _tint() -> int:
-    """The frameless glass's tint, as Windows takes it (alpha, blue, green, red): a deep plum on
-    dark, a pinkish white on light."""
+    """The frameless glass's tint, as Windows takes it (alpha, blue, green, red), should it fall
+    back to Windows' blur: a deep plum on dark, a pinkish white on light."""
     color, alpha = (QColor('#221e27'), 0xA6) if is_dark() else (QColor('#fbf5f8'), 0xB4)
     return (alpha << 24) | (color.blue() << 16) | (color.green() << 8) | color.red()
+
+
+def _accent(hwnd: int, state: int, color: int = 0) -> None:
+    accent = _Accent(state, 2, color, 0)
+    data = _CompositionData(_WCA_ACCENT_POLICY, ctypes.cast(ctypes.pointer(accent), ctypes.c_void_p),
+                            ctypes.sizeof(accent))
+    ctypes.windll.user32.SetWindowCompositionAttribute(wintypes.HWND(hwnd), ctypes.byref(data))
 
 
 def _apply_glass(window: QWidget) -> None:
     hwnd = int(window.winId())
     _dwm(hwnd, _DWMWA_USE_IMMERSIVE_DARK_MODE, 1 if is_dark() else 0)
     if _frameless(window):
-        # Windows' Acrylic stays solid on frameless windows; the older blur behind does not. The
-        # liquid look draws its glass itself (_capture), so Windows adds none.
+        # A frameless window draws its glass itself, from the screen behind it; should it have none
+        # (the shot failed), Windows' older blur behind (its Acrylic stays solid on these).
         _dwm(hwnd, _DWMWA_WINDOW_CORNER_PREFERENCE, _DWMWCP_ROUND)
-        accent = _Accent(0 if look() == 'liquid' else _ACCENT_ENABLE_ACRYLICBLURBEHIND, 2, _tint(), 0)
-        data = _CompositionData(_WCA_ACCENT_POLICY, ctypes.cast(ctypes.pointer(accent), ctypes.c_void_p),
-                                ctypes.sizeof(accent))
-        ctypes.windll.user32.SetWindowCompositionAttribute(wintypes.HWND(hwnd), ctypes.byref(data))
+        drawn = getattr(window, '_suite_shot', None) is not None
+        _accent(hwnd, _ACCENT_DISABLED if drawn else _ACCENT_ENABLE_ACRYLICBLURBEHIND, _tint())
+    elif _clear(window):
+        # Liquid glass: what is behind shows through as it is, live - Windows' "transparent
+        # gradient" in a colour of nothing, under the window's own frame - with the tint, the
+        # bending rim and the light painted over it (_paint_clear).
+        _dwm(hwnd, _DWMWA_SYSTEMBACKDROP_TYPE, _DWMSBT_NONE)
+        ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(wintypes.HWND(hwnd), ctypes.byref(_Margins(0, 0, 0, 0)))
+        _accent(hwnd, _ACCENT_ENABLE_TRANSPARENTGRADIENT, 0)
     else:
+        _accent(hwnd, _ACCENT_DISABLED)
         _dwm(hwnd, _DWMWA_SYSTEMBACKDROP_TYPE, _DWMSBT_TRANSIENTWINDOW)
         ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(wintypes.HWND(hwnd), ctypes.byref(_Margins(-1, -1, -1, -1)))
 
@@ -463,13 +759,15 @@ def _glass_palette(palette: QPalette) -> QPalette:
     return out
 
 
-def frost(window: QWidget, fade: bool = True) -> None:
-    """Make a window frosted glass, with the suite's animations - call before it is first shown.
-    A frameless window then paints itself with paint_glass() and no shadow when glass_on(), and
-    fades in as it is shown - unless not fade, for one that sees to its own opacity."""
+def frost(window: QWidget, fade: bool = True, backdrop: str | None = None) -> None:
+    """Make a window glass, with the suite's animations - call before it is first shown. A
+    frameless window then paints itself with paint_glass() and no shadow when glass_on(), and
+    opens with an animation - unless not fade, for one that sees to its own opacity. A framed one
+    can have a backdrop: a picture (a file) laid faintly over it, under its contents."""
     window.installEventFilter(_frosting())
     window.setProperty(_FROSTED, True)
     window.setProperty('_suite_fade', fade)
+    window._suite_backdrop = backdrop
     if glass_on():
         window.setAttribute(Qt.WA_TranslucentBackground)
         if not _frameless(window):
@@ -477,44 +775,93 @@ def frost(window: QWidget, fade: bool = True) -> None:
 
 
 def _refrost_all() -> None:
-    """Windows went light or dark, or the look changed: the frosted windows take the new tint,
-    title bar, palette and glass."""
+    """Windows went light or dark, or the look changed: the glass windows take the new tint,
+    title bar, palette and glass, and their parts the new shapes."""
     if not glass_on():
         return
     for window in QApplication.topLevelWidgets():
         if window.property(_FROSTED) and window.isVisible():
             if not _frameless(window):
                 window.setPalette(_glass_palette(window.palette()))
-            elif _liquid(window):
-                _recapture(window)
+            if _screen_glass(window):
+                _follow(window)
+                _watch_around(window, start=True)
+            else:
+                _stop_live(window)
+                _watch_around(window, stop=True)
             _apply_glass(window)
+            _animate_parts(window)
             window.update()
 
 
 class _Frosting(QObject):
-    """Watches the frosted windows: glass as each is shown, then its animations - and, under a
-    framed one's contents, the veil, which Qt leaves unpainted on a see-through window. A liquid
-    pop-up's glass is captured as it opens, and again when it moves or changes size."""
+    """Watches the glass windows: glass as each is shown, then its animations - and, under a framed
+    one's contents, the veil, which Qt leaves unpainted on a see-through window. A frameless one's
+    glass is taken from the screen as it opens, and follows it as it moves or changes size."""
 
     def eventFilter(self, obj, event):
         kind = event.type()
-        if kind == QEvent.Paint and glass_on() and isinstance(obj, QWidget) and obj.isWindow() \
-                and not _frameless(obj):
-            painter = QPainter(obj)
-            painter.fillRect(event.rect(), veil())
-            painter.end()
-        elif kind == QEvent.Show and isinstance(obj, QWidget) and obj.isWindow():
-            if _liquid(obj):
+        if not isinstance(obj, QWidget) or not obj.isWindow():
+            return False
+        if kind == QEvent.Paint and not _frameless(obj):
+            if _clear(obj):
+                _paint_clear(obj, event)
+            elif glass_on():
+                painter = QPainter(obj)
+                painter.fillRect(event.rect(), veil())
+                painter.end()
+            if getattr(obj, '_suite_backdrop', None):
+                return _paint_backdrop(obj, event)
+        elif kind == QEvent.Show:
+            if _screen_glass(obj):
                 _capture(obj)                       # not on screen yet: what is behind it, as it is
+                _watch_around(obj, start=True)
             if glass_on():
                 _apply_glass(obj)
             _animate_parts(obj)
             if _frameless(obj) and obj.property('_suite_fade'):
-                fade_in(obj, window=True)
-        elif kind in (QEvent.Move, QEvent.Resize) and isinstance(obj, QWidget) and obj.isWindow() \
-                and obj.isVisible() and _liquid(obj):
-            _recapture(obj)
+                _open(obj)
+        elif kind == QEvent.Hide:
+            _stop_live(obj)
+            _watch_around(obj, stop=True)
+        elif kind in (QEvent.Move, QEvent.Resize) and obj.isVisible() and _screen_glass(obj):
+            if not getattr(obj, '_suite_gliding', False):
+                _follow(obj)
+            obj.update()
+        elif kind == QEvent.ChildAdded and obj.isVisible():
+            QTimer.singleShot(0, obj, lambda: _animate_parts(obj))
         return False
+
+
+BACKDROP_OPACITY = 0.10       # a backdrop picture is this faint, so text over it reads as well as ever
+
+
+def _paint_backdrop(window: QWidget, event) -> bool:
+    """A window as it paints itself, then its backdrop over that, faintly - its contents paint
+    after, on top. The picture covers the window, cropped to fit, and is kept scaled to its size."""
+    try:
+        type(window).paintEvent(window, event)
+    except (AttributeError, RuntimeError, TypeError):
+        return False
+    dpr = window.devicePixelRatioF()
+    key = (window.width(), window.height(), dpr)
+    if getattr(window, '_suite_backdrop_key', None) != key:
+        source = QPixmap(window._suite_backdrop)
+        if source.isNull():
+            window._suite_backdrop = None
+            return True
+        width, height = round(window.width() * dpr), round(window.height() * dpr)
+        scaled = source.scaled(width, height, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        picture = scaled.copy((scaled.width() - width) // 2, (scaled.height() - height) // 2, width, height)
+        picture.setDevicePixelRatio(dpr)
+        window._suite_backdrop_pixmap = picture
+        window._suite_backdrop_key = key
+    painter = QPainter(window)
+    painter.setClipRect(event.rect())
+    painter.setOpacity(BACKDROP_OPACITY)
+    painter.drawPixmap(0, 0, window._suite_backdrop_pixmap)
+    painter.end()
+    return True
 
 
 _frosting_filter = None
@@ -527,89 +874,369 @@ def _frosting() -> _Frosting:
     return _frosting_filter
 
 
-# --------------------------------------------------------------------------- liquid glass
+# --------------------------------------------------------------------------- glass from the screen
 #
-# Windows' own materials only frost. Liquid glass, as Apple's, is clearer and bends what is behind
-# it near its edges, as a lens does - so a frameless window draws it: the screen behind it, taken
-# just before it opens (or, once it is up, with Windows leaving the window itself out for a
-# moment), lightly blurred, and squeezed towards the rim so that what lies just beyond each edge
-# shows inside it. Framed windows keep Windows' Acrylic, a little clearer.
+# Windows' own materials only frost, and not frameless windows at all. So a frameless window draws
+# its glass from the screen behind it: taken just before it opens, a little beyond its edges, then
+# softened and bent - each ring in from the rim gathering light from a little further out, as a
+# lens's edge does, so what lies just beyond each edge shows inside it.
+#
+# The glass follows the window: while it moves or changes size, the screen behind is taken again
+# and again (Windows leaving the window itself out of the shots, SetWindowDisplayAffinity), the
+# glass made from the last shot, shifted, in between; and a still window looks now and then at
+# what is around it, and takes the screen again when that changed. While it is left out, the
+# window is missing from screenshots and screen sharing too - only for those moments.
 
 _WDA_NONE, _WDA_EXCLUDEFROMCAPTURE = 0, 0x11
-_LENS_BAND = 24           # how far in from the edges the glass bends what is behind it
-_LENS_STEPS = 8
-_LENS_BLUR = 7            # how much the glass softens what is behind it
+_MARGIN = 56              # how far beyond a window's edges its shot of the screen reaches
+# band: how far in from the rim the glass bends light; reach: how far beyond the edge the light
+# shown at the rim comes from, falling off towards the flat middle - by power over the band, or
+# (rate) as exp(-rate x distance in), a thin rim bending hard, as liquid-glass-js's "rim" does;
+# blur: how much the glass softens what is behind; steps: the rings it is drawn in; corner,
+# shrink: the rings' corners.
+_LENSES = {
+    'frosted': dict(band=24, reach=24, power=1.5, blur=7, steps=8, corner=GLASS_RADIUS * 2, shrink=1.0),
+    'liquid': dict(band=6, reach=40, rate=0.85, blur=2, steps=9, corner=LIQUID_RADIUS, shrink=1.0),
+    # a framed window's rim in the liquid look: only the rings that bend in light from beyond its
+    # edges (the window itself fills the rest of its shot)
+    'rim': dict(band=3, reach=40, rate=0.85, blur=2, steps=5, corner=GLASS_RADIUS, shrink=1.0),
+}
+_LIVE_MS = 33             # how often a moving window takes the screen behind it again
+_SETTLE = 0.35            # and for how long after it stops
+_HIDDEN_FOR = 0.06        # how long Windows takes to leave a window out of shots
+_WATCH_MS = 600           # how often a still window looks at what is around it
 
 
-def _liquid(window: QWidget) -> bool:
-    return glass_on() and look() == 'liquid' and _frameless(window)
+def _screen_glass(window: QWidget) -> bool:
+    """Whether a window's glass is made from the screen: a frameless one's, and in the liquid look
+    a framed one's rim (_clear)."""
+    return glass_on() and bool(window.property(_FROSTED)) and (_frameless(window) or look() == 'liquid')
+
+
+def _clear(window: QWidget) -> bool:
+    """A framed window of clear glass: the liquid look's."""
+    return glass_on() and look() == 'liquid' and not _frameless(window) and bool(window.property(_FROSTED))
 
 
 def _capture(window: QWidget) -> None:
-    """Take what is behind a frameless window, a little beyond its edges, and make its liquid glass
-    from it (kept on the window, for paint_glass)."""
+    """Take what is behind a frameless window, a little beyond its edges, for its glass."""
     g = window.frameGeometry()
     screen = QGuiApplication.screenAt(g.center()) or window.screen() or QGuiApplication.primaryScreen()
-    origin = screen.geometry().topLeft()
-    m = _LENS_BAND
-    shot = screen.grabWindow(0, g.x() - origin.x() - m, g.y() - origin.y() - m, g.width() + 2 * m,
-                             g.height() + 2 * m)
-    window._suite_lens = None if shot.isNull() else _lens(shot, g.width(), g.height())
+    area = screen.geometry()
+    want = g.adjusted(-_MARGIN, -_MARGIN, _MARGIN, _MARGIN)
+    got = want.intersected(area)
+    if got.isEmpty():
+        return
+    shot = screen.grabWindow(0, got.x() - area.x(), got.y() - area.y(), got.width(), got.height())
+    if shot.isNull():
+        return
+    if got != want:
+        shot = _fill_out(shot, got, want)
+    window._suite_shot = _soften(shot, _LENSES[look()]['blur'])
+    window._suite_shot_at = want.topLeft()
+    inside = QRectF(_MARGIN, _MARGIN, g.width(), g.height())
+    # What is behind a frameless window is in the shot; a framed one's isn't (the window itself is
+    # there), so its tint goes by what is around it.
+    tone = _tone(shot, inside) if _frameless(window) else _tone_around(shot, inside)
+    old = getattr(window, '_suite_tone', None)
+    if old is not None and (_live(window) or not _frameless(window)):
+        tone = tuple(0.6 * a + 0.4 * b for a, b in zip(old, tone))
+    window._suite_tone = tone
     window.update()
 
 
-def _recapture(window: QWidget) -> None:
-    """Take what is behind a window already on screen: Windows leaves it out of the capture for a
-    moment. One at a time, so a window being dragged isn't taken at every step."""
-    if getattr(window, '_suite_capturing', False):
-        return
-    window._suite_capturing = True
-    hwnd = wintypes.HWND(int(window.winId()))
-    ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, _WDA_EXCLUDEFROMCAPTURE)
-
-    def take():
-        try:
-            if window.isVisible():
-                _capture(window)
-        finally:
-            ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, _WDA_NONE)
-            window._suite_capturing = False
-    QTimer.singleShot(70, window, take)
-
-
-def _lens(shot: QPixmap, width: int, height: int) -> QPixmap:
-    """The glass for a window width x height from a shot of what is behind it (with _LENS_BAND
-    more on each side): softened, flat in the middle, and gathering more and more of what lies
-    beyond each edge towards the rim."""
+def _fill_out(shot: QPixmap, got: QRect, want: QRect) -> QPixmap:
+    """A shot cut short by the screen's edge, made up to the size wanted: beyond the edge, roughly
+    what is at it."""
     dpr = shot.devicePixelRatio()
-    m = _LENS_BAND
-    small = shot.scaled(max(1, shot.width() // _LENS_BLUR), max(1, shot.height() // _LENS_BLUR),
-                        Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+    full = QPixmap(round(want.width() * dpr), round(want.height() * dpr))
+    full.setDevicePixelRatio(dpr)
+    painter = QPainter(full)
+    painter.setRenderHint(QPainter.SmoothPixmapTransform)
+    painter.drawPixmap(QRectF(0, 0, want.width(), want.height()), shot, QRectF(shot.rect()))
+    painter.drawPixmap(QPointF(got.x() - want.x(), got.y() - want.y()), shot)
+    painter.end()
+    return full
+
+
+def _soften(shot: QPixmap, factor: int) -> QPixmap:
+    if factor <= 1:
+        return shot
+    small = shot.scaled(max(1, shot.width() // factor), max(1, shot.height() // factor), Qt.IgnoreAspectRatio,
+                        Qt.SmoothTransformation)
     soft = small.scaled(shot.width(), shot.height(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-    out = QPixmap(round(width * dpr), round(height * dpr))
+    soft.setDevicePixelRatio(shot.devicePixelRatio())
+    return soft
+
+
+def _luma(color: QColor) -> float:
+    return 0.2126 * color.redF() + 0.7152 * color.greenF() + 0.0722 * color.blueF()
+
+
+def _tone(shot: QPixmap, inner: QRectF) -> tuple[float, float]:
+    """How bright what is behind the window is (0 to 1), and how busy (how much it changes from
+    one spot to the next) - so the liquid glass's tint can keep text on it easy to read."""
+    dpr = shot.devicePixelRatio()
+    part = shot.copy(QRect(round(inner.x() * dpr), round(inner.y() * dpr), max(1, round(inner.width() * dpr)),
+                           max(1, round(inner.height() * dpr))))
+    n = 32
+    image = part.toImage().scaled(n, n, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+    lum = [[_luma(image.pixelColor(x, y)) for x in range(n)] for y in range(n)]
+    mean = sum(map(sum, lum)) / (n * n)
+    busy = sum(abs(lum[y][x] - lum[y][x + 1]) + abs(lum[y][x] - lum[y + 1][x])
+               for y in range(n - 1) for x in range(n - 1)) / ((n - 1) ** 2)
+    return mean, busy
+
+
+def _tone_around(shot: QPixmap, inside: QRectF) -> tuple[float, float]:
+    """_tone of the strips of a shot around the window in it, as a guess at what is behind it."""
+    width, height = shot.width() / shot.devicePixelRatio(), shot.height() / shot.devicePixelRatio()
+    strips = [QRectF(0, 0, width, inside.top()), QRectF(0, inside.bottom(), width, height - inside.bottom()),
+              QRectF(0, inside.top(), inside.left(), inside.height()),
+              QRectF(inside.right(), inside.top(), width - inside.right(), inside.height())]
+    parts = [(strip.width() * strip.height(), _tone(shot, strip)) for strip in strips
+             if strip.width() >= 2 and strip.height() >= 2]
+    total = sum(area for area, _ in parts) or 1
+    return (sum(area * tone[0] for area, tone in parts) / total,
+            sum(area * tone[1] for area, tone in parts) / total)
+
+
+def _lens_for(window: QWidget) -> QPixmap | None:
+    """The window's glass for where it is now, made again only when it moved, changed size or
+    took a new shot. A framed window's is only its rim, which bends in what lies beyond its edges;
+    within that, what is behind it shows through as it is."""
+    shot = getattr(window, '_suite_shot', None)
+    if shot is None:
+        return None
+    at = window._suite_shot_at
+    corner = window.mapToGlobal(QPoint(0, 0))
+    framed = not _frameless(window)
+    spec = _LENSES['rim' if framed else look()]
+    key = (look(), framed, window.width(), window.height(), corner.x() - at.x(), corner.y() - at.y(),
+           shot.cacheKey())
+    if getattr(window, '_suite_lens_key', None) != key:
+        window._suite_lens = _lens(shot, key[4], key[5], window.width(), window.height(), spec, rim_only=framed)
+        window._suite_lens_key = key
+    return window._suite_lens
+
+
+def _lens(shot: QPixmap, x: float, y: float, width: int, height: int, spec: dict,
+          rim_only: bool = False) -> QPixmap:
+    """Glass width x height, for a window at (x, y) in the shot: each ring in from the rim drawn
+    from a little more of what lies beyond the window's edges, the middle as it is (or, rim_only,
+    left out)."""
+    dpr = shot.devicePixelRatio()
+    out = QPixmap(max(1, round(width * dpr)), max(1, round(height * dpr)))
     out.setDevicePixelRatio(dpr)
     out.fill(Qt.transparent)
     painter = QPainter(out)
-    painter.setRenderHint(QPainter.Antialiasing)
     painter.setRenderHint(QPainter.SmoothPixmapTransform)
     full = QRectF(0, 0, width, height)
-    for i in range(_LENS_STEPS):
-        t = i / (_LENS_STEPS - 1)                   # 0 at the rim, 1 where the glass is flat
-        reach = m * (1 - t) ** 1.5                  # how far beyond this ring it gathers light from
-        inset = m * t
-        ring = QPainterPath()
-        ring.addRoundedRect(full.adjusted(inset, inset, -inset, -inset), max(2.0, GLASS_RADIUS * 2 - inset),
-                            max(2.0, GLASS_RADIUS * 2 - inset))
+    room_x, room_y = shot.width() / dpr, shot.height() / dpr
+    rings = _rings(width, height, spec)
+    for ring, reach in rings[:-1] if rim_only else rings:
         painter.setClipPath(ring)
-        source = QRectF((m - reach) * dpr, (m - reach) * dpr, (width + 2 * reach) * dpr, (height + 2 * reach) * dpr)
-        painter.drawPixmap(full, soft, source)
+        w, h = width + 2 * reach, height + 2 * reach
+        left = min(max(x - reach, 0.0), max(0.0, room_x - w))     # kept inside the shot
+        top = min(max(y - reach, 0.0), max(0.0, room_y - h))
+        painter.drawPixmap(full, shot, QRectF(left * dpr, top * dpr, w * dpr, h * dpr))
     painter.end()
     return out
 
 
-def _paint_liquid(painter, rect, radius: float, lens: QPixmap) -> None:
-    """Liquid glass: what is behind, through the lens, under a light veil for reading, a glow where
-    the light falls, and rims that catch it - bright at the top left and bottom right."""
+_ring_cache: dict = {}
+
+
+def _rings(width: int, height: int, spec: dict) -> list:
+    """The lens's rings for a window's size, each with how far beyond the edges it reaches - from
+    the rim in to the flat middle, each ring only its own band (the middle whole)."""
+    key = (width, height, tuple(sorted(spec.items())))
+    rings = _ring_cache.get(key)
+    if rings is None:
+        if len(_ring_cache) > 24:
+            _ring_cache.clear()
+        full = QRectF(0, 0, width, height)
+        shapes = []
+        for i in range(spec['steps']):
+            t = i / (spec['steps'] - 1)                     # 0 at the rim, 1 where the glass is flat
+            inset = spec['band'] * t
+            corner = max(2.0, spec['corner'] - inset * spec['shrink'])
+            shape = QPainterPath()
+            shape.addRoundedRect(full.adjusted(inset, inset, -inset, -inset), corner, corner)
+            if t >= 1:
+                reach = 0.0
+            elif 'rate' in spec:
+                reach = spec['reach'] * math.exp(-spec['rate'] * inset)
+            else:
+                reach = spec['reach'] * (1 - t) ** spec['power']
+            shapes.append((shape, reach))
+        rings = []
+        for i, (shape, reach) in enumerate(shapes):
+            ring = QPainterPath(shape)
+            if i + 1 < len(shapes):
+                ring.addPath(shapes[i + 1][0])
+                ring.setFillRule(Qt.OddEvenFill)
+            rings.append((ring, reach))
+        _ring_cache[key] = rings
+    return rings
+
+
+def _live(window: QWidget) -> bool:
+    timer = getattr(window, '_suite_live', None)
+    return timer is not None and timer.isActive()
+
+
+def _follow(window: QWidget) -> None:
+    """The window moved, changed size, or what is behind it changed: take the screen behind it
+    again and again until it settles, Windows leaving a frameless window out of the shots
+    meanwhile. (A framed one's glass only takes what is around it, so it stays in them.)"""
+    now = time.monotonic()
+    window._suite_settle = now + _SETTLE
+    if not _frameless(window):
+        window._suite_hidden_at = None
+    elif getattr(window, '_suite_hidden_at', None) is None:
+        ctypes.windll.user32.SetWindowDisplayAffinity(wintypes.HWND(int(window.winId())), _WDA_EXCLUDEFROMCAPTURE)
+        window._suite_hidden_at = now
+    timer = getattr(window, '_suite_live', None)
+    if timer is None:
+        timer = window._suite_live = QTimer(window)
+        timer.setInterval(_LIVE_MS)
+        ref = weakref.ref(window)
+        timer.timeout.connect(lambda: (w := ref()) is not None and _live_frame(w))
+    if not timer.isActive():
+        timer.start()
+
+
+def _live_frame(window: QWidget) -> None:
+    if not window.isVisible():
+        _stop_live(window)
+        return
+    now = time.monotonic()
+    hidden_at = window._suite_hidden_at
+    if hidden_at is None or now - hidden_at >= _HIDDEN_FOR:
+        _capture(window)
+        if now >= window._suite_settle:
+            _stop_live(window)
+
+
+def _stop_live(window: QWidget) -> None:
+    timer = getattr(window, '_suite_live', None)
+    if timer is not None:
+        timer.stop()
+    if getattr(window, '_suite_hidden_at', None) is not None and _frameless(window):
+        ctypes.windll.user32.SetWindowDisplayAffinity(wintypes.HWND(int(window.winId())), _WDA_NONE)
+        window._suite_hidden_at = None
+    window._suite_around = None
+
+
+def _watch_around(window: QWidget, start: bool = False, stop: bool = False) -> None:
+    """Now and then a still window looks at the strips of screen around it; when they change,
+    what is behind it most likely did too (another window came up, a page scrolled), and it takes
+    the screen behind it again."""
+    timer = getattr(window, '_suite_watch', None)
+    if stop:
+        if timer is not None:
+            timer.stop()
+        return
+    if start:
+        if timer is None:
+            timer = window._suite_watch = QTimer(window)
+            timer.setInterval(_WATCH_MS)
+            ref = weakref.ref(window)
+            timer.timeout.connect(lambda: (w := ref()) is not None and _watch_around(w))
+        window._suite_around = None
+        timer.start()
+        return
+    if not window.isVisible() or _live(window) or not _screen_glass(window):
+        return
+    now = _around(window)
+    last = getattr(window, '_suite_around', None)
+    window._suite_around = now
+    if now is not None and last is not None and len(now) == len(last) \
+            and sum(abs(a - b) for a, b in zip(now, last)) / len(now) > 0.025:
+        _follow(window)
+
+
+def _around(window: QWidget) -> list | None:
+    """The colours of the strips of screen just around a window, a few of each."""
+    g = window.frameGeometry()
+    screen = QGuiApplication.screenAt(g.center()) or window.screen() or QGuiApplication.primaryScreen()
+    area = screen.geometry()
+    gap, strip = 4, 12
+    outer = g.adjusted(-gap - strip, -gap - strip, gap + strip, gap + strip).intersected(area)
+    shot = screen.grabWindow(0, outer.x() - area.x(), outer.y() - area.y(), outer.width(), outer.height())
+    if shot.isNull():
+        return None
+    dpr = shot.devicePixelRatio()
+    x0, y0 = g.x() - outer.x(), g.y() - outer.y()
+    parts = [QRect(0, 0, outer.width(), y0 - gap),                                     # above
+             QRect(0, y0 + g.height() + gap, outer.width(), outer.height() - y0 - g.height() - gap),
+             QRect(0, 0, x0 - gap, outer.height()),                                    # left
+             QRect(x0 + g.width() + gap, 0, outer.width() - x0 - g.width() - gap, outer.height())]
+    values = []
+    for part in parts:
+        if part.width() < 2 or part.height() < 2:
+            values += [0.0] * 24
+            continue
+        piece = shot.copy(QRect(round(part.x() * dpr), round(part.y() * dpr), round(part.width() * dpr),
+                                round(part.height() * dpr)))
+        wide = part.width() >= part.height()
+        image = piece.toImage().scaled(8 if wide else 1, 1 if wide else 8, Qt.IgnoreAspectRatio,
+                                       Qt.SmoothTransformation)
+        for i in range(8):
+            color = image.pixelColor(i if wide else 0, 0 if wide else i)
+            values += [color.redF(), color.greenF(), color.blueF()]
+    return values
+
+
+def _lean(window: QWidget) -> float:
+    """Where the window sits across its screen, -0.5 (left) to 0.5 (right): the light on liquid
+    glass shifts with it, so the highlights move as the window does."""
+    screen = window.screen() or QGuiApplication.primaryScreen()
+    area = screen.geometry()
+    middle = window.frameGeometry().center().x()
+    return max(-0.5, min(0.5, (middle - area.center().x()) / max(1, area.width())))
+
+
+def _clear_tint(window: QWidget) -> int:
+    """How much a framed window's clear glass tints what is behind it: clear where that is calm,
+    more where its text would be hard to read - as _liquid_tint, from a little more, as a window
+    holds more text than a pop-up."""
+    mean, busy = getattr(window, '_suite_tone', None) or (0.5, 0.05)
+    if is_dark():
+        return int(min(220, 110 + 160 * max(0.0, mean - 0.25) + 600 * busy))
+    return int(min(215, 95 + 150 * max(0.0, 0.7 - mean) + 600 * busy))
+
+
+def _paint_clear(window: QWidget, event) -> None:
+    """Under a framed window's contents, in the liquid look: its clear glass - a light tint, lit
+    from above, adapting to what is around it - the rim bending in what lies beyond the window's
+    edges, and the light catching the edges."""
+    dark = is_dark()
+    painter = QPainter(window)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setRenderHint(QPainter.SmoothPixmapTransform)
+    painter.setClipRect(event.rect())
+    r = QRectF(window.rect())
+    alpha = _clear_tint(window)
+    tint = QLinearGradient(r.topLeft(), r.bottomLeft())
+    tint.setColorAt(0.0, QColor(46, 43, 54, alpha) if dark else QColor(255, 255, 255, alpha))
+    tint.setColorAt(1.0, QColor(20, 18, 26, alpha) if dark else QColor(232, 232, 238, alpha))
+    painter.fillRect(r, tint)
+    lens = _lens_for(window)
+    if lens is not None:
+        dpr = lens.devicePixelRatio()
+        painter.drawPixmap(QRectF(0, 0, lens.width() / dpr, lens.height() / dpr), lens, QRectF(lens.rect()))
+    light = 120 - 50 * _lean(window)
+    edge = r.adjusted(0.5, 0.5, -0.5, -0.5)
+    _edge_light(painter, edge, GLASS_RADIUS, light, 120 if dark else 200, 1.0)
+    painter.end()
+
+
+def _paint_frosted(painter, rect, radius: float, lens: QPixmap) -> None:
+    """Frosted glass: what is behind, softened, through the lens's rim, under a light veil for
+    reading, a glow where the light falls, and rims that catch it - bright at the top left and
+    bottom right."""
     dark = is_dark()
     r = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5)
     path = QPainterPath()
@@ -647,6 +1274,225 @@ def _paint_liquid(painter, rect, radius: float, lens: QPixmap) -> None:
     painter.restore()
 
 
+def _liquid_tint(window: QWidget) -> int:
+    """How much liquid glass tints what is behind it (0 to 255): a fifth, as liquid-glass-js's
+    0.2 - clear glass - and more only where text on it would be hard to read: over what is bright
+    (under light text) or dark (under dark text), or busy, as a page of text is."""
+    mean, busy = getattr(window, '_suite_tone', None) or (0.5, 0.05)
+    if is_dark():
+        return int(min(200, 64 + 160 * max(0.0, mean - 0.25) + 600 * busy))
+    return int(min(200, 51 + 150 * max(0.0, 0.7 - mean) + 600 * busy))
+
+
+def _paint_liquid(painter, rect, window: QWidget, lens: QPixmap) -> None:
+    """Liquid glass: what is behind, through the lens - clear in the middle, the rim bending in
+    what lies just beyond the edges - under a light tint, lit from above, with a fine rim catching
+    the light by which way each bit of it faces; the light shifts a little with where the window
+    is, so the highlights move as it does. While it opens, the glass grows into place."""
+    dark = is_dark()
+    radius = LIQUID_RADIUS
+    r = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5)
+    painter.save()
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setRenderHint(QPainter.SmoothPixmapTransform)
+    grown = window.property(_UNFOLD)
+    if grown is not None and float(grown) < 1:
+        scale = 0.93 + 0.07 * float(grown)
+        middle = r.center()
+        painter.translate(middle)
+        painter.scale(scale, scale)
+        painter.translate(-middle)
+    path = QPainterPath()
+    path.addRoundedRect(r, radius, radius)
+    dpr = lens.devicePixelRatio()
+    painter.setClipPath(path)
+    painter.drawPixmap(QRectF(0, 0, lens.width() / dpr, lens.height() / dpr), lens, QRectF(lens.rect()))
+    painter.setClipping(False)
+    # The tint: toward white at the top and a light grey at the bottom (a dark grey to near black
+    # on dark), so the glass looks lit from above.
+    alpha = _liquid_tint(window)
+    tint = QLinearGradient(r.topLeft(), r.bottomLeft())
+    tint.setColorAt(0.0, QColor(62, 58, 70, alpha) if dark else QColor(255, 255, 255, alpha))
+    tint.setColorAt(1.0, QColor(12, 10, 16, alpha) if dark else QColor(178, 178, 184, alpha))
+    painter.fillPath(path, tint)
+    shade = QLinearGradient(r.topLeft(), r.bottomLeft())
+    shade.setColorAt(0.0, QColor(255, 255, 255, 22))
+    shade.setColorAt(0.5, QColor(255, 255, 255, 0))
+    shade.setColorAt(1.0, QColor(0, 0, 0, 0))
+    painter.fillPath(path, shade)
+    light = 120 - 50 * _lean(window)                        # the light's direction, from above-left
+    _edge_light(painter, r, radius, light, 150 if dark else 200, 1.2)
+    _edge_light(painter, r.adjusted(1.6, 1.6, -1.6, -1.6), radius - 1.6, light, 45 if dark else 70, 1.0)
+    painter.restore()
+
+
+def _edge_light(painter, r: QRectF, radius: float, light: float, alpha: int, width: float) -> None:
+    """Light caught along a rounded rectangle's edge by which way each bit of it faces (light, the
+    angle the light comes from, in degrees, counter-clockwise from the right): brightest facing
+    the light, nearly as bright facing straight away (light passing through the glass), dim side
+    on - as liquid glass's rim is. The straight sides each take one brightness, the corners sweep
+    through theirs."""
+    def lit(angle: float) -> float:
+        facing = math.cos(math.radians(angle - light))
+        return (max(0.0, facing) + 0.8 * max(0.0, -facing)) ** 1.5
+
+    def color(angle: float) -> QColor:
+        return QColor(255, 255, 255, int(alpha * min(1.0, lit(angle))))
+
+    radius = max(0.5, min(radius, r.width() / 2, r.height() / 2))
+    left, top, right, bottom = r.left(), r.top(), r.right(), r.bottom()
+    painter.setBrush(Qt.NoBrush)
+    for start, end, facing in ((QPointF(left + radius, top), QPointF(right - radius, top), 90),
+                               (QPointF(right, top + radius), QPointF(right, bottom - radius), 0),
+                               (QPointF(right - radius, bottom), QPointF(left + radius, bottom), 270),
+                               (QPointF(left, bottom - radius), QPointF(left, top + radius), 180)):
+        painter.setPen(QPen(color(facing), width, Qt.SolidLine, Qt.FlatCap))
+        painter.drawLine(start, end)
+    for middle, first in ((QPointF(right - radius, top + radius), 0), (QPointF(left + radius, top + radius), 90),
+                          (QPointF(left + radius, bottom - radius), 180), (QPointF(right - radius, bottom - radius), 270)):
+        sweep = QConicalGradient(middle, 0)
+        for step in range(13):
+            angle = first + 90 * step / 12
+            sweep.setColorAt((angle % 360) / 360 if angle < 360 else 1.0, color(angle))
+        corner = QPainterPath()
+        box = QRectF(middle.x() - radius, middle.y() - radius, 2 * radius, 2 * radius)
+        corner.arcMoveTo(box, first)
+        corner.arcTo(box, first, 90)
+        painter.setPen(QPen(QBrush(sweep), width, Qt.SolidLine, Qt.FlatCap))
+        painter.drawPath(corner)
+
+
+# --------------------------------------------------------------------------- light and shape
+
+_LIGHT = '_suite_light'
+
+
+def light_up(widget: QWidget, radius: float | None = None) -> None:
+    """Give a widget (a panel, say) the liquid look's light under the pointer, which brightens as
+    it is pressed; its corners, radius, are rounded as its style sheet's are (panel_css: 18)."""
+    widget._suite_light_radius = radius
+    _light(widget)
+
+
+def _light(widget: QWidget) -> None:
+    if getattr(widget, '_suite_lit', False):
+        return
+    if widget.metaObject().className() != type(widget).__name__:
+        return              # one Qt made of its own kind (a text box's clear button, say): it paints itself
+    widget._suite_lit = True
+    widget.setAttribute(Qt.WA_Hover)
+    widget.installEventFilter(_lights())
+    _round(widget)
+
+
+def _round(widget: QWidget) -> None:
+    """In the liquid look, a button or text box is a capsule: rounded to half its height - which a
+    style sheet can't say (and it drops a radius larger than that) - so each one has its own."""
+    if not isinstance(widget, (QPushButton, QToolButton, QLineEdit)) \
+            or isinstance(widget.parent(), (QAbstractSpinBox, QComboBox)):
+        return
+    own = widget.styleSheet()
+    if own != getattr(widget, '_suite_round', ''):
+        return                                              # the app styles this one itself
+    want = f'border-radius: {max(2, widget.height() // 2)}px;' if _liquid_look() else ''
+    if want != own:
+        widget._suite_round = want
+        widget.setStyleSheet(want)
+
+
+class _Light(QObject):
+    """The liquid look's light: a soft glow under the pointer on a button or panel, swelling and
+    brightening its rim as it is pressed, and fading away after."""
+
+    def eventFilter(self, obj, event):
+        kind = event.type()
+        if kind == QEvent.Resize:
+            _round(obj)
+        elif kind == QEvent.Paint:
+            return self._paint(obj, event)
+        elif not (_liquid_look() and motion_on()) or isinstance(obj, QLineEdit):
+            return False
+        elif kind in (QEvent.HoverEnter, QEvent.HoverMove):
+            self._state(obj)['at'] = event.position()
+            if kind == QEvent.HoverEnter:
+                self._to(obj, 'hover', 1.0, 160)
+            obj.update()
+        elif kind == QEvent.HoverLeave:
+            self._to(obj, 'hover', 0.0, 380)
+        elif kind == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+            self._state(obj)['at'] = event.position()
+            self._to(obj, 'press', 1.0, 110)
+        elif kind == QEvent.MouseButtonRelease:
+            self._to(obj, 'press', 0.0, 480)
+        return False
+
+    @staticmethod
+    def _state(obj) -> dict:
+        state = getattr(obj, _LIGHT, None)
+        if state is None:
+            state = {'hover': 0.0, 'press': 0.0, 'at': QPointF(), 'moving': {}}
+            setattr(obj, _LIGHT, state)
+        return state
+
+    def _to(self, obj, which: str, value: float, ms: int) -> None:
+        state = self._state(obj)
+        old = state['moving'].get(which)
+        if old is not None:
+            old.stop()
+        animation = QVariantAnimation(obj)
+        animation.setDuration(ms)
+        animation.setStartValue(float(state[which]))
+        animation.setEndValue(value)
+        animation.setEasingCurve(QEasingCurve.OutCubic)
+
+        def step(v):
+            state[which] = float(v)
+            obj.update()
+        animation.valueChanged.connect(step)
+        state['moving'][which] = animation
+        _keep(animation)
+        animation.start()
+
+    def _paint(self, obj, event) -> bool:
+        state = getattr(obj, _LIGHT, None)
+        if not state or (state['hover'] < 0.01 and state['press'] < 0.01) or not _liquid_look():
+            return False
+        try:
+            type(obj).paintEvent(obj, event)                # the widget as it paints itself, then the light
+        except (AttributeError, RuntimeError, TypeError):
+            return False
+        dark = is_dark()
+        painter = QPainter(obj)
+        painter.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(obj.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        radius = getattr(obj, '_suite_light_radius', None)
+        radius = min(r.height() / 2, r.width() / 2) if radius is None else radius
+        path = QPainterPath()
+        path.addRoundedRect(r, radius, radius)
+        hover, press, at = state['hover'], state['press'], state['at']
+        strength = (24 if dark else 46) * hover + (58 if dark else 84) * press
+        glow = QRadialGradient(at, math.hypot(r.width(), r.height()) * (0.45 + 0.35 * press))
+        glow.setColorAt(0.0, QColor(255, 255, 255, int(strength)))
+        glow.setColorAt(0.55, QColor(255, 255, 255, int(strength * 0.3)))
+        glow.setColorAt(1.0, QColor(255, 255, 255, 0))
+        painter.fillPath(path, glow)
+        if press > 0.01:
+            painter.setPen(QPen(QColor(255, 255, 255, int(160 * press)), 1.2))
+            painter.drawPath(path)
+        painter.end()
+        return True
+
+
+_lights_filter = None
+
+
+def _lights() -> _Light:
+    global _lights_filter
+    if _lights_filter is None:
+        _lights_filter = _Light()
+    return _lights_filter
+
+
 # --------------------------------------------------------------------------- animations
 
 _running: set = set()          # animations under way, kept from Python's collector until they finish
@@ -659,7 +1505,9 @@ def _keep(animation) -> None:
 
 def fade_in(widget: QWidget, ms: int = 170, window: bool = False) -> None:
     """Fade a widget in: a window by its opacity, a page inside one by an opacity effect (left
-    alone if it holds video or OpenGL, which such effects break)."""
+    alone if it holds video or OpenGL, which such effects break). Not when animations are off."""
+    if not motion_on():
+        return
     if window:
         widget.setWindowOpacity(0.0)
         animation = QPropertyAnimation(widget, b'windowOpacity', widget)
@@ -680,28 +1528,111 @@ def fade_in(widget: QWidget, ms: int = 170, window: bool = False) -> None:
     animation.start()
 
 
+def _open(window: QWidget) -> None:
+    """A frameless window opening: it fades in - and in the liquid look, rises the last few pixels
+    into place as its glass unfolds, what is behind bending through it as it goes."""
+    if not motion_on():
+        return
+    liquid = _liquid_look() and _screen_glass(window)
+    fade_in(window, 200 if liquid else 170, window=True)
+    if not liquid:
+        return
+    window.setProperty(_UNFOLD, 0.0)
+    unfold = QVariantAnimation(window)
+    unfold.setDuration(380)
+    unfold.setStartValue(0.0)
+    unfold.setEndValue(1.0)
+    unfold.setEasingCurve(QEasingCurve.OutCubic)
+
+    def grow(value):
+        window.setProperty(_UNFOLD, float(value))
+        window.update()
+
+    def grown():
+        window.setProperty(_UNFOLD, None)
+        window.update()
+    unfold.valueChanged.connect(grow)
+    unfold.finished.connect(grown)
+    _keep(unfold)
+    unfold.start()
+    end = window.pos()
+    _glide(window, end + QPoint(0, 10), end)
+
+
+def _glide(window: QWidget, start: QPoint, end: QPoint) -> None:
+    """Move a window from start to end, easing in - stopping if the app moves it itself."""
+    def place(point: QPoint) -> None:
+        window._suite_gliding = True
+        window.move(point)
+        window._suite_gliding = False
+        window._suite_glide_to = point
+
+    place(start)
+    glide = QVariantAnimation(window)
+    glide.setDuration(380)
+    glide.setStartValue(QPointF(start))
+    glide.setEndValue(QPointF(end))
+    glide.setEasingCurve(QEasingCurve.OutCubic)
+
+    def step(value):
+        if window.pos() != window._suite_glide_to:
+            glide.stop()                                    # moved elsewhere meanwhile
+            return
+        place(value.toPoint())
+    glide.valueChanged.connect(step)
+    _keep(glide)
+    glide.start()
+
+
 def _animate_parts(window: QWidget) -> None:
-    """Once per window: its stacked pages fade in as they change, its check boxes tick smoothly."""
+    """Once per window part: its stacked pages fade in as they change, its check boxes tick
+    smoothly, and its buttons and text boxes take the liquid look's shape and light."""
     for stack in window.findChildren(QStackedWidget):
         if not stack.property('_suite_fades'):
             stack.setProperty('_suite_fades', True)
             stack.currentChanged.connect(lambda _, s=stack: s.isVisible() and s.currentWidget() is not None
-                                         and fade_in(s.currentWidget()))
+                                         and _page_in(s.currentWidget()))
     for box in window.findChildren(QCheckBox):
         if not box.property('_suite_ticks'):
             box.setProperty('_suite_ticks', True)
             box.toggled.connect(lambda on, b=box: _tick(b, on))
+    for kind in (QPushButton, QToolButton, QLineEdit):
+        for widget in window.findChildren(kind):
+            _light(widget)
+
+
+def _page_in(page: QWidget) -> None:
+    """A page coming up in a stack: it fades in - and in the liquid look, slides the last few
+    pixels into place."""
+    if not motion_on():
+        return
+    fade_in(page)
+    if _liquid_look():
+        end = page.pos()
+        slide = QPropertyAnimation(page, b'pos', page)
+        slide.setDuration(260)
+        slide.setStartValue(end + QPoint(18, 0))
+        slide.setEndValue(end)
+        slide.setEasingCurve(QEasingCurve.OutCubic)
+        _keep(slide)
+        slide.start()
 
 
 def _tick(box: QCheckBox, on: bool) -> None:
-    if not box.isVisible():
+    if not box.isVisible() or not motion_on():
         return
     animation = QVariantAnimation(box)
-    animation.setDuration(180)
     start = box.property(_TICK)
     animation.setStartValue(float(start) if start is not None else (0.0 if on else 1.0))
     animation.setEndValue(1.0 if on else 0.0)
-    animation.setEasingCurve(QEasingCurve.OutCubic)
+    if _liquid_look():
+        spring = QEasingCurve(QEasingCurve.OutBack)
+        spring.setOvershoot(1.3)
+        animation.setDuration(320)
+        animation.setEasingCurve(spring)
+    else:
+        animation.setDuration(180)
+        animation.setEasingCurve(QEasingCurve.OutCubic)
 
     def step(value):
         box.setProperty(_TICK, float(value))

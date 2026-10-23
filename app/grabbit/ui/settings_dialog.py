@@ -30,7 +30,7 @@ def _page(tabs: QTabWidget, title: str) -> QFormLayout:
 class SettingsDialog(QDialog):
     def __init__(self, settings, parent=None):
         super().__init__(parent)
-        theme.frost(self)
+        theme.frost(self, backdrop=theme.BACKDROP)
         self.settings = settings
         self.restart_needed = False
         self.setWindowTitle('Options')
@@ -232,7 +232,7 @@ class SettingsDialog(QDialog):
         # -------------------------------------------------------- interface
         form = _page(tabs, 'Interface')
         self.theme = QComboBox()
-        for value, label in (('system', 'Follow Windows'), ('light', 'Light'), ('dark', 'Dark')):
+        for value, label in (('system', 'As the suite (Hanami)'), ('light', 'Light'), ('dark', 'Dark')):
             self.theme.addItem(label, value)
         index = self.theme.findData(settings.theme)
         self.theme.setCurrentIndex(max(0, index))

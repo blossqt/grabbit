@@ -171,6 +171,8 @@ def main(argv=None) -> int:
             icons.clear_cache()
 
     app.styleHints().colorSchemeChanged.connect(lambda _: follow_system_theme())
+    # The suite's look changing in Hanami: the style sheet for the whole app is made again.
+    theme.on_restyle(lambda: app.setStyleSheet(theme.stylesheet()))
 
     if arguments:
         QTimer.singleShot(400, lambda: window.handle_links(arguments))

@@ -325,3 +325,8 @@ separate processes rather than being linked in. gallery-dl in particular is
 GPL-2.0-only and is called through its command line for exactly that reason.
 `THIRD-PARTY-NOTICES.md` lists every one of them, where its source is, and what
 the aria2 patch changes.
+
+## Photo
+
+The cherry blossom faintly behind Grabbit's windows is a photo by TOMOKO UJI on Unsplash
+(https://unsplash.com/photos/up_IHPsJvSI), used under the Unsplash License.

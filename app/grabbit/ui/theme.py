@@ -9,12 +9,15 @@ The pink is too pale for white text or for lines on white, so text on it is
 deep rose (ON_ACCENT), and lines and icons drawn in it use ink().
 """
 
-from PySide6.QtCore import Qt
+from pathlib import Path
+
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
 from .suitetheme import *  # noqa: F401,F403 - the suite's look, used as theme.<name>
-from .suitetheme import ACCENT, ON_ACCENT, glass_on, ink, is_dark
+from .suitetheme import ACCENT, ON_ACCENT, app_mode, glass_on, ink, is_dark, liquid_controls_css, panel_css
+
+BACKDROP = str(Path(__file__).with_name('backdrop.jpg'))     # TOMOKO UJI's blossom, on Unsplash, faint behind the windows
 
 _DARK = {
     'window': '#1e1f22', 'base': '#17181a', 'alt': '#232427', 'text': '#e6e6e6',
@@ -41,15 +44,10 @@ def colors() -> dict:
 
 
 def apply_theme(app: QApplication, mode: str = 'system'):
-    """mode: 'system' | 'light' | 'dark'."""
-    try:
-        scheme = {'light': Qt.ColorScheme.Light, 'dark': Qt.ColorScheme.Dark}.get(
-            mode, Qt.ColorScheme.Unknown)
-        app.styleHints().setColorScheme(scheme)
-    except (AttributeError, TypeError):
-        pass
+    """mode: 'system' (as the suite is - chosen in Hanami, else as Windows is) | 'light' | 'dark'."""
+    app_mode(mode)
 
-    if mode == 'dark' or (mode == 'system' and is_dark()):
+    if is_dark():
         _apply_dark_palette(app)
     else:
         palette = app.style().standardPalette()
@@ -125,4 +123,10 @@ def stylesheet() -> str:
     QTabBar::tab {{ padding: 6px 12px; border: 0; margin-right: 2px; border-radius: 6px; }}
     QTabBar::tab:selected {{ background: {c['hover']}; }}
     QScrollArea {{ border: 0; }}
-    """
+    """ + _liquid()
+
+
+def _liquid() -> str:
+    """In the suite's liquid look, its capsules of glass for buttons and boxes, and glass cards."""
+    controls = liquid_controls_css()
+    return controls + panel_css('#Card', 10) if controls else ''
