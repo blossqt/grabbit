@@ -20,21 +20,22 @@ from .suitetheme import ACCENT, ON_ACCENT, app_mode, glass_on, ink, is_dark, liq
 BACKDROP = str(Path(__file__).with_name('backdrop.jpg'))     # TOMOKO UJI's blossom, on Unsplash, faint behind the windows
 
 _DARK = {
-    'window': '#1e1f22', 'base': '#17181a', 'alt': '#232427', 'text': '#e6e6e6',
+    'window': '#1e1f22', 'base': '#17181a', 'card': '#17181a', 'alt': '#232427', 'text': '#e6e6e6',
     'dim': '#9aa0a6', 'border': '#34363b', 'hover': '#2a2c31', 'bar': '#2b2d31',
 }
 _LIGHT = {
-    'window': '#f4f5f7', 'base': '#ffffff', 'alt': '#fafafa', 'text': '#1a1c1e',
+    'window': '#f4f5f7', 'base': '#ffffff', 'card': '#ffffff', 'alt': '#fafafa', 'text': '#1a1c1e',
     'dim': '#5f6368', 'border': '#d8dade', 'hover': '#eceef1', 'bar': '#e9ebef',
 }
 
 
 # On glass (suitetheme.frost), the window's own colour is the suite's veil, painted under it, so
-# the style sheet leaves it see-through and keeps its panels and lists faint.
-_DARK_GLASS = {**_DARK, 'window': '#00000000', 'base': '#10ffffff', 'alt': '#18ffffff', 'border': '#2effffff',
-               'hover': '#20ffffff', 'bar': '#2affffff'}
-_LIGHT_GLASS = {**_LIGHT, 'window': '#00000000', 'base': '#8cffffff', 'alt': '#5affffff', 'border': '#22000000',
-                'hover': '#14000000', 'bar': '#20000000'}
+# the style sheet leaves it see-through and keeps its panels and lists faint: as faint as the
+# suite's cards (card), its boxes as its own (base). Alternate rows are drawn over the list.
+_DARK_GLASS = {**_DARK, 'window': '#00000000', 'base': '#10ffffff', 'card': '#10ffffff', 'alt': '#0affffff',
+               'border': '#2effffff', 'hover': '#20ffffff', 'bar': '#2affffff'}
+_LIGHT_GLASS = {**_LIGHT, 'window': '#00000000', 'base': '#8cffffff', 'card': '#5affffff', 'alt': '#24ffffff',
+                'border': '#22000000', 'hover': '#14000000', 'bar': '#20000000'}
 
 
 def colors() -> dict:
@@ -102,13 +103,13 @@ def stylesheet() -> str:
     #SidebarHeader {{ color: {c['dim']}; font-size: 11px; font-weight: 600;
                       padding: 10px 10px 2px 10px; text-transform: uppercase; }}
     #DetailLabel {{ color: {c['dim']}; }}
-    #Card {{ background: {c['base']}; border: 1px solid {c['border']}; border-radius: 10px; }}
+    #Card {{ background: {c['card']}; border: 1px solid {c['border']}; border-radius: 10px; }}
     #CardTitle {{ font-weight: 600; }}
     #Muted {{ color: {c['dim']}; }}
     #Banner {{ background: {c['alt']}; border: 1px solid {c['border']}; border-radius: 8px; }}
 
     QTreeView, QTableView {{ border: 1px solid {c['border']}; border-radius: 8px;
-                             background: {c['base']}; alternate-background-color: {c['alt']}; }}
+                             background: {c['card']}; alternate-background-color: {c['alt']}; }}
     QHeaderView::section {{ background: {c['window']}; border: 0;
                             border-bottom: 1px solid {c['border']}; padding: 5px 8px; }}
     QStatusBar {{ border-top: 1px solid {c['border']}; }}

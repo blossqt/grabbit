@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QWidget
 
 from ..speeds import SpeedHistory
 from ..util import human_size, human_speed
+from . import theme
 
 DOWN = QColor('#e64980')     # the suite's pink, deep enough for a line
 UP = QColor('#1faa59')
@@ -72,8 +73,11 @@ class SpeedGraph(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        base = self.palette().base().color()
-        border = self.palette().mid().color()
+        # The lists' colours, not the palette's: Qt keeps the palette a widget had when the style
+        # sheet first reached it, which on glass can be the solid one.
+        c = theme.colors()
+        base = QColor(c['card'])
+        border = QColor(c['border'])
         dim = self.palette().placeholderText().color()
         text = self.palette().windowText().color()
 
