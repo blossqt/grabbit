@@ -146,6 +146,8 @@ def main(argv=None) -> int:
     theme.apply_theme(app, settings.theme)
 
     engine = Engine(settings)
+    # A full-screen game in front: downloads slow down or pause meanwhile, as chosen in Hanami.
+    theme.on_game(lambda quiet: engine.game(quiet, theme.game_downloads()))
     from .ui.main_window import MainWindow
     window = MainWindow(engine, settings)
 

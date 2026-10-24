@@ -16,7 +16,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from .aria2rpc import Aria2Client, Aria2Error, Aria2Process
 from .paths import find_tool, logs_dir, torrents_dir
 from .tasks import (KIND_HTTP, KIND_IMAGE, KIND_MAGNET, KIND_MEDIA, KIND_TORRENT,
-                    FINISHED_STATES, State, Task, TaskStore, note_file, task_paths)
+                    BUSY_STATES, FINISHED_STATES, State, Task, TaskStore, note_file, task_paths)
 from .torrentmeta import parse_magnet, parse_torrent, select_file_spec
 from .util import ipv6_available, safe_filename, send_to_recycle_bin, site_name, unique_path
 
@@ -26,6 +26,10 @@ POLL_KEYS = ['gid', 'status', 'totalLength', 'completedLength', 'uploadLength',
              'downloadSpeed', 'uploadSpeed', 'connections', 'numSeeders', 'seeder',
              'errorCode', 'errorMessage', 'infoHash', 'followedBy', 'verifiedLength',
              'verifyIntegrityPending']
+
+# While a full-screen game is in front and downloads are to slow down (chosen in Hanami): at most
+# this much, in KiB/s. Upload most of all, which a game's ping feels first.
+GAME_DOWN_KIB, GAME_UP_KIB = 1024, 64
 
 DEFAULT_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
               '(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36')
@@ -62,6 +66,9 @@ class Engine(QObject):
         self._save_timer.setInterval(3000)
         self._save_timer.timeout.connect(lambda: self.store.save())
         self._polling = False
+
+        self.game_mode = ''                # 'slow' or 'pause' while a full-screen game is in front
+        self._game_paused: list = []       # what game() paused, to go on with after
 
         self._media_jobs: dict = {}        # task_id -> MediaJob
         self._media_queue: list = []
@@ -182,8 +189,8 @@ class Engine(QObject):
         s = self.settings
         options = {
             'max-concurrent-downloads': str(max(1, s.max_active_downloads)),
-            'max-overall-download-limit': f'{max(0, s.download_limit_kib)}K',
-            'max-overall-upload-limit': f'{max(0, s.upload_limit_kib)}K',
+            'max-overall-download-limit': f'{self.limits()[0]}K',
+            'max-overall-upload-limit': f'{self.limits()[1]}K',
             'max-connection-per-server': str(max(1, min(16, s.connections_per_server))),
             'split': str(max(1, min(64, s.connections_per_server))),
             'min-split-size': f'{max(1, s.min_split_size_mb)}M',
@@ -191,6 +198,34 @@ class Engine(QObject):
         }
         self._submit(lambda: self.client.call('aria2.changeGlobalOption', options))
         self._pump_media()
+
+    def limits(self) -> tuple[int, int]:
+        """The download and upload limits in force, in KiB/s (0: none) - lower while a game is in
+        front, if downloads are to slow down then."""
+        down, up = max(0, self.settings.download_limit_kib), max(0, self.settings.upload_limit_kib)
+        if self.game_mode == 'slow':
+            down = min(down, GAME_DOWN_KIB) if down else GAME_DOWN_KIB
+            up = min(up, GAME_UP_KIB) if up else GAME_UP_KIB
+        return down, up
+
+    def game(self, quiet: bool, how: str) -> None:
+        """A full-screen game came to the front (quiet), or left it. Meanwhile downloads slow down
+        or pause, as chosen in Hanami (how: 'slow', 'pause' or 'keep'); after, they go on as before."""
+        if quiet and not self.game_mode and how in ('slow', 'pause'):
+            self.game_mode = how
+            if how == 'pause':
+                self._game_paused = [task.id for task in self.store if task.state in BUSY_STATES]
+                self.pause(self._game_paused)
+            else:
+                self.apply_settings()
+        elif not quiet and self.game_mode:
+            was, self.game_mode = self.game_mode, ''
+            if was == 'pause':
+                paused = [i for i in self._game_paused if (task := self.store.get(i)) and task.state == State.PAUSED]
+                self._game_paused = []
+                self.resume(paused)
+            else:
+                self.apply_settings()
 
     def shutdown(self, wait_for_aria2: bool = False):
         self.running = False

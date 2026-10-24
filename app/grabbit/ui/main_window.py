@@ -411,8 +411,9 @@ class MainWindow(QMainWindow):
         self.graph.push(stats.get('download_speed') or 0, stats.get('upload_speed') or 0)
         down = human_speed(stats.get('download_speed')) or '0 B/s'
         up = human_speed(stats.get('upload_speed')) or '0 B/s'
-        limit_down = f' / {self.settings.download_limit_kib} KiB/s' if self.settings.download_limit_kib else ''
-        limit_up = f' / {self.settings.upload_limit_kib} KiB/s' if self.settings.upload_limit_kib else ''
+        down_kib, up_kib = self.engine.limits()
+        limit_down = f' / {down_kib} KiB/s' if down_kib else ''
+        limit_up = f' / {up_kib} KiB/s' if up_kib else ''
         self.down_label.setText(f'  ↓ {down}{limit_down}  ')
         self.up_label.setText(f'  ↑ {up}{limit_up}  ')
         self.tray.set_menu(self._tray_items, f'{APP_NAME}\n↓ {down}   ↑ {up}')

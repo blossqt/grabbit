@@ -54,6 +54,40 @@ def sample(engine):
         engine.store.add(task)
 
 
+def check_game(engine, window, app):
+    """A full-screen game in front: downloads slow down, or pause, as chosen in Hanami - and go
+    on as before once it is left. (No game is really in front: game() is told so.)"""
+    from grabbit.engine import GAME_DOWN_KIB, GAME_UP_KIB
+    engine._pump_media = lambda: None          # resuming here must not start real downloads
+    settings = engine.settings
+    settings.download_limit_kib, settings.upload_limit_kib = 0, 0
+    engine.game(True, 'slow')
+    report('a game slows downloads down', engine.limits() == (GAME_DOWN_KIB, GAME_UP_KIB), str(engine.limits()))
+    window._on_stats({'download_speed': 0, 'upload_speed': 0})
+    report('and the window shows the limit', f'{GAME_DOWN_KIB} KiB/s' in window.down_label.text(),
+           window.down_label.text().replace('↓', '').strip())
+    engine.game(False, 'slow')
+    report('then lifts it', engine.limits() == (0, 0))
+    settings.download_limit_kib = 300
+    engine.game(True, 'slow')
+    report("a lower limit of the user's own is kept", engine.limits()[0] == 300, str(engine.limits()))
+    engine.game(False, 'slow')
+    settings.download_limit_kib = 0
+
+    # (The seeding sample has no aria2 download behind it here, so only the video is paused.)
+    busy = [task for task in engine.store if task.state == State.DOWNLOADING]
+    done = [task for task in engine.store if task.state == State.COMPLETED]
+    engine.game(True, 'pause')
+    report('a game can pause what is under way', all(task.state == State.PAUSED for task in busy)
+           and all(task.state == State.COMPLETED for task in done))
+    engine.game(False, 'pause')
+    report('and it goes on after', all(task.state != State.PAUSED for task in busy),
+           ', '.join(task.state for task in busy))
+    engine.game(True, 'keep')
+    report('or it is left be', engine.game_mode == '' and engine.limits() == (0, 0))
+    engine.game(False, 'keep')
+
+
 def check_still(app):
     """A video's card offers one frame of it as a picture, chosen with a slider.
 
@@ -418,6 +452,7 @@ def main():
 
     check_choices(app)
     check_still(app)
+    check_game(engine, window, app)
 
     engine.shutdown()
     failures = [name for name, ok in results if not ok]

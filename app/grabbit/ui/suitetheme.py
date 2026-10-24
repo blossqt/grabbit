@@ -38,9 +38,11 @@ Two looks, chosen in Hanami for the whole suite (look(), set_look()):
   pointer that brightens as they are pressed.
 
 frost() also brings the suite's animations, unless they are off (motion_on()):
-pop-ups fade in (rising and unfolding into place in the liquid look), a
-window's stacked pages fade in as they change (sliding in, in the liquid
-look), and check boxes tick (switches spring across) smoothly. A style sheet
+pop-ups fade in (rising and unfolding into place in the liquid look), and out
+again when closed with fade_out(); a window's parts rise into place one after
+another as it opens (stagger_in), and a stacked page's as it comes up (it
+slides in, too, in the liquid look); progress bars glide to each new value;
+and check boxes tick (switches spring across) smoothly. A style sheet
 made from this module's colours should be set with restyle(), so it follows
 the look and Windows' light or dark as they change.
 """
@@ -60,17 +62,20 @@ from ctypes import wintypes
 from dataclasses import dataclass, replace
 
 from PySide6.QtCore import (QEasingCurve, QEvent, QObject, QPoint, QPointF, QPropertyAnimation, QRect, QRectF, Qt,
-                            QTimer, QVariantAnimation, Signal)
+                            QSequentialAnimationGroup, QTimer, QVariantAnimation, Signal)
 from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QFont, QGuiApplication, QImage, QLinearGradient,
                            QPainter, QPainterPath, QPalette, QPen, QPixmap, QRadialGradient, QRegion)
-from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QGraphicsOpacityEffect, QLineEdit,
-                               QProxyStyle, QPushButton, QStackedWidget, QStyle, QToolButton, QWidget)
+from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QFrame, QGraphicsEffect,
+                               QGraphicsOpacityEffect, QLineEdit, QMainWindow, QMenuBar, QProgressBar, QProxyStyle,
+                               QPushButton, QStackedWidget, QStatusBar, QStyle, QToolBar, QToolButton, QWidget)
 
 __all__ = ['ACCENT', 'ACCENT_HOVER', 'ON_ACCENT', 'ROSE', 'SuiteStyle', 'install', 'Colors', 'is_dark', 'veil',
            'colors', 'ink', 'font', 'paint_shadow', 'card_style', 'liquid_controls_css', 'panel_css', 'GLASS_RADIUS',
            'LIQUID_RADIUS', 'glass_on', 'frost', 'paint_glass', 'css', 'fade_in', 'LOOKS', 'look', 'set_look',
            'motion_on', 'motion_chosen', 'set_motion', 'MODES', 'mode', 'set_mode', 'app_mode', 'restyle',
-           'on_restyle', 'light_up', 'BACKDROP_OPACITY']
+           'on_restyle', 'light_up', 'BACKDROP_OPACITY', 'fade_out', 'stagger_in', 'GAME_DOWNLOADS',
+           'game_quiet_chosen', 'set_game_quiet', 'game_downloads', 'set_game_downloads', 'game_in_front',
+           'quiet_now', 'on_game']
 
 ACCENT = '#ffd1dc'         # the suite's blossom pink: buttons, ticks, highlights
 ACCENT_HOVER = '#ffe0e8'
@@ -645,6 +650,187 @@ def _look_changed() -> None:
         _suite_changed()
 
 
+# --------------------------------------------------------------------------- games
+#
+# While a full-screen game is in front, the suite keeps out of its way, unless that is turned off
+# in Hanami: the glass stops looking at the screen, Hanami holds notifications back until the game
+# is left, and Grabbit slows or pauses its downloads (game_downloads()). A game is a program Windows
+# knows as one - those Game Bar has recognised, listed under GameConfigStore - whose window fills
+# its screen, borderless or exclusive.
+
+GAME_DOWNLOADS = {'slow': 'Slow down', 'pause': 'Pause', 'keep': 'Keep going'}
+_GAMES_KEY = r'System\GameConfigStore\Children'
+_GAMES_FOR = 60.0           # s: how long the list of games is kept before it is read again
+_GAME_EVERY = 1500          # ms: how often the window in front is looked at
+_games: tuple[float, frozenset] = (0.0, frozenset())
+_programs: dict[int, str] = {}
+_game_quiet = False
+_game_watch = None
+_game_callbacks: list = []
+
+
+def game_quiet_chosen() -> bool:
+    """Whether the suite keeps quiet while a full-screen game is in front, as chosen in Hanami."""
+    return _suite_value('GameQuiet') != 0
+
+
+def set_game_quiet(on: bool) -> None:
+    import winreg
+    _set_suite_value('GameQuiet', winreg.REG_DWORD, 1 if on else 0)
+    _check_game()
+
+
+def game_downloads() -> str:
+    """What Grabbit does with its downloads while a game is in front: 'slow', 'pause' or 'keep'."""
+    value = _suite_value('GameDownloads')
+    return value if value in GAME_DOWNLOADS else 'slow'
+
+
+def set_game_downloads(name: str) -> None:
+    import winreg
+    _set_suite_value('GameDownloads', winreg.REG_SZ, name if name in GAME_DOWNLOADS else 'slow')
+
+
+def _known_games() -> frozenset:
+    """The programs Windows knows as games, as full paths (os.path.normcase)."""
+    global _games
+    at, games = _games
+    if at and time.monotonic() - at < _GAMES_FOR:
+        return games
+    found = set()
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _GAMES_KEY) as key:
+            for index in itertools.count():
+                try:
+                    name = winreg.EnumKey(key, index)
+                except OSError:
+                    break
+                try:
+                    with winreg.OpenKey(key, name) as child:
+                        path = winreg.QueryValueEx(child, 'MatchedExeFullPath')[0]
+                except OSError:
+                    continue
+                if isinstance(path, str) and path:
+                    found.add(os.path.normcase(path))
+    except OSError:
+        pass
+    _games = (time.monotonic(), frozenset(found))
+    return _games[1]
+
+
+class _MonitorInfo(ctypes.Structure):
+    _fields_ = [('cbSize', wintypes.DWORD), ('rcMonitor', wintypes.RECT), ('rcWork', wintypes.RECT),
+                ('dwFlags', wintypes.DWORD)]
+
+
+_game_dlls = None
+
+
+def _game_calls():
+    """user32 and kernel32 for looking at the window in front - copies of their own, so the types
+    set on them here touch no other code's."""
+    global _game_dlls
+    if _game_dlls is None:
+        user32, kernel32 = ctypes.WinDLL('user32'), ctypes.WinDLL('kernel32')
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+        user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+        user32.MonitorFromWindow.restype = wintypes.HMONITOR
+        user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(_MonitorInfo)]
+        user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.OpenProcess.argtypes, kernel32.OpenProcess.restype = [wintypes.DWORD, wintypes.BOOL,
+                                                                       wintypes.DWORD], wintypes.HANDLE
+        kernel32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+                                                        ctypes.POINTER(wintypes.DWORD)]
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        _game_dlls = user32, kernel32
+    return _game_dlls
+
+
+def _program_of(pid: int) -> str:
+    """The full path (normcase) of the program a process runs, or ''."""
+    if pid in _programs:
+        return _programs[pid]
+    kernel32 = _game_calls()[1]
+    path = ''
+    handle = kernel32.OpenProcess(0x1000, False, pid)              # PROCESS_QUERY_LIMITED_INFORMATION
+    if handle:
+        buffer = ctypes.create_unicode_buffer(1024)
+        length = wintypes.DWORD(len(buffer))
+        if kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(length)):
+            path = os.path.normcase(buffer.value)
+        kernel32.CloseHandle(handle)
+    if len(_programs) > 64:
+        _programs.clear()
+    _programs[pid] = path
+    return path
+
+
+def game_in_front() -> bool:
+    """Whether the window in front is a game's, filling its screen."""
+    if sys.platform != 'win32':
+        return False
+    u = _game_calls()[0]
+    hwnd = u.GetForegroundWindow()
+    if not hwnd:
+        return False
+    rect = wintypes.RECT()
+    info = _MonitorInfo()
+    info.cbSize = ctypes.sizeof(info)
+    monitor = u.MonitorFromWindow(hwnd, 2)                          # MONITOR_DEFAULTTONEAREST
+    if not u.GetWindowRect(hwnd, ctypes.byref(rect)) or not u.GetMonitorInfoW(monitor, ctypes.byref(info)):
+        return False
+    screen = info.rcMonitor
+    if rect.left > screen.left or rect.top > screen.top or rect.right < screen.right or rect.bottom < screen.bottom:
+        return False
+    pid = wintypes.DWORD()
+    u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    program = _program_of(pid.value)
+    return bool(program) and program in _known_games()
+
+
+def quiet_now() -> bool:
+    """Whether the suite keeps quiet now: a full-screen game is in front, and that is chosen."""
+    _watch_games()
+    return _game_quiet
+
+
+def on_game(callback) -> None:
+    """Call callback(quiet) whenever a full-screen game comes to the front, or leaves it (while
+    the suite is to keep quiet for games)."""
+    _game_callbacks.append(callback)
+    _watch_games()
+
+
+def _watch_games() -> None:
+    global _game_watch
+    app = QApplication.instance()
+    if _game_watch is None and app is not None:
+        _game_watch = QTimer(app)
+        _game_watch.setInterval(_GAME_EVERY)
+        _game_watch.timeout.connect(_check_game)
+        _game_watch.start()
+        _check_game()
+
+
+def _check_game() -> None:
+    global _game_quiet
+    try:
+        quiet = game_quiet_chosen() and game_in_front()
+    except OSError:
+        quiet = False
+    if quiet == _game_quiet:
+        return
+    _game_quiet = quiet
+    for callback in list(_game_callbacks):
+        try:
+            callback(quiet)
+        except Exception:                               # one app's part failing leaves the rest be
+            import traceback
+            traceback.print_exc()
+
+
 # --------------------------------------------------------------------------- following changes
 
 _restyled: weakref.WeakSet = weakref.WeakSet()
@@ -834,6 +1020,8 @@ class _Frosting(QObject):
             _animate_parts(obj)
             if _frameless(obj) and obj.property('_suite_fade'):
                 _open(obj)
+            elif not _frameless(obj):
+                _settle_in(obj)
         elif kind == QEvent.Hide:
             _stop_live(obj)
             _watch_around(obj, stop=True)
@@ -1025,8 +1213,9 @@ def _where(window: QWidget):
 
 def _capture(window: QWidget) -> None:
     """Take what is behind a window, a little beyond its edges, for its glass - now, as it opens.
-    (Later shots are taken on the glass's own thread: _capture_later.)"""
-    where = _where(window)
+    (Later shots are taken on the glass's own thread: _capture_later.) None while a game is in
+    front: the glass is then plain."""
+    where = None if quiet_now() else _where(window)
     if where is None:
         return
     screen, got, want, margin = where
@@ -1139,7 +1328,7 @@ def _capture_later(window: QWidget, final: bool) -> bool:
     framed window's tint is gauged again only from the last one (final), once it has settled, so
     as it is dragged only its rim repaints; a frameless window repaints whole anyway. False if a
     shot for the window is on its way already."""
-    where = _where(window)
+    where = None if quiet_now() else _where(window)
     if where is None:
         if final:
             _stop_live(window)
@@ -1502,7 +1691,7 @@ def _watch_around(window: QWidget, start: bool = False, stop: bool = False) -> N
         window._suite_around = None
         timer.start()
         return
-    if not window.isVisible() or _live(window) or not _screen_glass(window) or _button_down():
+    if not window.isVisible() or _live(window) or not _screen_glass(window) or _button_down() or quiet_now():
         return
     g = window.frameGeometry()
     screen = QGuiApplication.screenAt(g.center()) or window.screen() or QGuiApplication.primaryScreen()
@@ -1929,8 +2118,7 @@ def fade_in(widget: QWidget, ms: int = 170, window: bool = False) -> None:
         widget.setWindowOpacity(0.0)
         animation = QPropertyAnimation(widget, b'windowOpacity', widget)
     else:
-        if widget.graphicsEffect() is not None or any(
-                'Video' in type(w).__name__ or 'GL' in type(w).__name__ for w in widget.findChildren(QWidget)):
+        if widget.graphicsEffect() is not None or _holds_video(widget):
             return
         effect = QGraphicsOpacityEffect(widget)
         effect.setOpacity(0.0)
@@ -2016,14 +2204,22 @@ def _animate_parts(window: QWidget) -> None:
     for kind in (QPushButton, QToolButton, QLineEdit):
         for widget in window.findChildren(kind):
             _light(widget)
+    for bar in window.findChildren(QProgressBar):
+        if not bar.property('_suite_glides'):
+            bar.setProperty('_suite_glides', True)
+            _glide_progress(bar)
 
 
 def _page_in(page: QWidget) -> None:
-    """A page coming up in a stack: it fades in - and in the liquid look, slides the last few
-    pixels into place."""
+    """A page coming up in a stack: its sections rise into place one after another (or, without
+    any, it fades in) - and in the liquid look, it slides the last few pixels into place."""
     if not motion_on():
         return
-    fade_in(page)
+    sections = _sections(page)
+    if sections:
+        stagger_in(sections)
+    else:
+        fade_in(page)
     if _liquid_look():
         end = page.pos()
         slide = QPropertyAnimation(page, b'pos', page)
@@ -2062,3 +2258,159 @@ def _tick(box: QCheckBox, on: bool) -> None:
     animation.finished.connect(done)
     _keep(animation)
     animation.start()
+
+
+def _holds_video(widget: QWidget) -> bool:
+    """Whether a widget is, or holds, video or OpenGL, which graphics effects break."""
+    kinds = ('QOpenGLWidget', 'QVideoWidget', 'QQuickWidget')
+    return any(w.inherits(kind) for w in (widget, *widget.findChildren(QWidget)) for kind in kinds)
+
+
+class _Rise(QGraphicsEffect):
+    """A part of a window coming in: drawn faint, and a little below where it is, nearer and
+    clearer as step goes from 0 to 1. Only drawn so: the part itself never moves, so its layout
+    and the pointer's aim are left alone."""
+
+    def __init__(self, parent, by: int):
+        super().__init__(parent)
+        self.step = 0.0
+        self.by = by
+
+    def boundingRectFor(self, rect):
+        return rect.adjusted(0, 0, 0, self.by)
+
+    def draw(self, painter):
+        if self.step >= 1.0:
+            self.drawSource(painter)
+            return
+        pixmap = self.sourcePixmap(Qt.LogicalCoordinates, QPoint(), QGraphicsEffect.NoPad)
+        painter.save()
+        painter.setOpacity(painter.opacity() * self.step)
+        painter.drawPixmap(QPointF(0, self.by * (1.0 - self.step)), pixmap)
+        painter.restore()
+
+
+_STAGGER_GAP = 45       # ms between one part's rising and the next's
+_STAGGER_MOST = 8       # parts after this many come in with the last
+
+
+def stagger_in(widgets, by: int = 10, ms: int = 300) -> None:
+    """Parts of a window coming in one after another: each fades in as it rises the last few
+    pixels into place. Not when animations are off, nor for a part with video or an effect of
+    its own."""
+    if not motion_on():
+        return
+    for index, widget in enumerate(widgets):
+        if widget.graphicsEffect() is not None or _holds_video(widget):
+            continue
+        effect = _Rise(widget, by)
+        widget.setGraphicsEffect(effect)
+        rise = QVariantAnimation(widget)
+        rise.setDuration(ms)
+        rise.setStartValue(0.0)
+        rise.setEndValue(1.0)
+        rise.setEasingCurve(QEasingCurve.OutCubic)
+
+        def step(value, e=effect):
+            e.step = float(value)
+            e.update()
+
+        def done(w=widget, e=effect):
+            try:
+                if w.graphicsEffect() is e:
+                    w.setGraphicsEffect(None)
+            except RuntimeError:                    # gone meanwhile
+                pass
+        rise.valueChanged.connect(step)
+        rise.finished.connect(done)
+        sequence = QSequentialAnimationGroup(widget)
+        sequence.addPause(_STAGGER_GAP * min(index, _STAGGER_MOST))
+        sequence.addAnimation(rise)
+        _keep(sequence)
+        sequence.start()
+
+
+def _sections(root: QWidget) -> list:
+    """The panels a page is made of (QFrame#section), as they show."""
+    return [w for w in root.findChildren(QFrame, 'section') if w.isVisibleTo(root)][:12]
+
+
+def _settle_in(window: QWidget) -> None:
+    """A framed window opening: its sections - or else the parts it is made of - rise into place
+    one after another."""
+    if not motion_on():
+        return
+    root = window.centralWidget() if isinstance(window, QMainWindow) else window
+    if root is None:
+        return
+    parts = _sections(root) or [w for w in root.findChildren(QWidget, options=Qt.FindDirectChildrenOnly)
+                                if w.isVisibleTo(window) and not w.isWindow()
+                                and not isinstance(w, (QStatusBar, QMenuBar, QToolBar))]
+    if 0 < len(parts) <= 12:
+        stagger_in(parts)
+
+
+def fade_out(window: QWidget, then=None, ms: int = 160) -> QPropertyAnimation | None:
+    """Close a frameless window softly: it fades away, then then() (else it hides). At once when
+    animations are off. Returns the fading, which stopping (as the window is wanted again) leaves
+    the window up - its opacity is then for the caller to put back - or None."""
+    finish = then or window.hide
+    if getattr(window, '_suite_closing', False):
+        return None
+    if not motion_on() or not window.isVisible():
+        finish()
+        return None
+    window._suite_closing = True
+    fade = QPropertyAnimation(window, b'windowOpacity', window)
+    fade.setDuration(ms)
+    fade.setStartValue(window.windowOpacity())
+    fade.setEndValue(0.0)
+    fade.setEasingCurve(QEasingCurve.InCubic)
+
+    def done():
+        window._suite_closing = False
+        finish()
+        try:
+            window.setWindowOpacity(1.0)            # ready to be shown again
+        except RuntimeError:
+            pass
+    fade.finished.connect(done)
+    _keep(fade)
+    fade.start()
+    return fade
+
+
+def _glide_progress(bar: QProgressBar) -> None:
+    """A progress bar's fill glides to each new value rather than jumping - forward, that is: one
+    going back, or busy (no range), or hidden, goes at once. Meanwhile value() says where the fill
+    is, on its way."""
+    state = {'shown': bar.value(), 'own': False, 'moving': None}
+
+    def put(value: int) -> None:
+        state['own'] = True
+        bar.setValue(value)
+        state['own'] = False
+        state['shown'] = value
+
+    def changed(value: int) -> None:
+        if state['own']:
+            return
+        moving = state['moving']
+        if moving is not None:
+            moving.stop()
+        start = state['shown']
+        if not motion_on() or not bar.isVisible() or bar.maximum() <= bar.minimum() or value <= start \
+                or start < bar.minimum():
+            state['shown'] = value
+            return
+        put(start)
+        glide = QVariantAnimation(bar)
+        glide.setDuration(320)
+        glide.setStartValue(float(start))
+        glide.setEndValue(float(value))
+        glide.setEasingCurve(QEasingCurve.OutCubic)
+        glide.valueChanged.connect(lambda v: put(int(round(v))))
+        state['moving'] = glide
+        _keep(glide)
+        glide.start()
+    bar.valueChanged.connect(changed)
