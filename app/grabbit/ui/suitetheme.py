@@ -42,7 +42,8 @@ pop-ups fade in (rising and unfolding into place in the liquid look), and out
 again when closed with fade_out(); a window's parts rise into place one after
 another as it opens (stagger_in), and a stacked page's as it comes up (it
 slides in, too, in the liquid look); progress bars glide to each new value;
-and check boxes tick (switches spring across) smoothly. A style sheet
+and check boxes tick (switches spring across) smoothly - all moving on once
+a frame, at the fastest screen's refresh rate (frame_interval). A style sheet
 made from this module's colours should be set with restyle(), so it follows
 the look and Windows' light or dark as they change.
 """
@@ -75,7 +76,7 @@ __all__ = ['ACCENT', 'ACCENT_HOVER', 'ON_ACCENT', 'ROSE', 'SuiteStyle', 'install
            'motion_on', 'motion_chosen', 'set_motion', 'MODES', 'mode', 'set_mode', 'app_mode', 'restyle',
            'on_restyle', 'light_up', 'BACKDROP_OPACITY', 'fade_out', 'stagger_in', 'GAME_DOWNLOADS',
            'game_quiet_chosen', 'set_game_quiet', 'game_downloads', 'set_game_downloads', 'game_in_front',
-           'quiet_now', 'on_game']
+           'quiet_now', 'on_game', 'frame_interval']
 
 ACCENT = '#ffd1dc'         # the suite's blossom pink: buttons, ticks, highlights
 ACCENT_HOVER = '#ffe0e8'
@@ -227,6 +228,49 @@ def install(app) -> None:
     _watch.setInterval(2000)
     _watch.timeout.connect(_look_changed)
     _watch.start()
+    _frame_rate()
+    app.screenAdded.connect(_screen_added)
+    app.screenRemoved.connect(lambda *_: _frame_rate())
+    for screen in app.screens():
+        screen.refreshRateChanged.connect(lambda *_: _frame_rate())
+
+
+# Qt moves its animations on every 16 ms, 60 times a second, whatever the monitor - on a faster one
+# they step where they should glide. Its animation timer (QUnifiedTimer, which PySide doesn't wrap,
+# so it is reached in Qt's own DLL) is set to tick at least once a frame on the fastest screen, and
+# set again when screens come, go or change their rate. Should that fail, they stay at 60.
+
+_FRAME_CALLS = ('?instance@QUnifiedTimer@@SAPEAV1@XZ', '?setTimingInterval@QUnifiedTimer@@QEAAXH@Z')
+
+
+def frame_interval() -> int:
+    """How often, in whole ms, an animation moves on: at least once a frame on the fastest screen."""
+    rate = max((screen.refreshRate() for screen in QGuiApplication.screens()), default=60.0)
+    return max(1, int(1000 / max(rate, 1.0)))
+
+
+def _frame_rate() -> None:
+    try:
+        kernel = ctypes.windll.kernel32
+        kernel.GetModuleHandleW.restype = ctypes.c_void_p
+        kernel.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+        handle = kernel.GetModuleHandleW('Qt6Core.dll')
+        if not handle:
+            return
+        core = ctypes.WinDLL('Qt6Core.dll', handle=handle)
+        timer, set_interval = (getattr(core, name) for name in _FRAME_CALLS)
+    except (AttributeError, OSError):
+        return
+    timer.restype, timer.argtypes = ctypes.c_void_p, []
+    set_interval.restype, set_interval.argtypes = None, [ctypes.c_void_p, ctypes.c_int]
+    unified = timer()                       # this thread's: the windows' own
+    if unified:
+        set_interval(unified, frame_interval())
+
+
+def _screen_added(screen) -> None:
+    screen.refreshRateChanged.connect(lambda *_: _frame_rate())
+    _frame_rate()
 
 
 @dataclass(frozen=True)
