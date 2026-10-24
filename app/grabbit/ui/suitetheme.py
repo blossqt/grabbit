@@ -802,9 +802,9 @@ def _refrost_all() -> None:
 
 class _Frosting(QObject):
     """Watches the glass windows: glass as each is shown, then its animations - and, under a framed
-    one's contents, the veil, which Qt leaves unpainted on a see-through window, and its rim's
-    light. A frameless one's glass is taken from the screen as it opens, and follows it as it
-    moves or changes size."""
+    one's contents, the veil, which Qt leaves unpainted on a see-through window, and its rim, its
+    bend and its light. A frameless one's glass, and a framed one's rim, is taken from the screen
+    as it opens, and follows it as it moves or changes size."""
 
     def eventFilter(self, obj, event):
         kind = event.type()
@@ -815,7 +815,9 @@ class _Frosting(QObject):
                 _paint_clear(obj, event)
             elif glass_on():
                 painter = QPainter(obj)
+                painter.setClipRect(event.rect())
                 _paint_bridge(painter, obj)
+                _paint_rim_lens(painter, obj)
                 painter.fillRect(event.rect(), veil())
                 _paint_framed_rim(painter, obj)
                 painter.end()
@@ -825,7 +827,7 @@ class _Frosting(QObject):
             if _screen_glass(obj):
                 _capture(obj)                       # not on screen yet: what is behind it, as it is
                 _watch_around(obj, start=True)
-            elif glass_on() and not _frameless(obj):
+            if glass_on() and not _frameless(obj) and not _clear(obj):
                 _bridge(obj)
             if glass_on():
                 _apply_glass(obj)
@@ -842,9 +844,6 @@ class _Frosting(QObject):
                 _update_rim(obj)                    # only its rim changes as it is dragged
             else:
                 obj.update()
-        elif kind == QEvent.Move and obj.isVisible() and glass_on() and obj.property(_FROSTED) \
-                and not _frameless(obj) and _light_of(obj) != getattr(obj, '_suite_rim_light', None):
-            _update_rim(obj)                        # the light on its rim shifts as it goes
         elif kind == QEvent.ChildAdded and obj.isVisible():
             QTimer.singleShot(0, obj, lambda: _animate_parts(obj))
         return False
@@ -856,17 +855,16 @@ _BRIDGE_HOLD, _BRIDGE_FADE = 1200, 350    # ms: how long a frosted window's own 
 def _bridge(window: QWidget) -> None:
     """Windows takes about a second to bring a newly shown frosted window's Acrylic up, and until
     then the window is only its veil over what is behind - far too clear. So it opens over frosted
-    glass of its own, made from the screen behind it (taken now, before it is on screen), which
-    fades away as the Acrylic comes."""
-    g = window.geometry()
-    screen = QGuiApplication.screenAt(g.center()) or window.screen() or QGuiApplication.primaryScreen()
-    area = screen.geometry()
-    got = g.intersected(area)
-    if got.isEmpty():
+    glass of its own, made from the shot of the screen behind it its rim took as it opened (before
+    it was on screen), which fades away as the Acrylic comes."""
+    shot = getattr(window, '_suite_shot', None)
+    if shot is None:
         return
-    shot = screen.grabWindow(0, got.x() - area.x(), got.y() - area.y(), got.width(), got.height())
-    if not shot.isNull():
-        _bridge_from(window, shot if got == g else _fill_out(shot, got, g))
+    g, at, dpr = window.geometry(), window._suite_shot_at, shot.devicePixelRatio()
+    part = shot.copy(QRect(round((g.x() - at.x()) * dpr), round((g.y() - at.y()) * dpr),
+                           round(g.width() * dpr), round(g.height() * dpr)))
+    if not part.isNull():
+        _bridge_from(window, part)
 
 
 def _bridge_from(window: QWidget, shot: QPixmap) -> None:
@@ -992,7 +990,7 @@ _MARGIN_FRAMELESS = 160   # a pop-up's, further: one dragged fast stays within i
 _LENSES = {
     'frosted': dict(band=24, reach=24, power=1.5, blur=7, steps=8, corner=GLASS_RADIUS * 2, shrink=1.0),
     'liquid': dict(band=9, reach=48, rate=0.55, blur=2, steps=10, corner=LIQUID_RADIUS, shrink=1.0),
-    # a framed window's rim in the liquid look: only the rings that bend in light from beyond its
+    # a framed window's rim, in either look: only the rings that bend in light from beyond its
     # edges (the window itself fills the rest of its shot)
     'rim': dict(band=5, reach=56, rate=0.55, blur=2, steps=6, corner=GLASS_RADIUS, shrink=1.0),
 }
@@ -1003,9 +1001,9 @@ _WATCH_MS = 600           # how often a still window looks at what is around it
 
 
 def _screen_glass(window: QWidget) -> bool:
-    """Whether a window's glass is made from the screen: a frameless one's, and in the liquid look
-    a framed one's rim (_clear)."""
-    return glass_on() and bool(window.property(_FROSTED)) and (_frameless(window) or look() == 'liquid')
+    """Whether a window's glass is made from the screen: a frameless one's, and a framed one's rim,
+    which bends in what lies beyond its edges, in either look."""
+    return glass_on() and bool(window.property(_FROSTED))
 
 
 def _clear(window: QWidget) -> bool:
@@ -1130,7 +1128,7 @@ def _took(window: QWidget, shot, at: QPoint, tone: tuple | None) -> None:
         if old is not None and (_live(window) or framed):
             tone = tuple(0.6 * a + 0.4 * b for a, b in zip(old, tone))
         window._suite_tone = tone
-    if framed and _clear_tint(window) == tint:
+    if framed and (not _clear(window) or _clear_tint(window) == tint):
         _update_rim(window)
     else:
         window.update()
@@ -1612,6 +1610,15 @@ def _rim_light(window: QWidget, r: QRectF, radius: float, light: int, alphas: tu
     return window._suite_rim
 
 
+def _paint_rim_lens(painter, window: QWidget) -> None:
+    """A framed window's rim, bending in what lies beyond its edges (_lens_for), in either look.
+    Its glass runs on up behind the title bar, so its top edge, rim and corners are out of sight."""
+    lens = _lens_for(window)
+    if lens is not None:
+        dpr = lens.devicePixelRatio()
+        painter.drawPixmap(QRectF(0, -_ABOVE, lens.width() / dpr, lens.height() / dpr), lens, QRectF(lens.rect()))
+
+
 def _paint_framed_rim(painter, window: QWidget) -> None:
     """The light on a framed glass window's rim, in either look - none along its top, as its glass
     runs on up behind the title bar."""
@@ -1640,12 +1647,7 @@ def _paint_clear(window: QWidget, event) -> None:
     painter.setRenderHint(QPainter.SmoothPixmapTransform)
     painter.setClipRect(event.rect())
     r = QRectF(window.rect())
-    # The rim first - the glass runs on up behind the title bar, so its top edge, rim and corners
-    # are out of sight - then the tint over all of it, the rim as much as the rest.
-    lens = _lens_for(window)
-    if lens is not None:
-        dpr = lens.devicePixelRatio()
-        painter.drawPixmap(QRectF(0, -_ABOVE, lens.width() / dpr, lens.height() / dpr), lens, QRectF(lens.rect()))
+    _paint_rim_lens(painter, window)            # the rim first, then the tint over all of it
     alpha = _clear_tint(window)
     tint = QLinearGradient(r.topLeft(), r.bottomLeft())
     tint.setColorAt(0.0, QColor(46, 43, 54, alpha) if dark else QColor(255, 255, 255, alpha))
