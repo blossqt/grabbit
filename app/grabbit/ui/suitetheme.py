@@ -228,6 +228,7 @@ def install(app) -> None:
     _watch.setInterval(2000)
     _watch.timeout.connect(_look_changed)
     _watch.start()
+    _honour_timers()
     _frame_rate()
     app.screenAdded.connect(_screen_added)
     app.screenRemoved.connect(lambda *_: _frame_rate())
@@ -266,6 +267,29 @@ def _frame_rate() -> None:
     unified = timer()                       # this thread's: the windows' own
     if unified:
         set_interval(unified, frame_interval())
+
+
+class _Throttling(ctypes.Structure):
+    _fields_ = [('version', wintypes.ULONG), ('control', wintypes.ULONG), ('state', wintypes.ULONG)]
+
+
+_PROCESS_POWER_THROTTLING, _IGNORE_TIMER_RESOLUTION = 4, 0x4
+
+
+def _honour_timers() -> None:
+    """Windows 11 stops honouring a process's timer resolution while none of its windows can be
+    seen - an app sat in the tray - and its fast timers then tick every 15.6 ms: a pop-up's
+    animations ran at 64 frames a second until Windows saw the pop-up. Opted out of that, they
+    keep to the frame from the first. (Timers that fine run only while something animates.)"""
+    try:
+        kernel = ctypes.WinDLL('kernel32')
+        kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel.SetProcessInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        state = _Throttling(1, _IGNORE_TIMER_RESOLUTION, 0)     # the choice is the app's: always honoured
+        kernel.SetProcessInformation(kernel.GetCurrentProcess(), _PROCESS_POWER_THROTTLING, ctypes.byref(state),
+                                     ctypes.sizeof(state))
+    except (AttributeError, OSError):
+        pass
 
 
 def _screen_added(screen) -> None:
@@ -1196,10 +1220,13 @@ def _frosting() -> _Frosting:
 # lens's edge does, so what lies just beyond each edge shows inside it.
 #
 # The glass follows the window: while it moves or changes size, the screen behind is taken again
-# and again (Windows leaving the window itself out of the shots, SetWindowDisplayAffinity), the
-# glass made from the last shot, shifted, in between; and a still window looks now and then at
-# what is around it, and takes the screen again when that changed. While it is left out, the
-# window is missing from screenshots and screen sharing too - only for those moments.
+# and again, the glass made from the last shot, shifted, in between; and a still window looks now
+# and then at what is around it, and takes the screen again when that changed. Those shots catch
+# the window itself, so where it is (and its shadow) is filled in from its last shot, which had
+# none of it (_clean): the first was taken before it was on screen. Windows can leave a window out
+# of shots itself (SetWindowDisplayAffinity), but is never asked to: while any window is left
+# out, desktop recorders (NVIDIA's) refuse to record at all. So what is right behind a still
+# window is as it was when the window last moved off it.
 #
 # Those later shots are taken on a thread of the glass's own (_Grabber): Windows takes several
 # milliseconds over each, which a window being dragged would otherwise spend waiting, frame after
@@ -1211,7 +1238,6 @@ def _frosting() -> _Frosting:
 # real one. So shots have it taken out (_heal), and a still window's glass waits while a mouse
 # button is held (_button_down).
 
-_WDA_NONE, _WDA_EXCLUDEFROMCAPTURE = 0, 0x11
 _MARGIN = 56              # how far beyond a window's edges its shot of the screen reaches
 _MARGIN_FRAMELESS = 160   # a pop-up's, further: one dragged fast stays within its last shot until the next comes
 # band: how far in from the rim the glass bends light; reach: how far beyond the edge the light
@@ -1228,7 +1254,7 @@ _LENSES = {
 }
 _LIVE_MS = 33             # how often a moving window takes the screen behind it again
 _SETTLE = 0.35            # and for how long after it stops
-_HIDDEN_FOR = 0.06        # how long Windows takes to leave a window out of shots
+_SHADOW = 16              # px around a pop-up that Windows' shadow for it can darken in a shot
 _WATCH_MS = 600           # how often a still window looks at what is around it
 
 
@@ -1266,8 +1292,28 @@ def _capture(window: QWidget) -> None:
     area = screen.geometry()
     shot = screen.grabWindow(0, got.x() - area.x(), got.y() - area.y(), got.width(), got.height())
     if not shot.isNull():
-        _took(window, *_made(shot, got, want, _LENSES[look()]['blur'], not _frameless(window), True, margin,
-                             _drag_images(_native(screen, got))))
+        framed = not _frameless(window)
+        clean = _clean(shot.toImage(), got, want, _drag_images(_native(screen, got)))
+        _took(window, *_made(clean, want, want, _LENSES[look()]['blur'], framed, True, margin),
+              clean=None if framed else clean)
+
+
+def _clean(shot, got: QRect, want: QRect, dragged: list = (), covered: QRect | None = None,
+           before: QImage | None = None, before_at: QPoint | None = None) -> QImage:
+    """A shot of the screen (a QImage), on any thread, as the glass wants it: the images of anything
+    being dragged taken out (dragged, in its pixels: _heal), made up to the size wanted, and where
+    the window is (covered, in the screen's coordinates, with its shadow) filled in from its last
+    clean shot (before, of the screen from before_at), which had none of the window in it."""
+    if dragged:
+        shot = _heal(shot, dragged)
+    if got != want:
+        shot = _fill_out(shot, got, want)
+    if covered is not None and before is not None and before_at is not None:
+        painter = QPainter(shot)
+        painter.setClipRect(QRectF(covered.translated(-want.topLeft())))
+        painter.drawImage(QPointF(before_at.x() - want.x(), before_at.y() - want.y()), before)
+        painter.end()
+    return shot
 
 
 def _made(shot, got: QRect, want: QRect, blur: int, framed: bool, tone: bool, margin: int = _MARGIN,
@@ -1347,13 +1393,16 @@ def _heal(shot, parts: list) -> QImage:
     return image
 
 
-def _took(window: QWidget, shot, at: QPoint, tone: tuple | None) -> None:
+def _took(window: QWidget, shot, at: QPoint, tone: tuple | None, clean: QImage | None = None) -> None:
     """A window has a new shot for its glass: shown - for a framed window only along its rim,
-    unless the tint changed with it."""
+    unless the tint changed with it. A pop-up keeps the shot as it was before it was softened
+    (clean), to fill its next one in from where it is (_clean)."""
     if isinstance(shot, QImage):
         shot = QPixmap.fromImage(shot)
     window._suite_shot = shot
     window._suite_shot_at = at
+    if clean is not None:
+        window._suite_clean, window._suite_clean_at = clean, at
     framed = not _frameless(window)
     tint = _clear_tint(window) if framed else None
     if tone is not None:
@@ -1381,20 +1430,24 @@ def _capture_later(window: QWidget, final: bool) -> bool:
     blur, framed = _LENSES[look()]['blur'], not _frameless(window)
     tone = final or not framed
     native = _native(screen, got)
+    covered = None if framed else window.frameGeometry().adjusted(-_SHADOW, -_SHADOW, _SHADOW, _SHADOW)
+    before, before_at = getattr(window, '_suite_clean', None), getattr(window, '_suite_clean_at', None)
     ref = weakref.ref(window)
+
+    def make(image):
+        clean = _clean(image, got, want, _drag_images(native), covered, before, before_at)
+        return _made(clean, want, want, blur, framed, tone, margin), None if framed else clean
 
     def then(made):
         w = ref()
         if w is None or not w.isVisible():
             return
         if made is not None:
-            _took(w, *made)
+            _took(w, *made[0], clean=made[1])
         if final and not _live(w):
-            _stop_live(w)                   # back in shots, now the last one is taken
+            _stop_live(w)
 
-    return _grabber().take(('shot', id(window)), native, screen.devicePixelRatio(),
-                           lambda image: _made(image, got, want, blur, framed, tone, margin, _drag_images(native)),
-                           then)
+    return _grabber().take(('shot', id(window)), native, screen.devicePixelRatio(), make, then)
 
 
 def _native(screen, rect: QRect) -> QRect:
@@ -1675,15 +1728,8 @@ def _live(window: QWidget) -> bool:
 
 def _follow(window: QWidget) -> None:
     """The window moved, changed size, or what is behind it changed: take the screen behind it
-    again and again until it settles, Windows leaving a frameless window out of the shots
-    meanwhile. (A framed one's glass only takes what is around it, so it stays in them.)"""
-    now = time.monotonic()
-    window._suite_settle = now + _SETTLE
-    if not _frameless(window):
-        window._suite_hidden_at = None
-    elif getattr(window, '_suite_hidden_at', None) is None:
-        ctypes.windll.user32.SetWindowDisplayAffinity(wintypes.HWND(int(window.winId())), _WDA_EXCLUDEFROMCAPTURE)
-        window._suite_hidden_at = now
+    again and again until it settles."""
+    window._suite_settle = time.monotonic() + _SETTLE
     timer = getattr(window, '_suite_live', None)
     if timer is None:
         timer = window._suite_live = QTimer(window)
@@ -1698,22 +1744,15 @@ def _live_frame(window: QWidget) -> None:
     if not window.isVisible():
         _stop_live(window)
         return
-    now = time.monotonic()
-    hidden_at = window._suite_hidden_at
-    if hidden_at is not None and now - hidden_at < _HIDDEN_FOR:
-        return
-    final = now >= window._suite_settle
+    final = time.monotonic() >= window._suite_settle
     if _capture_later(window, final) and final:
-        window._suite_live.stop()                   # (left out of shots until that last one comes)
+        window._suite_live.stop()
 
 
 def _stop_live(window: QWidget) -> None:
     timer = getattr(window, '_suite_live', None)
     if timer is not None:
         timer.stop()
-    if getattr(window, '_suite_hidden_at', None) is not None and _frameless(window):
-        ctypes.windll.user32.SetWindowDisplayAffinity(wintypes.HWND(int(window.winId())), _WDA_NONE)
-        window._suite_hidden_at = None
     window._suite_around = None
 
 
