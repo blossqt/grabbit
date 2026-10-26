@@ -57,18 +57,29 @@ class SingleInstanceServer(QLocalServer):
         self.newConnection.connect(self._on_connection)
 
     def _on_connection(self):
-        socket = self.nextPendingConnection()
-        if socket is None:
+        """A second start of Grabbit, handing over its links: read as they come, and taken once it
+        has hung up - all of them, however many pieces they come in. Waited for here, one that took
+        its time froze the window for up to half a second."""
+        while self.hasPendingConnections():
+            socket = self.nextPendingConnection()
+            parts = [bytes(socket.readAll())]          # what came before it was taken
+            socket.readyRead.connect(lambda s=socket, p=parts: p.append(bytes(s.readAll())))
+            # Hung up: what it said is still there to read (by disconnected, it has gone).
+            socket.readChannelFinished.connect(lambda s=socket, p=parts: self._handed_over(s, p))
+            socket.disconnected.connect(lambda s=socket, p=parts: self._handed_over(s, p))
+            socket.disconnected.connect(socket.deleteLater)
+            QTimer.singleShot(HANDING_OVER_MOST, socket, socket.abort)     # one that never hangs up
+
+    def _handed_over(self, socket, parts):
+        if socket.property('handed'):
             return
+        socket.setProperty('handed', True)
+        parts.append(bytes(socket.readAll()))
+        data = b''.join(parts).decode('utf-8', 'replace')
+        self.window.handle_links([line.strip() for line in data.splitlines() if line.strip()])
 
-        def read():
-            data = bytes(socket.readAll()).decode('utf-8', 'replace')
-            links = [line.strip() for line in data.splitlines() if line.strip()]
-            socket.disconnectFromServer()
-            self.window.handle_links(links)
 
-        socket.readyRead.connect(read)
-        socket.waitForReadyRead(500)
+HANDING_OVER_MOST = 5000    # ms a second start gets to hand its links over
 
 
 # Switches the updater passes (selfupdate.py), each followed by a value. Their

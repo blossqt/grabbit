@@ -62,8 +62,8 @@ import weakref
 from ctypes import wintypes
 from dataclasses import dataclass, replace
 
-from PySide6.QtCore import (QEasingCurve, QEvent, QObject, QPoint, QPointF, QPropertyAnimation, QRect, QRectF, Qt,
-                            QSequentialAnimationGroup, QTimer, QVariantAnimation, Signal)
+from PySide6.QtCore import (QAbstractAnimation, QEasingCurve, QEvent, QObject, QPoint, QPointF, QPropertyAnimation,
+                            QRect, QRectF, Qt, QSequentialAnimationGroup, QTimer, QVariantAnimation, Signal)
 from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QFont, QGuiApplication, QImage, QLinearGradient,
                            QPainter, QPainterPath, QPalette, QPen, QPixmap, QRadialGradient, QRegion)
 from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QFrame, QGraphicsEffect,
@@ -76,7 +76,7 @@ __all__ = ['ACCENT', 'ACCENT_HOVER', 'ON_ACCENT', 'ROSE', 'SuiteStyle', 'install
            'motion_on', 'motion_chosen', 'set_motion', 'MODES', 'mode', 'set_mode', 'app_mode', 'restyle',
            'on_restyle', 'light_up', 'BACKDROP_OPACITY', 'fade_out', 'stagger_in', 'GAME_DOWNLOADS',
            'game_quiet_chosen', 'set_game_quiet', 'game_downloads', 'set_game_downloads', 'game_in_front',
-           'quiet_now', 'on_game', 'frame_interval']
+           'quiet_now', 'on_game', 'frame_interval', 'animate', 'stop_animation']
 
 ACCENT = '#ffd1dc'         # the suite's blossom pink: buttons, ticks, highlights
 ACCENT_HOVER = '#ffe0e8'
@@ -2125,9 +2125,7 @@ class _Light(QObject):
 
     def _to(self, obj, which: str, value: float, ms: int) -> None:
         state = self._state(obj)
-        old = state['moving'].get(which)
-        if old is not None:
-            old.stop()
+        stop_animation(state['moving'].get(which))
         animation = QVariantAnimation(obj)
         animation.setDuration(ms)
         animation.setStartValue(float(state[which]))
@@ -2184,12 +2182,40 @@ def _lights() -> _Light:
 
 # --------------------------------------------------------------------------- animations
 
-_running: set = set()          # animations under way, kept from Python's collector until they finish
+_running: set = set()          # animations under way, kept from Python's collector until they stop
 
 
 def _keep(animation) -> None:
+    """Hold an animation while it runs, and let it go once it stops, finished or not. Qt keeps an
+    animation made with a parent until that parent goes, and the suite's windows live as long as
+    their apps: each hover, tick and fade left one more behind (until 2026-10-26)."""
     _running.add(animation)
-    animation.finished.connect(lambda: _running.discard(animation))
+
+    def stopped(state, _=None) -> None:
+        if state == QAbstractAnimation.State.Stopped:
+            _running.discard(animation)
+            try:
+                animation.deleteLater()
+            except RuntimeError:            # its widget went first, and took it along
+                pass
+    animation.stateChanged.connect(stopped)
+
+
+def animate(animation) -> None:
+    """Start an animation that is let go once it stops (_keep). One kept to be stopped later is
+    stopped with stop_animation, as it may be gone by then."""
+    _keep(animation)
+    animation.start()
+
+
+def stop_animation(animation) -> None:
+    """Stop an animation if it is still there: the suite's are deleted once they stop."""
+    if animation is None:
+        return
+    try:
+        animation.stop()
+    except RuntimeError:                    # gone already
+        pass
 
 
 def fade_in(widget: QWidget, ms: int = 170, window: bool = False) -> None:
@@ -2478,9 +2504,7 @@ def _glide_progress(bar: QProgressBar) -> None:
     def changed(value: int) -> None:
         if state['own']:
             return
-        moving = state['moving']
-        if moving is not None:
-            moving.stop()
+        stop_animation(state['moving'])
         start = state['shown']
         if not motion_on() or not bar.isVisible() or bar.maximum() <= bar.minimum() or value <= start \
                 or start < bar.minimum():
