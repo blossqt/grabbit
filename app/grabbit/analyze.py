@@ -8,9 +8,9 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 
-from . import gallerydl, metalink, pagescrape
+from . import gallerydl, metalink, pagescrape, suiteweb
 from .torrentmeta import TorrentInfo, parse_magnet, parse_torrent
-from .util import safe_filename, site_name
+from .util import host_of, safe_filename, site_name
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +44,7 @@ class Analysis:
     filename: str = ''
     filesize: int = 0
     content_type: str = ''
+    robot: bool = False           # the site showed its robot check, not the page
 
 
 def _request(url: str, method: str = 'GET', extra: dict | None = None, agent: str = _UA):
@@ -68,6 +69,7 @@ def http_head(url: str, timeout: float = 15) -> dict:
             with urllib.request.urlopen(_request(url, method, extra, agent),
                                         timeout=timeout) as response:
                 headers = response.headers
+                info['robot'] = info.get('robot') or suiteweb.robot_check(response.status, headers)
                 info['status'] = response.status
                 info['url'] = response.url
                 info['content_type'] = (headers.get('Content-Type') or '').split(';')[0].strip().lower()
@@ -85,6 +87,7 @@ def http_head(url: str, timeout: float = 15) -> dict:
                 info.pop('error', None)
                 return info
         except urllib.error.HTTPError as exc:
+            info['robot'] = info.get('robot') or suiteweb.robot_check(exc.code, exc.headers or {})
             if method == 'GET' or exc.code not in (403, 405, 501):
                 info['status'] = exc.code
                 info['error'] = f'HTTP {exc.code}'
@@ -209,6 +212,16 @@ def analyze(url: str, settings) -> Analysis:
         if found is not None:
             return found
 
+    full = suiteweb.fuller(url)
+    if full:
+        # The smaller copy a page shows (StockCake's _large): its full-size picture instead.
+        head = http_head(full)
+        if head.get('content_type', '').startswith('image/'):
+            analysis.url = full
+            analysis = _as_file(full, head, analysis)
+            analysis.hint = 'The full-size picture, rather than the smaller copy the page shows.'
+            return analysis
+
     extractor = matching_extractor(url)
     if extractor:
         result = _probe(url, settings)
@@ -229,6 +242,14 @@ def analyze(url: str, settings) -> Analysis:
         return _from_probe(url, photos, analysis)
 
     head = http_head(url)
+    if head.get('robot'):
+        analysis.kind = KIND_ERROR
+        analysis.robot = True
+        site = analysis.site or host_of(url) or 'This site'
+        analysis.error = (f'{site} checks for robots before it shows this page, '
+                          "so Grabbit can't read it. Right-click the picture you want, choose "
+                          'Copy image address, and paste that here instead.')
+        return analysis
     content_type = head.get('content_type', '')
     if content_type in ('application/x-bittorrent', 'application/octet-stream') and path.endswith('.torrent'):
         try:

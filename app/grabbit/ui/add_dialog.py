@@ -652,7 +652,8 @@ class AddDialog(QDialog):
         if kind == analyze_mod.KIND_FILE:
             return FileCard(analysis)
         return ErrorCard(analysis.url, analysis.error or 'This link could not be read.',
-                         allow_direct=analysis.url.lower().startswith(('http://', 'https://')))
+                         allow_direct=analysis.url.lower().startswith(('http://', 'https://'))
+                         and not analysis.robot)        # it would save the robot check
 
     def _update_state(self):
         total = sum(card.count() for card in self._cards.values())
