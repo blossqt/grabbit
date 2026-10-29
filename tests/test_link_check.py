@@ -84,5 +84,11 @@ class LinkCheckTests(unittest.TestCase):
                          f'{base}/crystalline-pink-blossom-stockcake.jpg')
 
 
+    def test_a_resizing_servers_picture(self):
+        # Copy image address on a Next.js site's search results: its own server's resized copy.
+        self.assertEqual(suiteweb.fuller('https://site.example/_next/image?url=%2Fp%2Fa.jpg&w=640'),
+                         'https://site.example/p/a.jpg')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
