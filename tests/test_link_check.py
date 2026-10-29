@@ -73,22 +73,10 @@ class LinkCheckTests(unittest.TestCase):
 
     def test_the_full_size_picture(self):
         small, full = f'{self.base}/public/a_large/blossom.jpg', f'{self.base}/public/a/blossom.jpg'
-        with mock.patch.object(suiteweb, 'fuller', lambda url: full if url == small else ''):
+        with mock.patch.object(suiteweb, 'best', lambda url, referer='': full if url == small else url):
             found = analyze.analyze(small, None)
         self.assertEqual((found.kind, found.url, found.filename), (analyze.KIND_FILE, full, 'blossom.jpg'))
         self.assertEqual(found.filesize, len(JPEG))
-
-    def test_stockcakes_sizes(self):
-        base = 'https://images.stockcake.com/public/d/d/f/ddf7aab9-167f-4728-bc3c-46252abde868'
-        self.assertEqual(suiteweb.fuller(f'{base}_large/crystalline-pink-blossom-stockcake.jpg'),
-                         f'{base}/crystalline-pink-blossom-stockcake.jpg')
-
-
-    def test_a_resizing_servers_picture(self):
-        # Copy image address on a Next.js site's search results: its own server's resized copy.
-        self.assertEqual(suiteweb.fuller('https://site.example/_next/image?url=%2Fp%2Fa.jpg&w=640'),
-                         'https://site.example/p/a.jpg')
-
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -212,9 +212,9 @@ def analyze(url: str, settings) -> Analysis:
         if found is not None:
             return found
 
-    full = suiteweb.fuller(url)
-    if full:
-        # The smaller copy a page shows (StockCake's _large): its full-size picture instead.
+    full = suiteweb.best(url)
+    if full != url:
+        # The smaller copy a page shows (Pixabay's _640, a ?w=640): its full-size picture instead.
         head = http_head(full)
         if head.get('content_type', '').startswith('image/'):
             analysis.url = full
