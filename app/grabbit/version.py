@@ -5,4 +5,4 @@ changes only the Windows app carries the last APK as it was, under its own older
 the two numbers meet again in the next release that changes the phone app (build/release.py).
 """
 
-APP_VERSION = '1.5.30'
+APP_VERSION = '1.5.31'
