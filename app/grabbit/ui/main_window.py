@@ -164,7 +164,7 @@ class MainWindow(QMainWindow):
         self.search.textChanged.connect(lambda text: self.proxy.set_search(text))
         bar.addWidget(self.search)
 
-        self.action_settings = QAction(icons.icon('settings'), 'Options', self)
+        self.action_settings = QAction(icons.icon('settings'), 'Settings', self)
         self.action_settings.setShortcut(QKeySequence('Ctrl+,'))
         self.action_settings.triggered.connect(self.open_settings)
         bar.addAction(self.action_settings)

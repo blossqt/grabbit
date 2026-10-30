@@ -323,7 +323,7 @@ class MediaCard(LinkCard):
         self.frame_picker = None        # made the first time a still is asked for
         self._quality_kind = None       # the type the quality menu was filled for
 
-        # Starting from the default in Options, where the source allows it.
+        # Starting from the default in Settings, where the source allows it.
         self._wanted = choices.remembered(settings.video_quality, settings.video_container)
         for value, label in choices.types(self.source):
             self.kind.addItem(label, value)
