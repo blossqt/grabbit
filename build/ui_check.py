@@ -414,17 +414,17 @@ def main():
            edge.name() == icons.APP_ICON_COLOR and edge.alpha() == 255 and corner.alpha() == 0,
            f'edge {edge.name()} alpha {edge.alpha()}, corner alpha {corner.alpha()}')
 
-    # Qt hides a single & in a tab's name - it marks the key that picks the
-    # tab - so a name meant to show one has to be written with two.
-    from PySide6.QtWidgets import QTabWidget
+    # Settings, laid out as the suite's are: a page in the list down the left
+    # for each one in the window, the refused-download hint naming the right one.
+    from PySide6.QtWidgets import QStackedWidget
+    from grabbit import media
     from grabbit.ui.settings_dialog import SettingsDialog
+    from grabbit.ui.suitesettings import Nav
     dialog = SettingsDialog(engine.settings, window)
-    tabs = dialog.findChild(QTabWidget)
-    names = [tabs.tabText(i) for i in range(tabs.count())]
-    shown = [name.replace('&&', '\0').replace('&', '').replace('\0', '&') for name in names]
-    report('every Options tab shows its whole name, & included',
-           'Videos & Photos' in shown and all('&' not in n.replace('&&', '') for n in names),
-           ' | '.join(shown))
+    names = dialog.findChild(Nav).titles()
+    report('every Settings page is in the list, by its name',
+           len(names) == dialog.findChild(QStackedWidget).count() and 'Videos and photos' in names
+           and 'Videos and photos' in media.REFUSED_HINT, ' | '.join(names))
     dialog.deleteLater()
 
     # Watch, with no mpv or VLC: a Store app - Windows 11's Media Player -
