@@ -3,7 +3,7 @@
 import os
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QFormLayout, QHBoxLayout, QLabel, QPlainTextEdit, QTabWidget,
+from PySide6.QtWidgets import (QFormLayout, QHBoxLayout, QLabel, QPlainTextEdit, QStackedWidget, QTabWidget,
                                QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from ..tasks import KIND_MEDIA, State
@@ -19,6 +19,9 @@ class DetailsPanel(QTabWidget):
         self._fields = {}
 
         self.addTab(self._build_general(), 'General')
+        self.none = QLabel('Choose a download to see its details', self)     # over the tabs, until one is chosen
+        self.none.setObjectName('Muted')
+        self.none.setAlignment(Qt.AlignCenter)
         self.files_tree = QTreeWidget()
         self.files_tree.setHeaderLabels(['File', 'Size', 'Done', 'Progress'])
         self.files_tree.setColumnWidth(0, 420)
@@ -41,6 +44,7 @@ class DetailsPanel(QTabWidget):
         self.addTab(self.log_view, 'Log')
 
         self.currentChanged.connect(lambda _: self.refresh(force=True))
+        self._show_none(True)
 
     # ------------------------------------------------------------- general
     def _build_general(self) -> QWidget:
@@ -85,6 +89,18 @@ class DetailsPanel(QTabWidget):
         return outer
 
     # --------------------------------------------------------------- update
+    def _show_none(self, none: bool) -> None:
+        self.none.setVisible(none)
+        if none:
+            self.none.setGeometry(self.rect())
+            self.none.raise_()
+        self.tabBar().setVisible(not none)
+        self.findChild(QStackedWidget).setVisible(not none)      # the pages, dashes and all
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.none.setGeometry(self.rect())
+
     def set_task(self, task_id: str):
         if task_id != self.task_id:
             self.task_id = task_id
@@ -97,6 +113,7 @@ class DetailsPanel(QTabWidget):
 
     def refresh(self, force: bool = False):
         task = self.engine.store.get(self.task_id) if self.task_id else None
+        self._show_none(task is None)
         if task is None:
             for value in self._fields.values():
                 value.setText('—')

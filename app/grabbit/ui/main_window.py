@@ -4,8 +4,8 @@ import logging
 import os
 import threading
 
-from PySide6.QtCore import QByteArray, QPoint, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QKeySequence
+from PySide6.QtCore import QByteArray, QEvent, QPoint, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QDesktopServices, QFont, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QDialog, QFileDialog,
                                QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
@@ -156,7 +156,7 @@ class MainWindow(QMainWindow):
         bar.addWidget(spacer)
 
         self.search = QLineEdit()
-        self.search.setPlaceholderText('Filter downloads…')
+        self.search.setPlaceholderText('Filter')
         self.search.setClearButtonEnabled(True)
         self.search.setMaximumWidth(260)
         self.search.addAction(icons.icon('search', icons.theme_color('dim'), 16),
@@ -305,6 +305,15 @@ class MainWindow(QMainWindow):
         self.view.header().setSectionHidden(10, True)   # save path: on demand
         self.view.sortByColumn(9, Qt.DescendingOrder)
         right_layout.addWidget(self.view, 1)
+        # Nothing in the list: what to do, over the empty table - rather than a blank one.
+        self.empty_label = QLabel(self.view.viewport())
+        self.empty_label.setObjectName('Muted')
+        self.empty_label.setAlignment(Qt.AlignCenter)
+        self.empty_label.setWordWrap(True)
+        self.view.viewport().installEventFilter(self)
+        for signal in (self.proxy.rowsInserted, self.proxy.rowsRemoved, self.proxy.modelReset,
+                       self.proxy.layoutChanged):
+            signal.connect(self._update_empty)
 
         self.details = DetailsPanel(self.engine, self)
 
@@ -322,8 +331,11 @@ class MainWindow(QMainWindow):
         self.vertical_splitter.setStretchFactor(1, 2)
         self.vertical_splitter.setStretchFactor(2, 1)
         self.splitter.addWidget(self.vertical_splitter)
+        self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
+        self.splitter.setCollapsible(0, False)
         self.setCentralWidget(self.splitter)
+        self._update_empty()
 
         self.view.selectionModel().selectionChanged.connect(self._on_selection_changed)
 
@@ -333,24 +345,23 @@ class MainWindow(QMainWindow):
             item.setFlags(Qt.NoItemFlags)
             item.setData(Qt.UserRole, None)
             font = item.font()
-            font.setPointSizeF(max(7.5, font.pointSizeF() - 1))
-            font.setBold(True)
+            font.setWeight(QFont.DemiBold)
             item.setFont(font)
             item.setForeground(icons.theme_color('dim'))
             self.sidebar.addItem(item)
 
-        header('STATUS')
+        header('Status')
         for key, label, icon_name in STATUS_FILTERS:
             item = QListWidgetItem(icons.icon(icon_name, icons.theme_color('dim'), 16), label)
             item.setData(Qt.UserRole, ('status', key))
             self.sidebar.addItem(item)
-        header('TYPE')
+        header('Type')
         for key, label, icon_name in KIND_FILTERS:
             item = QListWidgetItem(icons.icon(icon_name, icons.theme_color('dim'), 16), label)
             item.setData(Qt.UserRole, ('kind', key))
             self.sidebar.addItem(item)
 
-        header('VIEW')
+        header('View')
         # Not selectable: clicking it turns the graph on and off rather than
         # changing what the list is filtered to.
         self.graph_item = QListWidgetItem(
@@ -811,6 +822,21 @@ class MainWindow(QMainWindow):
                 ids.append(task_id)
         return ids
 
+    def _update_empty(self, *_):
+        """The empty list's line: how to start, with nothing at all - or that this filter has none."""
+        if self.proxy.rowCount():
+            self.empty_label.hide()
+            return
+        self.empty_label.setText('Paste a link (Ctrl+N) or drop a torrent file here' if not self.model.rowCount()
+                                 else 'Nothing here')
+        self.empty_label.setGeometry(self.view.viewport().rect().adjusted(24, 24, -24, -24))
+        self.empty_label.show()
+
+    def eventFilter(self, watched, event):
+        if watched is self.view.viewport() and event.type() == QEvent.Resize:
+            self.empty_label.setGeometry(self.view.viewport().rect().adjusted(24, 24, -24, -24))
+        return super().eventFilter(watched, event)
+
     def _on_selection_changed(self):
         ids = self._selected_ids()
         self.details.set_task(ids[0] if ids else '')
@@ -1059,6 +1085,10 @@ class MainWindow(QMainWindow):
                     splitter.restoreState(QByteArray.fromBase64(value.encode('ascii')))
                 except Exception:
                     pass
+        # The sidebar is a fixed width: its slot no wider, whatever an older layout remembered (a
+        # wider one left a blank strip beside it).
+        sizes = self.splitter.sizes()
+        self.splitter.setSizes([self.sidebar.width(), max(1, sum(sizes) - self.sidebar.width())])
         # After the splitter, so a remembered height survives being shown.
         if self.settings.show_graph:
             self.show_graph(True)

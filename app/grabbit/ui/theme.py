@@ -101,7 +101,7 @@ def stylesheet() -> str:
     #Sidebar::item:hover {{ background: {c['hover']}; }}
 
     #SidebarHeader {{ color: {c['dim']}; font-size: 11px; font-weight: 600;
-                      padding: 10px 10px 2px 10px; text-transform: uppercase; }}
+                      padding: 10px 10px 2px 10px; }}
     #DetailLabel {{ color: {c['dim']}; }}
     #Card {{ background: {c['card']}; border: 1px solid {c['border']}; border-radius: 10px; }}
     #CardTitle {{ font-weight: 600; }}
