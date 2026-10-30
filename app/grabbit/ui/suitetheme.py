@@ -66,7 +66,8 @@ from PySide6.QtCore import (QAbstractAnimation, QEasingCurve, QEvent, QObject, Q
                             QRect, QRectF, Qt, QSequentialAnimationGroup, QTimer, QVariantAnimation, Signal)
 from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QFont, QGuiApplication, QImage, QLinearGradient,
                            QPainter, QPainterPath, QPalette, QPen, QPixmap, QRadialGradient, QRegion)
-from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QFrame, QGraphicsEffect,
+from PySide6.QtWidgets import (QAbstractItemView, QAbstractScrollArea, QAbstractSpinBox, QApplication, QCheckBox,
+                               QComboBox, QFrame, QGraphicsEffect,
                                QGraphicsOpacityEffect, QLineEdit, QMainWindow, QMenuBar, QProgressBar, QProxyStyle,
                                QPushButton, QStackedWidget, QStatusBar, QStyle, QToolBar, QToolButton, QWidget)
 
@@ -230,6 +231,9 @@ def install(app) -> None:
     _watch.start()
     _honour_timers()
     _frame_rate()
+    app.installEventFilter(_wheels())
+    _ui_effects()
+    on_restyle(_ui_effects)
     app.screenAdded.connect(_screen_added)
     app.screenRemoved.connect(lambda *_: _frame_rate())
     for screen in app.screens():
@@ -2099,7 +2103,7 @@ class _Light(QObject):
             _round(obj)
         elif kind == QEvent.Paint:
             return self._paint(obj, event)
-        elif not (_liquid_look() and motion_on()) or isinstance(obj, QLineEdit):
+        elif not motion_on() or isinstance(obj, QLineEdit) or not (_liquid_look() or _fades(obj)):
             return False
         elif kind in (QEvent.HoverEnter, QEvent.HoverMove):
             self._state(obj)['at'] = event.position()
@@ -2142,12 +2146,17 @@ class _Light(QObject):
 
     def _paint(self, obj, event) -> bool:
         state = getattr(obj, _LIGHT, None)
-        if not state or (state['hover'] < 0.01 and state['press'] < 0.01) or not _liquid_look():
+        if not state or (state['hover'] < 0.01 and state['press'] < 0.01):
+            return False
+        liquid = _liquid_look()
+        if not liquid and not _fades(obj):
             return False
         try:
             type(obj).paintEvent(obj, event)                # the widget as it paints itself, then the light
         except (AttributeError, RuntimeError, TypeError):
             return False
+        if not liquid:
+            return _paint_fade(obj, state)
         dark = is_dark()
         painter = QPainter(obj)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -2168,6 +2177,32 @@ class _Light(QObject):
             painter.drawPath(path)
         painter.end()
         return True
+
+
+def _fades(obj) -> bool:
+    """In the Frosted look, a button brightens as the pointer comes onto it and dims as it is
+    pressed, in a moment rather than at once; a panel doesn't."""
+    return isinstance(obj, (QPushButton, QToolButton))
+
+
+def _paint_fade(obj, state: dict) -> bool:
+    """The Frosted look's hover and press, over a button as it painted itself: a soft lightening
+    under the pointer, a shade as it is pressed."""
+    painter = QPainter(obj)
+    painter.setRenderHint(QPainter.Antialiasing)
+    r = QRectF(obj.rect()).adjusted(1, 1, -1, -1)
+    radius = getattr(obj, '_suite_light_radius', None)
+    radius = min(8.0, r.height() / 2) if radius is None else radius
+    path = QPainterPath()
+    path.addRoundedRect(r, radius, radius)
+    dark = is_dark()
+    hover, press = state['hover'], state['press']
+    if hover > 0.01:
+        painter.fillPath(path, QColor(255, 255, 255, int((22 if dark else 70) * hover)))
+    if press > 0.01:
+        painter.fillPath(path, QColor(0, 0, 0, int((40 if dark else 22) * press)))
+    painter.end()
+    return True
 
 
 _lights_filter = None
@@ -2216,6 +2251,110 @@ def stop_animation(animation) -> None:
         animation.stop()
     except RuntimeError:                    # gone already
         pass
+
+
+# --------------------------------------------------------------------------- smooth scrolling
+
+SCROLL_MS = 220           # a wheel notch's scroll glides this long (the next one picks it up from where it is)
+
+
+class _Wheels(QObject):
+    """Every scroll area's mouse wheel, gliding: Qt jumps a notch's 60 px at once. The distance is
+    Qt's own (lines a notch times the bar's step); only the getting there is animated. A touchpad's
+    scrolling is smooth already and is left to Qt, as is Ctrl with the wheel (zoom), and anything
+    with nothing to scroll that way - the wheel then goes on to what holds it, as it would."""
+
+    def eventFilter(self, obj, event):
+        if event.type() != QEvent.Wheel or not motion_on():
+            return False
+        area = obj.parent() if isinstance(obj, QWidget) else None
+        if not isinstance(area, QAbstractScrollArea) or obj is not area.viewport():
+            return False
+        if not event.pixelDelta().isNull() or event.modifiers() & Qt.ControlModifier:
+            return False
+        delta = event.angleDelta()
+        sideways = abs(delta.x()) > abs(delta.y()) or bool(event.modifiers() & Qt.ShiftModifier)
+        notches = (delta.x() or delta.y() if sideways else delta.y()) / 120
+        if not notches:
+            return False
+        if isinstance(area, QAbstractItemView) and _by_pixel(area):
+            area.updateGeometries()                 # its bar's step a row's height now, not 1
+        bar = area.horizontalScrollBar() if sideways else area.verticalScrollBar()
+        if bar is None or bar.maximum() <= bar.minimum():
+            return False
+        glide = getattr(bar, '_suite_glide', None)
+        start = bar.value()
+        target = glide['to'] if glide and glide['running'] else start
+        step = QApplication.wheelScrollLines() * bar.singleStep()
+        target = max(bar.minimum(), min(bar.maximum(), round(target - notches * step)))
+        if target == start and not (glide and glide['running']):
+            return False                            # at its end already: as Qt leaves it
+        _glide_bar(bar, target)
+        event.accept()
+        return True
+
+
+def _by_pixel(view: QAbstractItemView) -> bool:
+    """A list or table scrolled by the pixel, so a glide doesn't step a row at a time (a notch still
+    goes three rows, as before). True if it wasn't yet."""
+    changed = False
+    if view.verticalScrollMode() != QAbstractItemView.ScrollPerPixel:
+        view.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        changed = True
+    if view.horizontalScrollMode() != QAbstractItemView.ScrollPerPixel:
+        view.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        changed = True
+    return changed
+
+
+def _glide_bar(bar, target: int) -> None:
+    """Scroll a bar to target, easing out - stopping if anything else moves it meanwhile (the bar
+    dragged, a jump to an item)."""
+    glide = getattr(bar, '_suite_glide', None)
+    if glide is None:
+        glide = bar._suite_glide = {'running': False, 'to': bar.value(), 'set': None, 'animation': None}
+        bar.sliderPressed.connect(lambda: stop_animation(glide['animation']))
+    stop_animation(glide['animation'])
+    animation = QVariantAnimation(bar)
+    animation.setDuration(SCROLL_MS)
+    animation.setStartValue(float(bar.value()))
+    animation.setEndValue(float(target))
+    animation.setEasingCurve(QEasingCurve.OutCubic)
+    glide.update(running=True, to=target, set=bar.value(), animation=animation)
+
+    def step(value):
+        if bar.value() != glide['set']:
+            animation.stop()                        # moved elsewhere meanwhile
+            return
+        glide['set'] = round(value)
+        bar.setValue(glide['set'])
+
+    def stopped(state, _=None):
+        if state == QAbstractAnimation.State.Stopped:
+            glide['running'] = False
+    animation.valueChanged.connect(step)
+    animation.stateChanged.connect(stopped)
+    _keep(animation)
+    animation.start()
+
+
+_wheels_filter = None
+
+
+def _wheels() -> _Wheels:
+    global _wheels_filter
+    if _wheels_filter is None:
+        _wheels_filter = _Wheels()
+    return _wheels_filter
+
+
+def _ui_effects() -> None:
+    """Qt's own animations - menus and drop-down lists sliding open, tooltips fading - with the
+    suite's: on while Animations is on."""
+    on = motion_on()
+    for effect in (Qt.UI_General, Qt.UI_AnimateMenu, Qt.UI_FadeMenu, Qt.UI_AnimateCombo, Qt.UI_AnimateTooltip,
+                   Qt.UI_FadeTooltip):
+        QApplication.setEffectEnabled(effect, on)
 
 
 def fade_in(widget: QWidget, ms: int = 170, window: bool = False) -> None:
@@ -2313,6 +2452,8 @@ def _animate_parts(window: QWidget) -> None:
     for kind in (QPushButton, QToolButton, QLineEdit):
         for widget in window.findChildren(kind):
             _light(widget)
+    for view in window.findChildren(QAbstractItemView):
+        _by_pixel(view)
     for bar in window.findChildren(QProgressBar):
         if not bar.property('_suite_glides'):
             bar.setProperty('_suite_glides', True)
