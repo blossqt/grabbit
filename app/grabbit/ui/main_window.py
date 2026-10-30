@@ -5,7 +5,7 @@ import os
 import threading
 
 from PySide6.QtCore import QByteArray, QEvent, QPoint, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QDesktopServices, QFont, QGuiApplication, QKeySequence
+from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QDialog, QFileDialog,
                                QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
@@ -18,7 +18,7 @@ from ..suitetray import SuiteTray
 from ..tasks import KIND_MEDIA, RUNNING_STATES, State
 from ..torrentmeta import parse_torrent
 from ..util import extract_links, human_speed, open_path, reveal_in_explorer
-from . import icons, theme
+from . import icons, suitesettings, theme
 from .add_dialog import AddDialog
 from .details import DetailsPanel
 from .settings_dialog import SettingsDialog
@@ -227,7 +227,7 @@ class MainWindow(QMainWindow):
         self.sidebar = QListWidget()
         self.sidebar.setObjectName('Sidebar')
         self.sidebar.setFixedWidth(196)
-        self.sidebar.setFrameShape(QListWidget.NoFrame)
+        suitesettings.sidebar(self.sidebar)         # the settings window's rows and sliding pill
         self._fill_sidebar()
         self.sidebar.currentItemChanged.connect(self._on_filter_changed)
         self.sidebar.itemClicked.connect(self._on_sidebar_clicked)
@@ -342,12 +342,8 @@ class MainWindow(QMainWindow):
     def _fill_sidebar(self):
         def header(text):
             item = QListWidgetItem(text)
-            item.setFlags(Qt.NoItemFlags)
+            item.setFlags(Qt.NoItemFlags)           # drawn as a heading
             item.setData(Qt.UserRole, None)
-            font = item.font()
-            font.setWeight(QFont.DemiBold)
-            item.setFont(font)
-            item.setForeground(icons.theme_color('dim'))
             self.sidebar.addItem(item)
 
         header('Status')
@@ -981,7 +977,7 @@ class MainWindow(QMainWindow):
             else:
                 count = sum(1 for t in self.engine.store if not (t.down_speed or t.up_speed))
             label = dict((k, l) for k, l, _ in STATUS_FILTERS)[key]
-            item.setText(f'{label}  ({count})' if count else label)
+            item.setData(suitesettings.COUNT, count or None)
         if self.graph.isVisible():
             self.graph.push_tasks(self.engine.store)
         if self.details.task_id:

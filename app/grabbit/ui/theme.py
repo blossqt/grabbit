@@ -96,9 +96,6 @@ def stylesheet() -> str:
     QToolBar QToolButton:disabled {{ color: {c['dim']}; }}
 
     #Sidebar {{ background: {c['window']}; border: 0; outline: 0; padding: 6px 4px; }}
-    #Sidebar::item {{ padding: 6px 8px; border-radius: 6px; margin: 1px 2px; color: {c['text']}; }}
-    #Sidebar::item:selected {{ background: {c['hover']}; color: {c['text']}; }}
-    #Sidebar::item:hover {{ background: {c['hover']}; }}
 
     #SidebarHeader {{ color: {c['dim']}; font-size: 11px; font-weight: 600;
                       padding: 10px 10px 2px 10px; }}

@@ -1,6 +1,6 @@
 """The suite's settings windows, laid out alike: the pages down the left under the app's logo, a
 pill sliding to the one chosen; each page a title, then framed sections of settings, rising in as
-it comes up.
+it comes up. An app's own sidebar (sidebar()) takes the same look.
 
 Written once, here in Hanami, and copied into each Qt app's ui\\ folder (tests\\check_copies.py
 keeps them the same); it uses only suitetheme.py, which is shared the same way.
@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import QEasingCurve, QRectF, QSize, Qt, QVariantAnimation, Signal
-from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import (QCheckBox, QFormLayout, QFrame, QHBoxLayout, QLabel, QLayout, QScrollArea,
-                               QStackedWidget, QVBoxLayout, QWidget)
+from PySide6.QtCore import (QEasingCurve, QEvent, QModelIndex, QObject, QPersistentModelIndex, QRectF, QSize, Qt,
+                            QVariantAnimation, Signal)
+from PySide6.QtGui import QColor, QFont, QIcon, QLinearGradient, QPainter, QPen, QPixmap
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QFormLayout, QFrame, QHBoxLayout, QLabel, QLayout,
+                               QScrollArea, QStackedWidget, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
 from . import suitetheme as theme
 
@@ -226,7 +227,6 @@ class Nav(QWidget):
     def paintEvent(self, event):
         c = theme.colors()
         dark = theme.is_dark()
-        liquid = theme.look() == 'liquid' and theme.glass_on()
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         width = self.width() - 16
@@ -234,28 +234,7 @@ class Nav(QWidget):
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(255, 255, 255, 14) if dark else QColor(0, 0, 0, 10))
             p.drawRoundedRect(QRectF(8, 8 + self._hover * self.ROW + 2, width, self.ROW - 4), 8, 8)
-        stretch = 6 * math.sin(math.pi * self._moving) if liquid else 0.0
-        pill = QRectF(8, 8 + self._at * self.ROW + 2 - stretch / 2, width, self.ROW - 4 + stretch)
-        if liquid:
-            round_ = pill.height() / 2
-            body = QLinearGradient(pill.topLeft(), pill.bottomLeft())
-            body.setColorAt(0, QColor(255, 255, 255, 52 if dark else 235))
-            body.setColorAt(1, QColor(255, 255, 255, 18 if dark else 140))
-            p.setPen(Qt.NoPen)
-            p.setBrush(body)
-            p.drawRoundedRect(pill, round_, round_)
-            theme._edge_light(p, pill.adjusted(0.5, 0.5, -0.5, -0.5), round_, 120, 150 if dark else 255, 1.1)
-            if not dark:
-                p.setPen(QPen(QColor(0, 0, 0, 22), 1))
-                p.setBrush(Qt.NoBrush)
-                p.drawRoundedRect(pill, round_, round_)
-        else:
-            p.setPen(Qt.NoPen)
-            p.setBrush(c.chip)
-            p.drawRoundedRect(pill, 8, 8)
-            bar = QRectF(pill.left() + 1, pill.center().y() - 8, 3, 16)
-            p.setBrush(QColor(theme.ink()))
-            p.drawRoundedRect(bar, 1.5, 1.5)
+        pill = paint_pill(p, QRectF(8, 8 + self._at * self.ROW + 2, width, self.ROW - 4), self._moving)
         for index, (mark, title) in enumerate(self._items):
             row = QRectF(8, 8 + index * self.ROW, width, self.ROW)
             selected = index == self._current
@@ -271,6 +250,182 @@ class Nav(QWidget):
             p.setBrush(Qt.NoBrush)
             p.drawRoundedRect(pill.adjusted(-2, -2, 2, 2), 10, 10)
         p.end()
+
+
+def paint_pill(p: QPainter, pill: QRectF, moving: float = 0.0) -> QRectF:
+    """The chosen row's pill: a soft chip with the pink bar at its left - in the liquid look, a
+    capsule of glass, stretching as it moves (moving: how far through a move it is). Gives the
+    rectangle it filled."""
+    dark = theme.is_dark()
+    if theme.look() == 'liquid' and theme.glass_on():
+        stretch = 6 * math.sin(math.pi * moving)
+        pill = pill.adjusted(0, -stretch / 2, 0, stretch / 2)
+        round_ = pill.height() / 2
+        body = QLinearGradient(pill.topLeft(), pill.bottomLeft())
+        body.setColorAt(0, QColor(255, 255, 255, 52 if dark else 235))
+        body.setColorAt(1, QColor(255, 255, 255, 18 if dark else 140))
+        p.setPen(Qt.NoPen)
+        p.setBrush(body)
+        p.drawRoundedRect(pill, round_, round_)
+        theme._edge_light(p, pill.adjusted(0.5, 0.5, -0.5, -0.5), round_, 120, 150 if dark else 255, 1.1)
+        if not dark:
+            p.setPen(QPen(QColor(0, 0, 0, 22), 1))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(pill, round_, round_)
+    else:
+        p.setPen(Qt.NoPen)
+        p.setBrush(theme.colors().chip)
+        p.drawRoundedRect(pill, 8, 8)
+        bar = QRectF(pill.left() + 1, pill.center().y() - 8, 3, 16)
+        p.setBrush(QColor(theme.ink()))
+        p.drawRoundedRect(bar, 1.5, 1.5)
+    return pill
+
+
+# --------------------------------------------------------------------------- sidebars
+
+COUNT = Qt.UserRole + 70        # a sidebar row's count, shown at its right; none for no count
+
+
+class _SideRows(QStyledItemDelegate):
+    """A sidebar's rows drawn as the settings windows' pages are: a row of Nav's height, its icon
+    in a column (pink while chosen), its name bold while chosen, a faint tint under the pointer;
+    a row that can't be chosen is a heading over the rows below it (or, empty, a gap)."""
+
+    HEADING = 32
+
+    def sizeHint(self, option, index):
+        if not index.flags() & Qt.ItemIsEnabled:
+            return QSize(10, self.HEADING if index.data() else 8)
+        return QSize(10, Nav.ROW)
+
+    def paint(self, p, option, index):
+        c = theme.colors()
+        r = QRectF(option.rect)
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        text = str(index.data() or '')
+        if not index.flags() & Qt.ItemIsEnabled:
+            p.setPen(c.dim)
+            p.setFont(theme.font(8.5, QFont.DemiBold))
+            p.drawText(r.adjusted(14, 0, -8, -6), Qt.AlignLeft | Qt.AlignBottom, text)
+            p.restore()
+            return
+        view = option.widget
+        chosen = bool(index.flags() & Qt.ItemIsSelectable) and view is not None and view.currentIndex() == index
+        ticked = index.data(Qt.CheckStateRole) == Qt.Checked
+        if option.state & QStyle.State_MouseOver and not chosen:
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(255, 255, 255, 14) if theme.is_dark() else QColor(0, 0, 0, 10))
+            p.drawRoundedRect(r.adjusted(4, 2, -4, -2), 8, 8)
+        icon = index.data(Qt.DecorationRole)
+        if isinstance(icon, QIcon) and not icon.isNull():
+            ratio = view.devicePixelRatioF() if view is not None else 1.0
+            mark = icon.pixmap(QSize(16, 16), ratio)
+            if chosen or ticked:
+                mark = _tinted(mark, QColor(theme.ink()))
+            p.drawPixmap(QRectF(r.left() + 14 + 4, r.center().y() - 8, 16, 16), mark, QRectF(mark.rect()))
+        right = r.right() - 12
+        count = index.data(COUNT)
+        if ticked:
+            p.setPen(QColor(theme.ink()))
+            p.setFont(glyph_font(10))
+            p.drawText(QRectF(right - 16, r.top(), 16, r.height()), Qt.AlignCenter, '')
+            right -= 24
+        elif count not in (None, ''):
+            p.setPen(c.dim)
+            p.setFont(theme.font(9))                # (Segoe UI's figures are all one width)
+            shown = str(count)
+            width = p.fontMetrics().horizontalAdvance(shown)
+            p.drawText(QRectF(right - width, r.top(), width, r.height()), Qt.AlignVCenter | Qt.AlignRight, shown)
+            right -= width + 10
+        p.setPen(c.text)
+        p.setFont(theme.font(9.5, QFont.DemiBold if chosen else QFont.Normal))
+        room = QRectF(r.left() + 46, r.top(), max(0.0, right - r.left() - 46), r.height())
+        p.drawText(room, Qt.AlignVCenter | Qt.AlignLeft,
+                   p.fontMetrics().elidedText(text, Qt.ElideRight, int(room.width())))
+        p.restore()
+
+
+def _tinted(pixmap: QPixmap, color: QColor) -> QPixmap:
+    """An icon in one colour, its shape kept."""
+    out = QPixmap(pixmap.size())
+    out.setDevicePixelRatio(pixmap.devicePixelRatio())
+    out.fill(Qt.transparent)
+    p = QPainter(out)
+    p.drawPixmap(0, 0, pixmap)
+    p.setCompositionMode(QPainter.CompositionMode_SourceIn)
+    p.fillRect(out.rect(), color)
+    p.end()
+    return out
+
+
+class _SidePill(QObject):
+    """The chosen row's pill, under the rows, sliding from the row chosen before to the new one
+    (springing, in the liquid look) - drawn on the list's viewport before its rows are."""
+
+    def __init__(self, view: QAbstractItemView):
+        super().__init__(view)
+        self.view = view
+        self._from = QPersistentModelIndex()
+        self._t = 1.0
+        self._slide = None
+        view.viewport().installEventFilter(self)
+        view.selectionModel().currentChanged.connect(self._moved)
+
+    def _moved(self, current, previous) -> None:
+        theme.stop_animation(self._slide)
+        self._slide = None
+        selectable = previous.isValid() and bool(previous.flags() & Qt.ItemIsSelectable)
+        if not selectable or not current.isValid() or not theme.motion_on() or not self.view.isVisible():
+            self._from, self._t = QPersistentModelIndex(), 1.0
+            self.view.viewport().update()
+            return
+        self._from, self._t = QPersistentModelIndex(previous), 0.0
+        slide = self._slide = QVariantAnimation(self)
+        liquid = theme.look() == 'liquid' and theme.glass_on()
+        curve = QEasingCurve(QEasingCurve.OutBack if liquid else QEasingCurve.OutCubic)
+        if liquid:
+            curve.setOvershoot(1.1)
+        slide.setEasingCurve(curve)
+        slide.setDuration(360 if liquid else 220)
+        slide.setStartValue(0.0)
+        slide.setEndValue(1.0)
+
+        def step(value):
+            self._t = float(value)
+            self.view.viewport().update()
+        slide.valueChanged.connect(step)
+        theme.animate(slide)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Paint:
+            current = self.view.currentIndex()
+            if current.isValid() and current.flags() & Qt.ItemIsSelectable:
+                end = QRectF(self.view.visualRect(current)).adjusted(4, 2, -4, -2)
+                pill, moving = end, 0.0
+                if self._t < 1.0 and self._from.isValid():
+                    start = QRectF(self.view.visualRect(QModelIndex(self._from))).adjusted(4, 2, -4, -2)
+                    t = self._t
+                    pill = QRectF(start.left() + (end.left() - start.left()) * t,
+                                  start.top() + (end.top() - start.top()) * t, end.width(), end.height())
+                    moving = min(1.0, max(0.0, t))
+                p = QPainter(obj)
+                p.setRenderHint(QPainter.Antialiasing)
+                paint_pill(p, pill, moving)
+                p.end()
+        return False
+
+
+def sidebar(view: QAbstractItemView) -> None:
+    """Give a list down a window's side the settings windows' look: rows of the same height and
+    type, headings over them (rows that can't be chosen), counts at the right (COUNT), and the
+    pill sliding to the row chosen. A checkable row that can't be chosen shows a tick."""
+    view.setItemDelegate(_SideRows(view))
+    view.setMouseTracking(True)
+    view.viewport().setAttribute(Qt.WA_Hover)
+    view.setFrameShape(QFrame.NoFrame)
+    _SidePill(view)
 
 
 class SettingsFrame:
