@@ -1,6 +1,8 @@
 """The suite's settings windows, laid out alike: the pages down the left under the app's logo, a
 pill sliding to the one chosen; each page a title, then framed sections of settings, rising in as
-it comes up. An app's own sidebar (sidebar()) takes the same look.
+it comes up. An app's own sidebar (sidebar()) takes the same look, and the apps' switches,
+choices (Segmented), empty places (Empty) and toasts (stack_toasts) are drawn here too, after
+21st.dev's components (HeroUI's switch, a segmented control, shadcn's Empty, Sonner).
 
 Written once, here in Hanami, and copied into each Qt app's ui\\ folder (tests\\check_copies.py
 keeps them the same); it uses only suitetheme.py, which is shared the same way.
@@ -15,11 +17,12 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import (QEasingCurve, QEvent, QModelIndex, QObject, QPersistentModelIndex, QRectF, QSize, Qt,
-                            QVariantAnimation, Signal)
+from PySide6.QtCore import (QEasingCurve, QEvent, QModelIndex, QObject, QPersistentModelIndex, QPoint,
+                            QPropertyAnimation, QRectF, QSize, Qt, QVariantAnimation, Signal)
 from PySide6.QtGui import QColor, QFont, QIcon, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QFormLayout, QFrame, QHBoxLayout, QLabel, QLayout,
-                               QScrollArea, QStackedWidget, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
+                               QScrollArea, QSizePolicy, QStackedWidget, QStyle, QStyledItemDelegate, QVBoxLayout,
+                               QWidget)
 
 from . import suitetheme as theme
 
@@ -79,8 +82,11 @@ def framed(widget: QWidget) -> QWidget:
 
 
 def switch(text: str, about: str, on: bool) -> tuple[QWidget, QCheckBox]:
-    """A setting: a check box (a switch, in the liquid look), and a line about it below."""
+    """A setting: a switch (21st.dev's HeroUI switch: its name in medium weight), and a line
+    about it below."""
     box = QCheckBox(text)
+    box.setProperty(theme.SWITCH, True)
+    box.setFont(theme.font(9.5, QFont.Medium))
     box.setChecked(on)
     box.setCursor(Qt.PointingHandCursor)
     holder = QWidget()
@@ -97,9 +103,8 @@ def switch(text: str, about: str, on: bool) -> tuple[QWidget, QCheckBox]:
 
 
 def indent(line: QLabel) -> None:
-    """A line about a setting starts under its words, past the box (or switch) beside them."""
-    liquid = theme.look() == 'liquid' and theme.glass_on()
-    line.setContentsMargins((theme.SuiteStyle.SWITCH[0] if liquid else theme.SuiteStyle.SIZE) + 8, 0, 0, 0)
+    """A line about a setting starts under its words, past the switch beside them."""
+    line.setContentsMargins(theme.SuiteStyle.SWITCH[0] + 8, 0, 0, 0)
 
 
 def page(title: str, about: str = '') -> tuple[QWidget, QVBoxLayout]:
@@ -426,6 +431,200 @@ def sidebar(view: QAbstractItemView) -> None:
     view.viewport().setAttribute(Qt.WA_Hover)
     view.setFrameShape(QFrame.NoFrame)
     _SidePill(view)
+
+
+class _Chip(QWidget):
+    """An icon in a soft rounded square."""
+
+    def __init__(self, mark: str, size: int = 40):
+        super().__init__()
+        self.mark = mark
+        self.setFixedSize(size, size)
+
+    def paintEvent(self, event):
+        c = theme.colors()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(c.border, 1))
+        p.setBrush(c.chip)
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 10, 10)
+        p.setPen(c.text)
+        p.setFont(glyph_font(13))
+        p.drawText(QRectF(self.rect()), Qt.AlignCenter, self.mark)
+        p.end()
+
+
+class Empty(QWidget):
+    """An empty place (21st.dev's shadcn Empty): an icon in a soft square, a title under it, and
+    a line about what would be here - in the middle of the room it has."""
+
+    def __init__(self, mark: str, title: str, text: str = '', parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)     # drops and clicks go on to what is under it
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(8)
+        layout.addStretch(1)
+        self.chip = _Chip(mark)
+        layout.addWidget(self.chip, 0, Qt.AlignHCenter)
+        layout.addSpacing(4)
+        self.title = label(title, 12, QFont.Medium)
+        self.title.setAlignment(Qt.AlignHCenter)
+        layout.addWidget(self.title)
+        self.text = label(text, 9.5, role='dim', wrap=True)
+        self.text.setAlignment(Qt.AlignHCenter)
+        self.text.setVisible(bool(text))
+        layout.addWidget(self.text)                 # the whole width, so it wraps rather than being cut
+        layout.addStretch(1)
+        theme.restyle(self, lambda: f'QLabel {{ color: {theme.colors().text.name()}; background: transparent; }}'
+                                    f'QLabel[role="dim"] {{ color: {theme.colors().dim.name()}; }}')
+
+    def set(self, mark: str, title: str, text: str = '') -> None:
+        self.chip.mark = mark
+        self.chip.update()
+        self.title.setText(title)
+        self.text.setText(text)
+        self.text.setVisible(bool(text))
+
+
+class Segmented(QWidget):
+    """A choice of a few (21st.dev's segmented control): the buttons side by side on a soft
+    track, and a pill sliding under the one chosen. The buttons stay the app's own - checkable
+    QPushButtons, in a QButtonGroup if it likes - so whatever reads or sets them still does."""
+
+    PAD = 3
+
+    def __init__(self, buttons: list):
+        super().__init__()
+        self.buttons = list(buttons)
+        self._pill: QRectF | None = None
+        self._slide = None
+        row = QHBoxLayout(self)
+        row.setContentsMargins(self.PAD, self.PAD, self.PAD, self.PAD)
+        row.setSpacing(0)
+        for button in self.buttons:
+            button.setObjectName('segment')
+            button.setCheckable(True)
+            button.setCursor(Qt.PointingHandCursor)
+            button.toggled.connect(lambda on: on and self._slide_to(animate=True))
+            row.addWidget(button)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        theme.restyle(self, self._style)
+
+    def _style(self) -> str:
+        c = theme.colors()
+        return f"""
+            QPushButton#segment {{ background: transparent; border: none; border-radius: 8px; padding: 6px 14px;
+                                   color: {c.dim.name()}; font-weight: 400; }}
+            QPushButton#segment:checked {{ color: {c.text.name()}; font-weight: 500; }}
+            QPushButton#segment:disabled {{ color: {theme.css(c.border)}; }}
+        """
+
+    def _target(self) -> QRectF | None:
+        chosen = next((b for b in self.buttons if b.isChecked()), None)
+        return QRectF(chosen.geometry()) if chosen is not None else None
+
+    def _slide_to(self, animate: bool) -> None:
+        end = self._target()
+        theme.stop_animation(self._slide)
+        self._slide = None
+        if end is None or self._pill is None or not animate or not theme.motion_on() or not self.isVisible():
+            self._pill = end
+            self.update()
+            return
+        start = QRectF(self._pill)
+        slide = self._slide = QVariantAnimation(self)
+        slide.setDuration(350)
+        slide.setEasingCurve(QEasingCurve(QEasingCurve.OutBack) if theme.look() == 'liquid' and theme.glass_on()
+                             else QEasingCurve(QEasingCurve.OutQuint))
+        slide.setStartValue(0.0)
+        slide.setEndValue(1.0)
+
+        def step(t):
+            t = float(t)
+            self._pill = QRectF(start.left() + (end.left() - start.left()) * t, end.top(),
+                                start.width() + (end.width() - start.width()) * t, end.height())
+            self.update()
+        slide.valueChanged.connect(step)
+        theme.animate(slide)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._slide_to(animate=False)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._slide_to(animate=False)
+
+    def paintEvent(self, event):
+        dark = theme.is_dark()
+        liquid = theme.look() == 'liquid' and theme.glass_on()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        track = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        bend = track.height() / 2 if liquid else 11.0
+        p.setPen(QPen(theme.colors().border, 1) if liquid else Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, 16) if dark else QColor(0, 0, 0, 14))
+        p.drawRoundedRect(track, bend, bend)
+        if self._pill is None:
+            self._pill = self._target()
+        if self._pill is not None:
+            pill = QRectF(self._pill)
+            round_ = pill.height() / 2 if liquid else 8.0
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(0, 0, 0, 0 if dark else 14))
+            p.drawRoundedRect(pill.translated(0, 1), round_, round_)
+            p.setBrush(QColor(255, 255, 255, 46 if dark else 245))
+            p.drawRoundedRect(pill, round_, round_)
+            if liquid:
+                theme._edge_light(p, pill.adjusted(0.5, 0.5, -0.5, -0.5), round_, 120, 150 if dark else 255, 1.1)
+        p.end()
+
+
+# --------------------------------------------------------------------------- toasts
+
+TOAST_GAP = 14          # 21st.dev's Sonner: between toasts spread out, and how far each one behind peeks out
+TOAST_BEHIND = 2        # folded, how many show behind the newest
+TOAST_SHRINK = 0.05     # each one behind is this much narrower than the one in front of it
+
+
+def stack_toasts(toasts: list, corner: QPoint, shadow: int, spread: bool) -> None:
+    """Toasts as Sonner stacks them: the newest at the corner (corner: where its card's bottom
+    right goes), the next ones folded behind it - each peeking out above, a little narrower -
+    or, spread (the pointer on them), one above another. They glide to their places; each one's
+    depth (0 in front, or spread) says how its card is drawn: narrower, and without its words."""
+    for depth, toast in enumerate(reversed(toasts)):
+        card = toast.height() - 2 * shadow
+        if spread:
+            top = corner.y() - card - sum(t.height() - 2 * shadow + TOAST_GAP for t in list(reversed(toasts))[:depth])
+        else:
+            top = corner.y() - card - TOAST_GAP * min(depth, TOAST_BEHIND)
+        toast.depth = 0 if spread else depth
+        toast.setWindowOpacity(1.0 if spread or depth <= TOAST_BEHIND else 0.0)
+        _glide(toast, QPoint(corner.x() - toast.width() + shadow, top - shadow))
+        toast.update()
+    for toast in toasts:                    # the newest on top
+        toast.raise_()
+
+
+def _glide(window: QWidget, to: QPoint) -> None:
+    moving = getattr(window, '_suite_glide', None)
+    theme.stop_animation(moving)
+    if not window.isVisible() or not theme.motion_on() or window.pos() == to:
+        window.move(to)
+        return
+    glide = window._suite_glide = QPropertyAnimation(window, b'pos', window)
+    glide.setDuration(320)
+    glide.setEasingCurve(QEasingCurve.OutCubic)
+    glide.setStartValue(window.pos())
+    glide.setEndValue(to)
+    theme.animate(glide)
+
+
+def toast_card(card: QRectF, depth: int) -> QRectF:
+    """A toast's card as it is drawn at its depth in the stack: narrower behind, its middle kept."""
+    inset = card.width() * TOAST_SHRINK * depth / 2
+    return card.adjusted(inset, 0, -inset, 0)
 
 
 class SettingsFrame:

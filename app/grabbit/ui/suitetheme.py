@@ -102,9 +102,9 @@ class SuiteStyle(QProxyStyle):
 
     def pixelMetric(self, metric, option=None, widget=None):
         if metric == QStyle.PM_IndicatorWidth:
-            return self.SWITCH[0] if _liquid_look() else self.SIZE
+            return self.SWITCH[0] if _switches(widget) else self.SIZE
         if metric == QStyle.PM_IndicatorHeight:
-            return self.SWITCH[1] if _liquid_look() else self.SIZE
+            return self.SWITCH[1] if _switches(widget) else self.SIZE
         return super().pixelMetric(metric, option, widget)
 
     def drawPrimitive(self, element, option, painter, widget=None):
@@ -123,9 +123,42 @@ class SuiteStyle(QProxyStyle):
             painter.setOpacity(0.45)
         if _liquid_look():
             self._switch(option, painter, float(step), moving)
+        elif _switches(widget):
+            self._pill_switch(option, painter, float(step))
         else:
             self._box(option, painter, float(step), partly)
         painter.restore()
+
+    def _pill_switch(self, option, painter, step):
+        """A switch in the frosted look (21st.dev's HeroUI switch): a soft track that turns pink,
+        and a wide white knob that slides across it - wider still while it is held down."""
+        c = colors()
+        state = option.state
+        width, height = self.SWITCH
+        rect = QRectF(option.rect)
+        track = QRectF(rect.x() + 0.5, rect.center().y() - height / 2 + 0.5, width - 1, height - 1)
+        bend = track.height() / 2
+        on = min(1.0, max(0.0, step))
+        hover = state & QStyle.State_MouseOver and state & QStyle.State_Enabled
+        painter.setPen(QPen(c.edge, 1) if hover else Qt.NoPen)
+        painter.setBrush(QColor(255, 255, 255, 34) if is_dark() else QColor(0, 0, 0, 22))
+        painter.drawRoundedRect(track, bend, bend)
+        if on > 0:
+            base = painter.opacity()
+            painter.setOpacity(base * on)
+            painter.setPen(QPen(c.edge, 1))
+            painter.setBrush(QColor(ACCENT))
+            painter.drawRoundedRect(track, bend, bend)
+            painter.setOpacity(base)
+        size = track.height() - 4
+        knob_width = size * 1.15 + (3 if state & QStyle.State_Sunken else 0)
+        room = track.width() - 4 - knob_width
+        knob = QRectF(track.x() + 2 + room * step, track.center().y() - size / 2, knob_width, size)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 28))
+        painter.drawRoundedRect(knob.translated(0, 1), size / 2, size / 2)
+        painter.setBrush(QColor(255, 255, 255))
+        painter.drawRoundedRect(knob, size / 2, size / 2)
 
     def _box(self, option, painter, step, partly):
         c = colors()
@@ -196,6 +229,15 @@ class SuiteStyle(QProxyStyle):
         painter.setPen(QPen(QColor(255, 255, 255, 235), 1))
         painter.setBrush(Qt.NoBrush)
         painter.drawRoundedRect(knob.adjusted(0.5, 0.5, -0.5, -0.5), size / 2 - 0.5, size / 2 - 0.5)
+
+
+SWITCH = '_suite_switch'        # a check box's property: drawn as a switch in every look (a setting's on/off)
+
+
+def _switches(widget) -> bool:
+    """Whether a check box is drawn as a switch: every one in the liquid look, and those marked
+    SWITCH (settings) in the others."""
+    return _liquid_look() or (isinstance(widget, QCheckBox) and bool(widget.property(SWITCH)))
 
 
 def _part_of(path: QPainterPath, share: float) -> QPainterPath:
@@ -426,7 +468,12 @@ def card_style() -> str:
     edge = c.edge.name()
     dark = is_dark()
     shine = css(QColor(255, 255, 255, 26 if dark else 170))
-    rim = css(QColor(255, 255, 255, 34 if dark else 200))
+    # 21st.dev's Texture Button: a darker ring, a bright line along the top, and a face shading
+    # down from light - lifted, as if it could be pressed in.
+    ring, ring_low = (css(QColor(255, 255, 255, 30)), css(QColor(0, 0, 0, 90))) if dark else \
+        (css(QColor(0, 0, 0, 34)), css(QColor(0, 0, 0, 58)))
+    face_top, face_low = (css(QColor(255, 255, 255, 30)), css(QColor(255, 255, 255, 10))) if dark else \
+        (css(QColor(255, 255, 255, 215)), css(QColor(236, 236, 240, 150)))
     controls = liquid_controls_css() or f"""
         QLineEdit {{
             color: {text}; background: {chip}; border: 1px solid {border};
@@ -435,15 +482,20 @@ def card_style() -> str:
         }}
         QLineEdit:focus {{ border: 1px solid {edge}; }}
         QPushButton {{
-            color: {text}; border: 1px solid {border}; border-top-color: {rim};
-            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {shine}, stop:0.5 {chip}, stop:1 {chip});
-            border-radius: 8px; padding: 6px 16px;
+            color: {text}; border: 1px solid {ring}; border-bottom-color: {ring_low};
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {shine}, stop:0.08 {face_top},
+                                        stop:1 {face_low});
+            border-radius: 10px; padding: 6px 16px;
         }}
-        QPushButton:hover {{ border: 1px solid {edge}; }}
-        QPushButton:pressed {{ background: {chip}; }}
+        QPushButton:hover {{
+            border-color: {edge};
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {shine}, stop:0.08 {face_low},
+                                        stop:1 {face_top});
+        }}
+        QPushButton:pressed {{ background: {face_low}; }}
         QPushButton[role="primary"] {{
-            color: {ON_ACCENT}; border: 1px solid {edge}; border-top-color: #fff5f8; font-weight: 600;
-            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffeef3, stop:0.5 {ACCENT}, stop:1 #ffc4d3);
+            color: {ON_ACCENT}; border: 1px solid {edge}; border-bottom-color: {ROSE}; font-weight: 600;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #fff8fa, stop:0.08 #ffe4eb, stop:1 #ffc2d1);
         }}
         QPushButton[role="primary"]:hover {{
             background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #fff6f9, stop:0.5 {ACCENT_HOVER},

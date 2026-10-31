@@ -306,10 +306,7 @@ class MainWindow(QMainWindow):
         self.view.sortByColumn(9, Qt.DescendingOrder)
         right_layout.addWidget(self.view, 1)
         # Nothing in the list: what to do, over the empty table - rather than a blank one.
-        self.empty_label = QLabel(self.view.viewport())
-        self.empty_label.setObjectName('Muted')
-        self.empty_label.setAlignment(Qt.AlignCenter)
-        self.empty_label.setWordWrap(True)
+        self.empty_label = suitesettings.Empty('\ue896', '', '', self.view.viewport())
         self.view.viewport().installEventFilter(self)
         for signal in (self.proxy.rowsInserted, self.proxy.rowsRemoved, self.proxy.modelReset,
                        self.proxy.layoutChanged):
@@ -823,9 +820,11 @@ class MainWindow(QMainWindow):
         if self.proxy.rowCount():
             self.empty_label.hide()
             return
-        self.empty_label.setText('Paste a link (Ctrl+N) or drop a torrent file here' if not self.model.rowCount()
-                                 else 'Nothing here')
-        self.empty_label.setGeometry(self.view.viewport().rect().adjusted(24, 24, -24, -24))
+        if not self.model.rowCount():
+            self.empty_label.set('\ue896', 'No downloads yet', 'Paste a link (Ctrl+N) or drop a torrent file here.')
+        else:
+            self.empty_label.set('\ue71c', 'None here', 'Nothing in the list matches this filter.')
+        self.empty_label.setGeometry(self.view.viewport().rect())
         self.empty_label.show()
 
     def eventFilter(self, watched, event):

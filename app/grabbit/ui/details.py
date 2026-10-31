@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QFormLayout, QHBoxLayout, QLabel, QPlainTextEdit,
 from ..tasks import KIND_MEDIA, State
 from ..torrentmeta import peer_client
 from ..util import human_size, human_speed, human_time
-from . import thumbs
+from . import suitesettings, thumbs
 
 class DetailsPanel(QTabWidget):
     def __init__(self, engine, parent=None):
@@ -19,9 +19,8 @@ class DetailsPanel(QTabWidget):
         self._fields = {}
 
         self.addTab(self._build_general(), 'General')
-        self.none = QLabel('Choose a download to see its details', self)     # over the tabs, until one is chosen
-        self.none.setObjectName('Muted')
-        self.none.setAlignment(Qt.AlignCenter)
+        self.none = suitesettings.Empty('\ue946', 'No download chosen', 'Choose one in the list to see its details.',
+                                        self)       # over the tabs, until one is chosen
         self.files_tree = QTreeWidget()
         self.files_tree.setHeaderLabels(['File', 'Size', 'Done', 'Progress'])
         self.files_tree.setColumnWidth(0, 420)
