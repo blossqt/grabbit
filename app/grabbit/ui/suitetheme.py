@@ -64,7 +64,7 @@ from dataclasses import dataclass, replace
 
 from PySide6.QtCore import (QAbstractAnimation, QEasingCurve, QEvent, QObject, QPoint, QPointF, QPropertyAnimation,
                             QRect, QRectF, Qt, QSequentialAnimationGroup, QTimer, QVariantAnimation, Signal)
-from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QFont, QGuiApplication, QImage, QLinearGradient,
+from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QFont, QFontDatabase, QGuiApplication, QImage, QLinearGradient,
                            QPainter, QPainterPath, QPalette, QPen, QPixmap, QRadialGradient, QRegion)
 from PySide6.QtWidgets import (QAbstractItemView, QAbstractScrollArea, QAbstractSpinBox, QApplication, QCheckBox,
                                QComboBox, QFrame, QGraphicsEffect,
@@ -72,7 +72,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QAbstractScrollArea, QAbstract
                                QPushButton, QStackedWidget, QStatusBar, QStyle, QToolBar, QToolButton, QWidget)
 
 __all__ = ['ACCENT', 'ACCENT_HOVER', 'ON_ACCENT', 'ROSE', 'SuiteStyle', 'install', 'Colors', 'is_dark', 'veil',
-           'colors', 'ink', 'font', 'paint_shadow', 'card_style', 'liquid_controls_css', 'panel_css', 'GLASS_RADIUS',
+           'colors', 'ink', 'font', 'serif', 'paint_shadow', 'card_style', 'liquid_controls_css', 'panel_css', 'GLASS_RADIUS',
            'LIQUID_RADIUS', 'glass_on', 'frost', 'paint_glass', 'css', 'fade_in', 'LOOKS', 'look', 'set_look',
            'motion_on', 'motion_chosen', 'set_motion', 'MODES', 'mode', 'set_mode', 'app_mode', 'restyle',
            'on_restyle', 'light_up', 'BACKDROP_OPACITY', 'fade_out', 'stagger_in', 'GAME_DOWNLOADS',
@@ -413,6 +413,27 @@ def font(point_size: float, weight: QFont.Weight = QFont.Normal) -> QFont:
         f = QFont('Segoe UI')
     f.setPointSizeF(point_size)
     f.setWeight(weight)
+    return f
+
+
+SERIF_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'GeistSerif-Regular.ttf')
+_serif: list[str] = []          # the family's name, once loaded ('' if the file is missing)
+
+
+def serif(point_size: float) -> QFont:
+    """Vercel's Geist Serif (SIL Open Font License, beside this file), for headings.
+
+    It has one weight, so a heading in it stands out by size alone. Without the file it is
+    font()'s Segoe UI at the weight a heading had."""
+    if not _serif:
+        loaded = QFontDatabase.addApplicationFont(SERIF_FILE) if os.path.isfile(SERIF_FILE) else -1
+        families = QFontDatabase.applicationFontFamilies(loaded) if loaded >= 0 else []
+        _serif.append(families[0] if families else '')
+    if not _serif[0]:
+        return font(point_size, QFont.DemiBold)
+    f = QFont(_serif[0])
+    f.setPointSizeF(point_size)
+    f.setWeight(QFont.Normal)
     return f
 
 

@@ -9,7 +9,7 @@ app_dir = os.path.join(project, 'app')
 # yt-dlp registers its own PyInstaller hook (extractors, lazy imports); the EJS
 # JavaScript bundles YouTube needs are plain data files, so collect them here.
 datas = collect_data_files('yt_dlp_ejs')
-datas += [(os.path.join(app_dir, 'grabbit', 'ui', 'backdrop.jpg'), os.path.join('grabbit', 'ui'))]     # the window's faint photo
+datas += [(os.path.join(app_dir, 'grabbit', 'ui', 'backdrop.jpg'), os.path.join('grabbit', 'ui')), (os.path.join(app_dir, 'grabbit', 'ui', 'GeistSerif-Regular.ttf'), os.path.join('grabbit', 'ui')), (os.path.join(app_dir, 'grabbit', 'ui', 'GeistSerif-OFL.txt'), os.path.join('grabbit', 'ui'))]     # the window's faint photo
 
 hiddenimports = [
     'grabbit', 'grabbit.app', 'grabbit.ui.main_window',

@@ -102,6 +102,13 @@ def switch(text: str, about: str, on: bool) -> tuple[QWidget, QCheckBox]:
     return holder, box
 
 
+def heading(text: str, size: float) -> QLabel:
+    """A page's, window's or empty place's title, in Geist Serif."""
+    line = QLabel(text)
+    line.setFont(theme.serif(size))
+    return line
+
+
 def indent(line: QLabel) -> None:
     """A line about a setting starts under its words, past the switch beside them."""
     line.setContentsMargins(theme.SuiteStyle.SWITCH[0] + 8, 0, 0, 0)
@@ -113,7 +120,7 @@ def page(title: str, about: str = '') -> tuple[QWidget, QVBoxLayout]:
     layout = QVBoxLayout(widget)
     layout.setContentsMargins(4, 4, 4, 4)
     layout.setSpacing(12)
-    layout.addWidget(label(title, 17, QFont.DemiBold))
+    layout.addWidget(heading(title, 20))
     if about:
         layout.addWidget(label(about, 9, role='dim', wrap=True))
     return widget, layout
@@ -468,7 +475,7 @@ class Empty(QWidget):
         self.chip = _Chip(mark)
         layout.addWidget(self.chip, 0, Qt.AlignHCenter)
         layout.addSpacing(4)
-        self.title = label(title, 12, QFont.Medium)
+        self.title = heading(title, 14)
         self.title.setAlignment(Qt.AlignHCenter)
         layout.addWidget(self.title)
         self.text = label(text, 9.5, role='dim', wrap=True)
@@ -647,7 +654,7 @@ class SettingsFrame:
         mark = QLabel()
         mark.setPixmap(logo)
         top.addWidget(mark)
-        top.addWidget(label(title, 13, QFont.DemiBold), 1)
+        top.addWidget(heading(title, 15), 1)
         side.addLayout(top)
         self.nav = Nav()
         side.addWidget(self.nav)
