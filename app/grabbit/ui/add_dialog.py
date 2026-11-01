@@ -77,6 +77,7 @@ class LinkCard(QFrame):
         text_column.setSpacing(2)
         self.title = QLabel(url)
         self.title.setObjectName('CardTitle')
+        self.title.setFont(theme.serif(13))
         self.title.setWordWrap(True)
         self.subtitle = QLabel()
         self.subtitle.setObjectName('Muted')

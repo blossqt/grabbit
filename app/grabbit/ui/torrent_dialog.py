@@ -25,6 +25,7 @@ class TorrentFilesDialog(QDialog):
         layout = QVBoxLayout(self)
         title = QLabel(meta.name or 'Torrent')
         title.setObjectName('CardTitle')
+        title.setFont(theme.serif(13))
         title.setWordWrap(True)
         layout.addWidget(title)
 

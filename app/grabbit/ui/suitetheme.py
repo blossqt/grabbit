@@ -382,8 +382,8 @@ def colors() -> Colors:
                    shadow=QColor(20, 24, 40, 70), error=QColor('#c62828'),
                    edge=QColor('#ee9fb5'), tile=QColor('#fff6f8'))
     if glass_on():
-        return replace(solid, card=QColor(255, 255, 255, 90), chip=QColor(255, 255, 255, 150),
-                       tile=QColor(255, 250, 252, 120), border=QColor(0, 0, 0, 24), dim=QColor('#5f5f6b'))
+        return replace(solid, card=QColor(255, 255, 255, 36), chip=QColor(255, 255, 255, 64),
+                       tile=QColor(255, 250, 252, 44), border=QColor(0, 0, 0, 24), dim=QColor('#5f5f6b'))
     return solid
 
 
@@ -392,9 +392,9 @@ def veil() -> QColor:
     whatever is behind the window. (In the liquid look, the tint of its clear glass, as it is
     mostly - see _paint_clear.)"""
     if look() == 'liquid':
-        return QColor(30, 28, 38, 150) if is_dark() else QColor(250, 249, 252, 140)
+        return QColor(30, 28, 38, 150) if is_dark() else QColor(250, 249, 252, 80)
     # frosted, after canvasui.dev's cards: a plainer, lighter tint, so more of the blur shows
-    return QColor(10, 10, 12, 112) if is_dark() else QColor(250, 250, 252, 118)
+    return QColor(10, 10, 12, 112) if is_dark() else QColor(250, 250, 252, 64)
 
 
 def css(color: QColor) -> str:
@@ -495,7 +495,7 @@ def card_style() -> str:
     ring, ring_low = (css(QColor(255, 255, 255, 30)), css(QColor(0, 0, 0, 90))) if dark else \
         (css(QColor(0, 0, 0, 34)), css(QColor(0, 0, 0, 58)))
     face_top, face_low = (css(QColor(255, 255, 255, 30)), css(QColor(255, 255, 255, 10))) if dark else \
-        (css(QColor(255, 255, 255, 215)), css(QColor(236, 236, 240, 150)))
+        (css(QColor(255, 255, 255, 150)), css(QColor(236, 236, 240, 90)))
     controls = liquid_controls_css() or f"""
         QLineEdit {{
             color: {text}; background: {chip}; border: 1px solid {border};
@@ -563,10 +563,10 @@ def liquid_controls_css() -> str:
         lit = (255, 255, 255, 64)
         field, field_top = (0, 0, 0, 60), (0, 0, 0, 90)
     else:
-        top, middle, low = (255, 255, 255, 240), (255, 255, 255, 160), (255, 255, 255, 125)
+        top, middle, low = (255, 255, 255, 160), (255, 255, 255, 90), (255, 255, 255, 60)
         rim, side, under = (255, 255, 255, 255), (0, 0, 0, 26), (0, 0, 0, 40)
         lit = (255, 255, 255, 255)
-        field, field_top = (255, 255, 255, 120), (0, 0, 0, 40)
+        field, field_top = (255, 255, 255, 56), (0, 0, 0, 40)
     top, middle, low, rim, side, under, lit, field, field_top = (
         css(QColor(*v)) for v in (top, middle, low, rim, side, under, lit, field, field_top))
     return f"""
@@ -606,7 +606,7 @@ def panel_css(selector: str, radius: int = 12) -> str:
     if not _liquid_look():
         if glass_on():          # frosted: canvasui.dev's cards - a plain tint, a hairline, rounder corners
             fill, line = (QColor(0, 0, 0, 64), QColor(255, 255, 255, 26)) if is_dark() else \
-                (QColor(255, 255, 255, 120), QColor(0, 0, 0, 18))
+                (QColor(255, 255, 255, 48), QColor(0, 0, 0, 20))
             return (f'{selector} {{ background: {css(fill)}; border: 1px solid {css(line)}; '
                     f'border-radius: {radius + 6}px; }}')
         return (f'{selector} {{ background: {css(c.tile)}; border: 1px solid {css(c.border)}; '
@@ -615,7 +615,7 @@ def panel_css(selector: str, radius: int = 12) -> str:
         top, low, rim, side, under = (255, 255, 255, 30), (255, 255, 255, 12), (255, 255, 255, 84), \
             (255, 255, 255, 30), (255, 255, 255, 46)
     else:
-        top, low, rim, side, under = (255, 255, 255, 200), (255, 255, 255, 110), (255, 255, 255, 255), \
+        top, low, rim, side, under = (255, 255, 255, 110), (255, 255, 255, 45), (255, 255, 255, 255), \
             (0, 0, 0, 20), (0, 0, 0, 30)
     top, low, rim, side, under = (css(QColor(*v)) for v in (top, low, rim, side, under))
     return (f'{selector} {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {top}, stop:1 {low}); '
@@ -1996,7 +1996,7 @@ def _clear_tint(window: QWidget) -> int:
     mean, busy = getattr(window, '_suite_tone', None) or (0.5, 0.05)
     if is_dark():
         return int(min(220, 110 + 160 * max(0.0, mean - 0.25) + 600 * busy))
-    return int(min(215, 95 + 150 * max(0.0, 0.7 - mean) + 600 * busy))
+    return int(min(170, 40 + 130 * max(0.0, 0.7 - mean) + 500 * busy))
 
 
 def _paint_clear(window: QWidget, event) -> None:
@@ -2037,7 +2037,7 @@ def _frost_tint(window: QWidget) -> int:
     mean, busy = getattr(window, '_suite_tone', None) or (0.5, 0.05)
     if is_dark():
         return int(min(170, 64 + 150 * max(0.0, mean - 0.4) + 400 * busy))
-    return int(min(190, 100 + 150 * max(0.0, 0.6 - mean) + 400 * busy))
+    return int(min(160, 56 + 130 * max(0.0, 0.6 - mean) + 400 * busy))
 
 
 def _paint_frosted(painter, rect, radius: float, window: QWidget, lens: QPixmap) -> None:
@@ -2070,7 +2070,7 @@ def _liquid_tint(window: QWidget) -> int:
     mean, busy = getattr(window, '_suite_tone', None) or (0.5, 0.05)
     if is_dark():
         return int(min(200, 64 + 160 * max(0.0, mean - 0.25) + 600 * busy))
-    return int(min(200, 51 + 150 * max(0.0, 0.7 - mean) + 600 * busy))
+    return int(min(160, 40 + 130 * max(0.0, 0.7 - mean) + 500 * busy))
 
 
 def _paint_liquid(painter, rect, window: QWidget, lens: QPixmap) -> None:

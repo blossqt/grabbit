@@ -34,7 +34,7 @@ _LIGHT = {
 # suite's cards (card), its boxes as its own (base). Alternate rows are drawn over the list.
 _DARK_GLASS = {**_DARK, 'window': '#00000000', 'base': '#10ffffff', 'card': '#10ffffff', 'alt': '#0affffff',
                'border': '#2effffff', 'hover': '#20ffffff', 'bar': '#2affffff'}
-_LIGHT_GLASS = {**_LIGHT, 'window': '#00000000', 'base': '#8cffffff', 'card': '#5affffff', 'alt': '#24ffffff',
+_LIGHT_GLASS = {**_LIGHT, 'window': '#00000000', 'base': '#40ffffff', 'card': '#26ffffff', 'alt': '#12ffffff',
                 'border': '#22000000', 'hover': '#14000000', 'bar': '#20000000'}
 
 
@@ -101,7 +101,6 @@ def stylesheet() -> str:
                       padding: 10px 10px 2px 10px; }}
     #DetailLabel {{ color: {c['dim']}; }}
     #Card {{ background: {c['card']}; border: 1px solid {c['border']}; border-radius: 10px; }}
-    #CardTitle {{ font-weight: 600; }}
     #Muted {{ color: {c['dim']}; }}
     #Banner {{ background: {c['alt']}; border: 1px solid {c['border']}; border-radius: 8px; }}
 

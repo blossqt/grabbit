@@ -59,7 +59,7 @@ def section(title: str) -> tuple[QFrame, QVBoxLayout]:
     layout.setContentsMargins(18, 14, 18, 16)
     layout.setSpacing(8)
     if title:                           # none for a page's first, when it would say the page's name again
-        layout.addWidget(label(title, 10.5, QFont.DemiBold))
+        layout.addWidget(heading(title, 13))
     return frame, layout
 
 
