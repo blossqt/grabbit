@@ -393,7 +393,8 @@ def veil() -> QColor:
     mostly - see _paint_clear.)"""
     if look() == 'liquid':
         return QColor(30, 28, 38, 150) if is_dark() else QColor(250, 249, 252, 140)
-    return QColor(24, 22, 30, 150) if is_dark() else QColor(250, 247, 249, 150)
+    # frosted, after canvasui.dev's cards: a plainer, lighter tint, so more of the blur shows
+    return QColor(10, 10, 12, 112) if is_dark() else QColor(250, 250, 252, 118)
 
 
 def css(color: QColor) -> str:
@@ -582,6 +583,11 @@ def panel_css(selector: str, radius: int = 12) -> str:
     corners. light_up() gives it the light under the pointer too."""
     c = colors()
     if not _liquid_look():
+        if glass_on():          # frosted: canvasui.dev's cards - a plain tint, a hairline, rounder corners
+            fill, line = (QColor(0, 0, 0, 64), QColor(255, 255, 255, 26)) if is_dark() else \
+                (QColor(255, 255, 255, 120), QColor(0, 0, 0, 18))
+            return (f'{selector} {{ background: {css(fill)}; border: 1px solid {css(line)}; '
+                    f'border-radius: {radius + 6}px; }}')
         return (f'{selector} {{ background: {css(c.tile)}; border: 1px solid {css(c.border)}; '
                 f'border-radius: {radius}px; }}')
     if is_dark():
@@ -1127,9 +1133,7 @@ class _Frosting(QObject):
                 painter = QPainter(obj)
                 painter.setClipRect(event.rect())
                 _paint_bridge(painter, obj)
-                _paint_rim_lens(painter, obj)
-                painter.fillRect(event.rect(), veil())
-                _paint_framed_rim(painter, obj)
+                painter.fillRect(event.rect(), veil())      # frosted: Windows' blur under a plain tint, no rim
                 painter.end()
             if getattr(obj, '_suite_backdrop', None):
                 return _paint_backdrop(obj, event)
@@ -1302,7 +1306,9 @@ _MARGIN_FRAMELESS = 160   # a pop-up's, further: one dragged fast stays within i
 # blur: how much the glass softens what is behind; steps: the rings it is drawn in; corner,
 # shrink: the rings' corners.
 _LENSES = {
-    'frosted': dict(band=24, reach=24, power=1.5, blur=7, steps=8, corner=GLASS_RADIUS * 2, shrink=1.0),
+    # canvasui.dev's frosted cards (the user's wish, 2026-11-01): what is behind, flat and well
+    # blurred (its backdrop-filter: blur(12px)) - no bending at the rim
+    'frosted': dict(band=1, reach=0, power=1.0, blur=12, steps=2, corner=GLASS_RADIUS, shrink=1.0),
     'liquid': dict(band=9, reach=48, rate=0.55, blur=2, steps=10, corner=LIQUID_RADIUS, shrink=1.0),
     # a framed window's rim, in either look: only the rings that bend in light from beyond its
     # edges (the window itself fills the rest of its shot)
@@ -1654,10 +1660,17 @@ def _fill_out(shot, got: QRect, want: QRect):
 
 
 def _soften(shot, factor: int):
+    """A shot blurred by about factor pixels: made that much smaller, then large again - by way of
+    a size between for a strong blur, so it comes out smooth rather than in soft squares."""
     if factor <= 1:
         return shot
     small = shot.scaled(max(1, shot.width() // factor), max(1, shot.height() // factor), Qt.IgnoreAspectRatio,
                         Qt.SmoothTransformation)
+    if factor >= 8:
+        small = small.scaled(max(1, small.width() * 3), max(1, small.height() * 3), Qt.IgnoreAspectRatio,
+                             Qt.SmoothTransformation)
+        small = small.scaled(max(1, small.width() // 2), max(1, small.height() // 2), Qt.IgnoreAspectRatio,
+                             Qt.SmoothTransformation)
     soft = small.scaled(shot.width(), shot.height(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
     soft.setDevicePixelRatio(shot.devicePixelRatio())
     return soft
@@ -1996,10 +2009,20 @@ def _rim_glow(painter, r: QRectF, radius: float, light: float, alpha: int, depth
                     int(alpha * fade), 1.0)
 
 
+def _frost_tint(window: QWidget) -> int:
+    """How much frosted glass tints what is behind it (0 to 255): canvasui.dev's quarter (black at
+    25%, on dark), and more only where text on it would be hard to read - over what is bright
+    under light text, or dark under dark text, or busy."""
+    mean, busy = getattr(window, '_suite_tone', None) or (0.5, 0.05)
+    if is_dark():
+        return int(min(170, 64 + 150 * max(0.0, mean - 0.4) + 400 * busy))
+    return int(min(190, 100 + 150 * max(0.0, 0.6 - mean) + 400 * busy))
+
+
 def _paint_frosted(painter, rect, radius: float, window: QWidget, lens: QPixmap) -> None:
-    """Frosted glass: what is behind, softened, through the lens's rim, under a light veil for
-    reading, a glow where the light falls, and the liquid glass's rim catching the light by which
-    way each bit of it faces."""
+    """Frosted glass, as canvasui.dev's cards are: what is behind, flat and well blurred, under a
+    plain tint - dark on dark, light on light - with a hairline round its edge. No glow, and no
+    rim of light."""
     dark = is_dark()
     r = QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5)
     path = QPainterPath()
@@ -2011,13 +2034,11 @@ def _paint_frosted(painter, rect, radius: float, window: QWidget, lens: QPixmap)
     painter.setClipPath(path)
     painter.drawPixmap(QRectF(0, 0, lens.width() / dpr, lens.height() / dpr), lens, QRectF(lens.rect()))
     painter.setClipping(False)
-    painter.fillPath(path, QColor(18, 16, 24, 118) if dark else QColor(255, 255, 255, 128))
-    glow = QRadialGradient(QPointF(r.left() + r.width() * 0.2, r.top() + r.height() * 0.08),
-                           max(r.width(), r.height()) * 0.9)
-    glow.setColorAt(0, QColor(255, 255, 255, 38 if dark else 70))
-    glow.setColorAt(1, QColor(255, 255, 255, 0))
-    painter.fillPath(path, glow)
-    painter.drawPixmap(0, 0, _rim_light(window, r, radius, _light_of(window), (40, 180) if dark else (85, 245)))
+    alpha = _frost_tint(window)
+    painter.fillPath(path, QColor(0, 0, 0, alpha) if dark else QColor(255, 255, 255, alpha))
+    painter.setPen(QPen(QColor(255, 255, 255, 26) if dark else QColor(0, 0, 0, 22), 1))
+    painter.setBrush(Qt.NoBrush)
+    painter.drawPath(path)
     painter.restore()
 
 
