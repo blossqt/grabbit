@@ -441,8 +441,34 @@ class _SideRows(QStyledItemDelegate):
         return QSize(10, Nav.ROW)
 
     def paint(self, p, option, index):
+        # On glass a row is kept as a picture once drawn (text on a see-through window is drawn
+        # without ClearType either way): a window being resized drew every row again each frame.
+        if not theme.glass_on():
+            self._draw(p, QRectF(option.rect), option, index)
+            return
+        view = option.widget
+        icon = index.data(Qt.DecorationRole)
+        ratio = view.devicePixelRatioF() if view is not None else 1.0
+        key = (str(index.data() or ''), index.flags().value, view is not None and view.currentIndex() == index,
+               bool(option.state & QStyle.State_MouseOver), index.data(Qt.CheckStateRole) == Qt.Checked,
+               icon.cacheKey() if isinstance(icon, QIcon) else None, str(index.data(COUNT)),
+               option.rect.width(), option.rect.height(), ratio, id(theme.colors()), theme.ink())
+        row = _rows.get(key)
+        if row is None:
+            if len(_rows) > 300:
+                _rows.clear()
+            row = QPixmap(max(1, round(option.rect.width() * ratio)), max(1, round(option.rect.height() * ratio)))
+            row.setDevicePixelRatio(ratio)
+            row.fill(Qt.transparent)
+            painter = QPainter(row)
+            self._draw(painter, QRectF(0, 0, option.rect.width(), option.rect.height()), option, index)
+            painter.end()
+            _rows[key] = row
+        p.drawPixmap(option.rect.topLeft(), row)
+
+    @staticmethod
+    def _draw(p, r: QRectF, option, index) -> None:
         c = theme.colors()
-        r = QRectF(option.rect)
         p.save()
         p.setRenderHint(QPainter.Antialiasing)
         text = str(index.data() or '')
@@ -484,6 +510,9 @@ class _SideRows(QStyledItemDelegate):
         p.drawText(room, Qt.AlignVCenter | Qt.AlignLeft,
                    p.fontMetrics().elidedText(text, Qt.ElideRight, int(room.width())))
         p.restore()
+
+
+_rows: dict = {}        # sidebar rows as drawn, by all that goes into one (_SideRows.paint)
 
 
 def _tinted(pixmap: QPixmap, color: QColor) -> QPixmap:
@@ -926,7 +955,7 @@ class SettingsFrame:
         outer.addWidget(self.sidebar)
         right = QVBoxLayout()
         right.setSpacing(12)
-        self.pages = QStackedWidget()
+        self.pages = theme.Pages()
         right.addWidget(self.pages, 1)
         self.right = right
         outer.addLayout(right, 1)

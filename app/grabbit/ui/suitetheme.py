@@ -80,7 +80,7 @@ __all__ = ['ACCENT', 'ACCENT_HOVER', 'ON_ACCENT', 'ROSE', 'SuiteStyle', 'install
            'motion_on', 'motion_chosen', 'set_motion', 'MODES', 'mode', 'set_mode', 'app_mode', 'restyle',
            'on_restyle', 'light_up', 'BACKDROP_OPACITY', 'fade_out', 'stagger_in', 'GAME_DOWNLOADS',
            'game_quiet_chosen', 'set_game_quiet', 'game_downloads', 'set_game_downloads', 'game_in_front',
-           'quiet_now', 'on_game', 'frame_interval', 'animate', 'stop_animation', 'leave', 'walled', 'closes_on_escape', 'ESCAPE_CLOSES', 'TYPE', 'SPACE', 'QUICK', 'STEADY', 'GENTLE', 'text', 'Label', 'Rolling']
+           'quiet_now', 'on_game', 'frame_interval', 'animate', 'stop_animation', 'leave', 'walled', 'closes_on_escape', 'ESCAPE_CLOSES', 'TYPE', 'SPACE', 'QUICK', 'STEADY', 'GENTLE', 'text', 'Label', 'Pages', 'Rolling']
 
 ACCENT = '#ffd1dc'         # the suite's blossom pink: buttons, ticks, highlights
 ACCENT_HOVER = '#ffe0e8'
@@ -101,6 +101,9 @@ GLASS_RADIUS = 8           # the corners Windows 11 rounds a frameless glass win
 LIQUID_RADIUS = 14         # a liquid glass pop-up's corners, rounder (Windows' own rounding lies outside them)
 
 
+_INDICATOR_WIDTH, _INDICATOR_HEIGHT = QStyle.PM_IndicatorWidth, QStyle.PM_IndicatorHeight
+
+
 class SuiteStyle(QProxyStyle):
     """Windows' own style, with check boxes drawn in the suite's pink - as switches in the liquid look.
 
@@ -115,9 +118,11 @@ class SuiteStyle(QProxyStyle):
     SWITCH = (34, 20)
 
     def pixelMetric(self, metric, option=None, widget=None):
-        if metric == QStyle.PM_IndicatorWidth:
+        # Asked hundreds of times a frame (a list's header and rows), so the two it answers itself
+        # are told apart by identity, not by == on enums, which Python spends far longer over.
+        if metric is _INDICATOR_WIDTH:
             return self.SWITCH[0] if _switches(widget) else self.SIZE
-        if metric == QStyle.PM_IndicatorHeight:
+        if metric is _INDICATOR_HEIGHT:
             return self.SWITCH[1] if _switches(widget) else self.SIZE
         return super().pixelMetric(metric, option, widget)
 
@@ -437,14 +442,27 @@ def is_dark() -> bool:
 
 
 def colors() -> Colors:
-    """The suite's colours for the mode Windows is in - see-through where they sit on glass."""
-    if is_dark():
+    """The suite's colours for the mode Windows is in - see-through where they sit on glass. Kept
+    for each: a window being resized asks for them thousands of times a second. They are shared,
+    so copy one (QColor(c.text)) before changing it."""
+    key = (is_dark(), glass_on())
+    kept = _colors_kept.get(key)
+    if kept is None:
+        kept = _colors_kept[key] = _colors(*key)
+    return kept
+
+
+_colors_kept: dict = {}
+
+
+def _colors(dark: bool, glass: bool) -> Colors:
+    if dark:
         solid = Colors(card=QColor('#202127'), border=QColor(255, 255, 255, 30), text=QColor('#ececf1'),
                        dim=QColor('#9a9aa6'), chip=QColor('#2c2d35'),
                        selected=QColor(ACCENT), selected_text=QColor(ON_ACCENT),
                        shadow=QColor(0, 0, 0, 120), error=QColor('#ff8a80'),
                        edge=QColor(ACCENT), tile=QColor('#2b2a31'))
-        if glass_on():
+        if glass:
             return replace(solid, card=QColor(24, 22, 28, 70), chip=QColor(255, 255, 255, 22),
                            tile=QColor(255, 255, 255, 16), border=QColor(255, 255, 255, 40),
                            dim=QColor('#a9a8b4'))
@@ -454,7 +472,7 @@ def colors() -> Colors:
                    selected=QColor(ACCENT), selected_text=QColor(ON_ACCENT),
                    shadow=QColor(20, 24, 40, 70), error=QColor('#c62828'),
                    edge=QColor('#ee9fb5'), tile=QColor('#fff6f8'))
-    if glass_on():
+    if glass:
         return replace(solid, card=QColor(255, 255, 255, 36), chip=QColor(255, 255, 255, 64),
                        tile=QColor(255, 250, 252, 44), border=QColor(0, 0, 0, 24), dim=QColor('#5f5f6b'))
     return solid
@@ -735,12 +753,14 @@ class Label(QLabel):
         text = self.text()
         if not text or self._rich() or not self.pixmap().isNull():
             return 0, 0
-        key = (text, self.font().key(), width if self.wordWrap() else None)
-        if getattr(self, '_trim_key', None) == key:
-            return self._trim
-        top, bottom = self._ink(text, width)
-        self._trim_key, self._trim = key, (top, bottom)
-        return top, bottom
+        key = (text, self.font().key(), width if self.wordWrap() else None, self.devicePixelRatioF())
+        kept = self.__dict__.setdefault('_trims_kept', {})      # a layout asks a few widths in turn
+        found = kept.get(key)
+        if found is None:
+            if len(kept) > 48:
+                kept.clear()
+            found = kept[key] = self._ink(text, width)
+        return found
 
     def _width(self) -> int | None:
         return self.contentsRect().width() if self.wordWrap() and self.width() > 1 else None
@@ -780,6 +800,40 @@ class Label(QLabel):
         self.style().drawItemText(painter, room, flags, self.palette(), self.isEnabled(), self.text(),
                                   self.foregroundRole())
         painter.end()
+
+
+class Pages(QStackedWidget):
+    """A stack of pages whose height for a width is the page in sight's. A QStackedWidget asks
+    every page, hidden or not, and Qt asks the stack's layout itself, past any override of the
+    stack's, so each page is given one of its own: hidden, it has none. Before, a window being
+    resized laid out the words of every page frame after frame - 200 labels a frame on Hanami's
+    eight settings pages, near half of each frame (2026-11-02, the user: resizing was "very
+    laggy")."""
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.currentChanged.connect(lambda _: self.updateGeometry())
+
+    def addWidget(self, widget: QWidget) -> int:
+        _in_sight_only(self, widget)
+        return super().addWidget(widget)
+
+    def insertWidget(self, index: int, widget: QWidget) -> int:
+        _in_sight_only(self, widget)
+        return super().insertWidget(index, widget)
+
+
+def _in_sight_only(stack: QStackedWidget, page: QWidget) -> None:
+    """A page of a stack answers for its height only while it is the one in sight (-1 otherwise,
+    which the stack's layout passes over). Set on the page itself: Qt calls it from C++."""
+    stack_ref, page_ref, own = weakref.ref(stack), weakref.ref(page), type(page).heightForWidth
+
+    def height_for_width(width: int) -> int:
+        s, p = stack_ref(), page_ref()
+        if p is None or (s is not None and s.currentWidget() is not p):
+            return -1
+        return own(p, width)
+    page.heightForWidth = height_for_width
 
 
 def text(role: str, weight: QFont.Weight = QFont.Normal) -> QFont:
@@ -1561,7 +1615,7 @@ class _Frosting(QObject):
             if not getattr(obj, '_suite_gliding', False):
                 _follow(obj)
             if kind == QEvent.Move and not _frameless(obj):
-                _update_rim(obj)                    # only its rim changes as it is dragged
+                _rim_soon(obj)                      # only its rim changes as it is dragged
             else:
                 obj.update()
         elif kind == QEvent.ChildAdded and obj.isVisible():
@@ -1647,7 +1701,26 @@ def _paint_backdrop(window: QWidget, event) -> bool:
         return False
     dpr = window.devicePixelRatioF()
     key = (window.width(), window.height(), dpr)
+    kept = getattr(window, '_suite_backdrop_pixmap', None)
+    now = time.monotonic()
+    if getattr(window, '_suite_backdrop_key', None) != key and kept is not None \
+            and now - getattr(window, '_suite_backdrop_at', 0.0) < _BACKDROP_SETTLE:
+        # Being resized: the last picture stretched to fit - at a tenth, nobody sees it - and
+        # scaled again once the size settles. Scaling it took 1.7 ms of every frame.
+        window._suite_backdrop_at = now
+        _backdrop_later(window)
+        painter = QPainter(window)
+        painter.setClipRect(event.rect())
+        painter.setOpacity(BACKDROP_OPACITY)
+        kw, kh = kept.width() / kept.devicePixelRatio(), kept.height() / kept.devicePixelRatio()
+        if abs(kw - window.width()) <= 48 and abs(kh - window.height()) <= 48:
+            painter.drawPixmap(0, 0, kept)          # a little off: as it is (stretching took 1.7 ms)
+        else:
+            painter.drawPixmap(QRectF(window.rect()), kept, QRectF(kept.rect()))
+        painter.end()
+        return True
     if getattr(window, '_suite_backdrop_key', None) != key:
+        window._suite_backdrop_at = now
         source = QPixmap(window._suite_backdrop)
         if source.isNull():
             window._suite_backdrop = None
@@ -1664,6 +1737,20 @@ def _paint_backdrop(window: QWidget, event) -> bool:
     painter.drawPixmap(0, 0, window._suite_backdrop_pixmap)
     painter.end()
     return True
+
+
+_BACKDROP_SETTLE = 0.15    # s: a backdrop is scaled to a window's new size once it has kept it this long
+
+
+def _backdrop_later(window: QWidget) -> None:
+    timer = getattr(window, '_suite_backdrop_timer', None)
+    if timer is None:
+        timer = window._suite_backdrop_timer = QTimer(window)
+        timer.setSingleShot(True)
+        timer.setInterval(int(_BACKDROP_SETTLE * 1000) + 20)
+        ref = weakref.ref(window)
+        timer.timeout.connect(lambda: (w := ref()) is not None and w.update())
+    timer.start()
 
 
 _frosting_filter = None
@@ -1928,7 +2015,7 @@ def _took(window: QWidget, shot, at: QPoint, tone: tuple | None, clean: QImage |
             tone = tuple(0.6 * a + 0.4 * b for a, b in zip(old, tone))
         window._suite_tone = tone
     if framed and (not _clear(window) or _clear_tint(window) == tint):
-        _update_rim(window)
+        _rim_soon(window)                   # with the moves' own, at most every _RIM_EVERY
     else:
         window.update()
 
@@ -2030,8 +2117,11 @@ def _screen_image(rect: QRect) -> QImage | None:
     if bitmap and bits.value:
         old = gdi32.SelectObject(memory, bitmap)
         if gdi32.BitBlt(memory, 0, 0, width, height, screen, rect.x(), rect.y(), _SRCCOPY | _CAPTUREBLT):
-            image = QImage(ctypes.string_at(bits, width * height * 4), width, height, width * 4,
-                           QImage.Format_RGB32).copy()
+            # Read where Windows put it, and copied once, by Qt: through a Python bytes first, the
+            # copy held Python's lock 3 ms a shot, and a window being dragged waited on it.
+            view = memoryview((ctypes.c_char * (width * height * 4)).from_address(bits.value)).cast('B')
+            image = QImage(view, width, height, width * 4, QImage.Format_RGB32).copy()
+            del view
         gdi32.SelectObject(memory, old)
     if bitmap:
         gdi32.DeleteObject(bitmap)
@@ -2177,10 +2267,16 @@ def _lens_for(window: QWidget) -> QPixmap | None:
     above = _ABOVE if framed else 0
     key = (look(), framed, window.width(), window.height(), corner.x() - at.x(), corner.y() - at.y(),
            shot.cacheKey())
-    if getattr(window, '_suite_lens_key', None) != key:
+    old = getattr(window, '_suite_lens_key', None)
+    if old != key:
+        now = time.monotonic()
+        if framed and old is not None and old[2:4] != key[2:4] \
+                and (now - getattr(window, '_suite_lens_at', 0.0)) * 1000 < _LENS_EVERY:
+            _rim_soon(window)               # being resized: the last one, stretched (_paint_rim_lens)
+            return window._suite_lens
         window._suite_lens = _lens(shot, key[4], key[5] - above, window.width(), window.height() + above, spec,
                                    rim_only=framed)
-        window._suite_lens_key = key
+        window._suite_lens_key, window._suite_lens_at = key, now
     return window._suite_lens
 
 
@@ -2378,6 +2474,38 @@ _ABOVE = 40      # a framed window's glass runs on up behind its title bar: no r
 _RIM_SPAN = 12   # how far in from a framed window's edges its rim, its light and the bending reach
 
 
+_RIM_EVERY = 8     # ms: a dragged window's rim is drawn again at most this often
+_LENS_EVERY = 40   # and a resized one's lens made again (1-2 ms each)
+
+
+def _rim_soon(window: QWidget) -> None:
+    """A framed window moved: its rim drawn again now, or - if it was less than _RIM_EVERY ago -
+    once that has passed. Windows moves it many hundred times a second, and each new rim took
+    3 ms (its lens made again for the new place): a drag ran at 200 frames a second, under
+    the user's 280 Hz screen. Between, the rim's 5 px go with the window for a moment."""
+    timer = getattr(window, '_suite_rim_timer', None)
+    if timer is not None and timer.isActive():
+        return
+    wait = _RIM_EVERY - (time.monotonic() - getattr(window, '_suite_rim_at', 0.0)) * 1000
+    if wait <= 0:
+        window._suite_rim_at = time.monotonic()
+        _update_rim(window)
+        return
+    if timer is None:
+        timer = window._suite_rim_timer = QTimer(window)
+        timer.setSingleShot(True)
+        timer.setTimerType(Qt.PreciseTimer)
+        ref = weakref.ref(window)
+
+        def due() -> None:
+            w = ref()
+            if w is not None:
+                w._suite_rim_at = time.monotonic()
+                _update_rim(w)
+        timer.timeout.connect(due)
+    timer.start(max(1, math.ceil(wait)))
+
+
 def _update_rim(window: QWidget) -> None:
     """Repaint only a framed window's rim - its sides and bottom (the top is under the title
     bar) - where its glass changes as it is dragged: not the rest of it, nor the parts on it."""
@@ -2393,17 +2521,88 @@ def _rim_light(window: QWidget, r: QRectF, radius: float, light: int, alphas: tu
     dpr = window.devicePixelRatioF()
     key = (window.width(), window.height(), dpr, r.getRect(), radius, light, alphas)
     if getattr(window, '_suite_rim_key', None) != key:
-        layer = QPixmap(max(1, round(window.width() * dpr)), max(1, round(window.height() * dpr)))
-        layer.setDevicePixelRatio(dpr)
+        width, height = max(1, round(window.width() * dpr)), max(1, round(window.height() * dpr))
+        insets = (r.left(), r.top(), window.width() - r.right(), window.height() - r.bottom())
+        piece = _rim_piece(dpr, insets, radius, light, alphas)
+        layer = QPixmap(width, height)
         layer.fill(Qt.transparent)
-        painter = QPainter(layer)
+        side = (piece.width() - 1) // 2
+        if width > 2 * side and height > 2 * side:
+            painter = QPainter(layer)                       # the corners as drawn, the sides stretched
+            cols = ((0, side, 0, side), (side, 1, side, width - 2 * side),
+                    (side + 1, side, width - side, side))
+            rows = ((0, side, 0, side), (side, 1, side, height - 2 * side),
+                    (side + 1, side, height - side, side))
+            for sx, sw, tx, tw in cols:
+                for sy, sh, ty, th in rows:
+                    if sx != side or sy != side:            # the middle holds no light
+                        painter.drawPixmap(QRectF(tx, ty, tw, th), piece, QRectF(sx, sy, sw, sh))
+            painter.end()
+            layer.setDevicePixelRatio(dpr)
+        else:
+            layer.setDevicePixelRatio(dpr)
+            painter = QPainter(layer)
+            painter.setRenderHint(QPainter.Antialiasing)
+            _rim_glow(painter, r, radius, light, alphas[0])
+            _edge_light(painter, r, radius, light, alphas[1], 1.3)
+            painter.end()
+        window._suite_rim, window._suite_rim_key = layer, key
+    window._suite_rim_light = light
+    return window._suite_rim
+
+
+def _draw_rim_light(painter, window: QWidget, r: QRectF, radius: float, light: int,
+                    alphas: tuple[int, int]) -> None:
+    """The light on a glass rim (_rim_light), drawn on the window straight from its small piece
+    (_rim_piece): its corners as they are, its sides stretched, its empty middle left out, each
+    on the screen's own pixels. A layer the window's size, made again at each size and blended
+    whole, took a millisecond of every frame as the window was resized."""
+    dpr = window.devicePixelRatioF()
+    width, height = max(1, round(window.width() * dpr)), max(1, round(window.height() * dpr))
+    insets = (r.left(), r.top(), window.width() - r.right(), window.height() - r.bottom())
+    piece = _rim_piece(dpr, insets, radius, light, alphas)
+    side = (piece.width() - 1) // 2
+    if width <= 2 * side or height <= 2 * side:
+        painter.drawPixmap(0, 0, _rim_light(window, r, radius, light, alphas))
+        return
+    cols = ((0, side, 0, side), (side, 1, side, width - 2 * side), (side + 1, side, width - side, side))
+    rows = ((0, side, 0, side), (side, 1, side, height - 2 * side), (side + 1, side, height - side, side))
+    painter.save()
+    painter.setRenderHint(QPainter.SmoothPixmapTransform, False)    # whole pixels: smoothing only cost (5x)
+    for sx, sw, tx, tw in cols:
+        for sy, sh, ty, th in rows:
+            if sx != side or sy != side:
+                painter.drawPixmap(QRectF(tx / dpr, ty / dpr, tw / dpr, th / dpr), piece, QRectF(sx, sy, sw, sh))
+    painter.restore()
+
+
+_rim_pieces: dict = {}
+
+
+def _rim_piece(dpr: float, insets: tuple, radius: float, light: int, alphas: tuple[int, int]) -> QPixmap:
+    """A rim's light drawn on a small square, its corners whole and one pixel of each straight side
+    between them, for _rim_light to stretch to any size: along a straight side the light is the
+    same all the way. Kept, so a window changing size draws none of it again."""
+    key = (dpr, insets, radius, light, alphas)
+    piece = _rim_pieces.get(key)
+    if piece is None:
+        if len(_rim_pieces) > 64:
+            _rim_pieces.clear()
+        side = math.ceil((radius + 10 + max(0.0, max(insets))) * dpr)   # past the corner and its glow
+        piece = QPixmap(2 * side + 1, 2 * side + 1)
+        piece.fill(Qt.transparent)
+        piece.setDevicePixelRatio(dpr)
+        size = (2 * side + 1) / dpr
+        left, top, right, bottom = insets
+        r = QRectF(left, top, size - right - left, size - bottom - top)
+        painter = QPainter(piece)
         painter.setRenderHint(QPainter.Antialiasing)
         _rim_glow(painter, r, radius, light, alphas[0])
         _edge_light(painter, r, radius, light, alphas[1], 1.3)
         painter.end()
-        window._suite_rim, window._suite_rim_key = layer, key
-    window._suite_rim_light = light
-    return window._suite_rim
+        piece.setDevicePixelRatio(1.0)
+        _rim_pieces[key] = piece
+    return piece
 
 
 def _paint_rim_lens(painter, window: QWidget) -> None:
@@ -2411,8 +2610,16 @@ def _paint_rim_lens(painter, window: QWidget) -> None:
     Its glass runs on up behind the title bar, so its top edge, rim and corners are out of sight."""
     lens = _lens_for(window)
     if lens is not None:
+        # Only its sides and bottom, where the rim is: the rest of the lens is empty, and blending
+        # all of it over the window took 3 ms of each frame as the window was resized.
+        # One made for another size (the window being resized) goes to the edges it has now.
         dpr = lens.devicePixelRatio()
-        painter.drawPixmap(QRectF(0, -_ABOVE, lens.width() / dpr, lens.height() / dpr), lens, QRectF(lens.rect()))
+        lw, lh, span = lens.width() / dpr, lens.height() / dpr, _RIM_SPAN
+        w, h = window.width(), window.height() + _ABOVE
+        for to, of in (((0, 0, span, h), (0, 0, span, lh)), ((w - span, 0, span, h), (lw - span, 0, span, lh)),
+                       ((span, h - span, w - 2 * span, span), (span, lh - span, lw - 2 * span, span))):
+            painter.drawPixmap(QRectF(to[0], to[1] - _ABOVE, to[2], to[3]), lens,
+                               QRectF(of[0] * dpr, of[1] * dpr, of[2] * dpr, of[3] * dpr))
 
 
 def _paint_framed_rim(painter, window: QWidget) -> None:
@@ -2420,7 +2627,7 @@ def _paint_framed_rim(painter, window: QWidget) -> None:
     runs on up behind the title bar."""
     edge = QRectF(window.rect()).adjusted(0.5, 0.5 - _ABOVE, -0.5, -0.5)
     alphas = (46, 175) if is_dark() else (80, 245)
-    painter.drawPixmap(0, 0, _rim_light(window, edge, GLASS_RADIUS, _light_of(window), alphas))
+    _draw_rim_light(painter, window, edge, GLASS_RADIUS, _light_of(window), alphas)
 
 
 def _clear_tint(window: QWidget) -> int:
@@ -2543,7 +2750,7 @@ def _paint_liquid(painter, rect, window: QWidget, lens: QPixmap) -> None:
     shade.setColorAt(0.5, QColor(255, 255, 255, 0))
     shade.setColorAt(1.0, QColor(0, 0, 0, 0))
     painter.fillPath(path, shade)
-    painter.drawPixmap(0, 0, _rim_light(window, r, radius, _light_of(window), (40, 180) if dark else (85, 245)))
+    _draw_rim_light(painter, window, r, radius, _light_of(window), (40, 180) if dark else (85, 245))
     painter.restore()
 
 
