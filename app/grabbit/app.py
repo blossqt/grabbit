@@ -169,7 +169,8 @@ def main(argv=None) -> int:
         return 1
 
     window.model.reload()
-    window.show()
+    if '--startup' not in switches:             # started by Hanami (with it, or after an update): in the tray
+        window.show()
     server = SingleInstanceServer(window)
     app.aboutToQuit.connect(server.close)
     window.after_start(updated=switches.get('--updated') or '',

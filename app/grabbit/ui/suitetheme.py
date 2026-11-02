@@ -674,8 +674,10 @@ class Label(QLabel):
         return self.textFormat() == Qt.RichText or (self.textFormat() == Qt.AutoText and '<' in text and '>' in text)
 
     def _ink(self, text: str, width: int | None) -> tuple[int, int]:
-        """The room above the first line's letters and under the last line's, in this font."""
-        m = QFontMetricsF(self.font())
+        """The room above the first line's letters and under the last line's, in this font, less a
+        pixel each: at 125% or 150% the letters are drawn on the screen's own pixels and stand up to
+        a pixel taller than measured, which cut the tops off "for" and "itself" on the user's laptop."""
+        m = QFontMetricsF(self.font(), self)
         paragraphs = [p for p in text.replace('\u2028', '\n').replace('\u2029', '\n').split('\n')] or ['']
         lines = [paragraphs[0], paragraphs[-1]]
         if self.wordWrap() and width:
@@ -695,7 +697,8 @@ class Label(QLabel):
             lines = [wrapped[0][0], wrapped[1][-1]]
         first = m.tightBoundingRect(lines[0].strip() or 'x')
         last = m.tightBoundingRect(lines[-1].strip() or 'x')
-        return max(0, round(m.ascent() + first.top())), max(0, round(m.descent() - last.bottom()))
+        return (max(0, math.floor(m.ascent() + first.top()) - 1),
+                max(0, math.floor(m.descent() - last.bottom()) - 1))
 
     def _fit_rich(self) -> None:
         """Rich text's crop, as negative contents margins (QLabel lays it out within them)."""
