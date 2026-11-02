@@ -1702,9 +1702,9 @@ def _paint_backdrop(window: QWidget, event) -> bool:
     dpr = window.devicePixelRatioF()
     key = (window.width(), window.height(), dpr)
     kept = getattr(window, '_suite_backdrop_pixmap', None)
-    now = time.monotonic()
+    now = time.perf_counter()
     if getattr(window, '_suite_backdrop_key', None) != key and kept is not None \
-            and now - getattr(window, '_suite_backdrop_at', 0.0) < _BACKDROP_SETTLE:
+            and now - getattr(window, '_suite_backdrop_at', -math.inf) < _BACKDROP_SETTLE:
         # Being resized: the last picture stretched to fit - at a tenth, nobody sees it - and
         # scaled again once the size settles. Scaling it took 1.7 ms of every frame.
         window._suite_backdrop_at = now
@@ -2269,9 +2269,9 @@ def _lens_for(window: QWidget) -> QPixmap | None:
            shot.cacheKey())
     old = getattr(window, '_suite_lens_key', None)
     if old != key:
-        now = time.monotonic()
+        now = time.perf_counter()
         if framed and old is not None and old[2:4] != key[2:4] \
-                and (now - getattr(window, '_suite_lens_at', 0.0)) * 1000 < _LENS_EVERY:
+                and (now - getattr(window, '_suite_lens_at', -math.inf)) * 1000 < _LENS_EVERY:
             _rim_soon(window)               # being resized: the last one, stretched (_paint_rim_lens)
             return window._suite_lens
         window._suite_lens = _lens(shot, key[4], key[5] - above, window.width(), window.height() + above, spec,
@@ -2486,9 +2486,9 @@ def _rim_soon(window: QWidget) -> None:
     timer = getattr(window, '_suite_rim_timer', None)
     if timer is not None and timer.isActive():
         return
-    wait = _RIM_EVERY - (time.monotonic() - getattr(window, '_suite_rim_at', 0.0)) * 1000
+    wait = _RIM_EVERY - (time.perf_counter() - getattr(window, '_suite_rim_at', -math.inf)) * 1000
     if wait <= 0:
-        window._suite_rim_at = time.monotonic()
+        window._suite_rim_at = time.perf_counter()
         _update_rim(window)
         return
     if timer is None:
@@ -2500,7 +2500,7 @@ def _rim_soon(window: QWidget) -> None:
         def due() -> None:
             w = ref()
             if w is not None:
-                w._suite_rim_at = time.monotonic()
+                w._suite_rim_at = time.perf_counter()
                 _update_rim(w)
         timer.timeout.connect(due)
     timer.start(max(1, math.ceil(wait)))
