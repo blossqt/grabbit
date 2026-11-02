@@ -529,6 +529,26 @@ class Engine(QObject):
         task.total = item.filesize or 0
         return task
 
+    def add_gif_frames(self, url: str, which, frame_format: str = 'png', save_dir: str = '',
+                       title: str = '', headers: dict | None = None, start: bool = True) -> Task:
+        """Queue a GIF's frames as pictures (grabbit.gifs): frame `which`, an index from 0,
+        or gifs.ALL into a folder of their own. It runs as a media job does."""
+        from . import gifs
+        save_dir = save_dir or self.settings.download_dir
+        title = title or os.path.splitext(_name_from_url(url))[0] or 'gif'
+        task = Task(kind=KIND_MEDIA, source=url, save_dir=save_dir, site=site_name(url),
+                    thumbnail=url)
+        task.media = {'quality': 'frame', 'gif': which, 'frame_format': frame_format or 'png',
+                      'title': title, 'headers': dict(headers or {})}
+        task.name = (gifs.folder_name(title) if which == gifs.ALL
+                     else f'{safe_filename(title, "gif", 150)} - frame {int(which) + 1}.{frame_format}')
+        task.state = State.QUEUED if start else State.PAUSED
+        self._register(task)
+        if start:
+            self._queue_media(task)
+        self.store.mark_dirty()
+        return task
+
     # ------------------------------------------------------------- media jobs
     def _queue_media(self, task: Task):
         if task.id not in self._media_queue and task.id not in self._media_jobs:
@@ -542,15 +562,20 @@ class Engine(QObject):
             task = self.store.get(task_id)
             if not task or task.state in FINISHED_STATES or task.state == State.PAUSED:
                 continue
-            # media.py brings yt-dlp, the slowest thing Grabbit loads: loaded
-            # when a video is first fetched, the window opens without it.
-            from . import media as media_mod
-            job = media_mod.MediaJob(task, self.settings, {
+            callbacks = {
                 'emit': lambda tid, event, payload: self._media_event.emit(tid, event, payload),
                 'aria2_add': self._media_aria2_add,
                 'aria2_status': self._media_aria2_status,
                 'aria2_control': self._media_aria2_control,
-            })
+            }
+            if 'gif' in (task.media or {}):
+                from .gifs import GifJob                # a GIF's frames, no yt-dlp
+                job = GifJob(task, self.settings, callbacks)
+            else:
+                # media.py brings yt-dlp, the slowest thing Grabbit loads: loaded
+                # when a video is first fetched, the window opens without it.
+                from . import media as media_mod
+                job = media_mod.MediaJob(task, self.settings, callbacks)
             self._media_jobs[task_id] = job
             task.state = State.EXTRACTING
             task.error = ''

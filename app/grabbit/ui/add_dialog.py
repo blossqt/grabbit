@@ -10,11 +10,13 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QWidget)
 
 from .. import analyze as analyze_mod
-from .. import choices
+from .. import choices, gifs
+from ..frames import IMAGE_TYPES
 from ..torrentmeta import parse_torrent
 from ..util import extract_links, host_of, human_size, site_name
 from . import icons, preview, suitesettings, theme, thumbs
 from .framepicker import FramePicker
+from .gifpicker import GifPicker
 from .gallery import GalleryGrid, PreviewDialog
 
 THUMB_W, THUMB_H = 128, 72
@@ -174,7 +176,8 @@ class FileCard(LinkCard):
         self.thumb.setPixmap(icons.icon('file', icons.theme_color('dim'), 40).pixmap(40, 40))
 
         row = QHBoxLayout()
-        row.addWidget(theme.Label('Save as'))
+        self.name_label = theme.Label('Save as')
+        row.addWidget(self.name_label)
         self.name_edit = QLineEdit(analysis.filename or 'download')
         row.addWidget(self.name_edit, 1)
         self.body.addLayout(row)
@@ -186,6 +189,68 @@ class FileCard(LinkCard):
 
     def requests(self):
         return [{'type': 'file', 'url': self.url, 'name': self.name_edit.text().strip()}]
+
+
+class GifCard(FileCard):
+    """A GIF: saved whole, as the one frame chosen, or as every frame
+    (grabbit.gifs)."""
+
+    SAVES = [('gif', 'The GIF'), ('frame', 'One frame'), ('all', 'Every frame')]
+
+    def __init__(self, analysis, settings, parent=None):
+        super().__init__(analysis, parent)
+        self.settings = settings
+        self.set_thumbnail(analysis.url)
+        row = QHBoxLayout()
+        self.save = MediaCard._menu(row, 'Save')
+        self.format = MediaCard._menu(row, 'Format')
+        row.addStretch(1)
+        for value, label in self.SAVES:
+            self.save.addItem(label, value)
+        for value, label in IMAGE_TYPES:
+            self.format.addItem(label, value)
+        MediaCard._select(self.format, settings.frame_format)
+        self.body.insertLayout(0, row)
+        self.where = theme.Label()
+        self.where.setObjectName('Muted')
+        self.where.setWordWrap(True)
+        self.body.addWidget(self.where)
+        self.picker = None              # made the first time one frame is asked for
+        self.save.currentIndexChanged.connect(self._save_changed)
+        self.format.currentIndexChanged.connect(lambda _: self.changed.emit())
+        self.name_edit.textChanged.connect(self._show_where)
+        self._save_changed()
+
+    @property
+    def stem(self) -> str:
+        return os.path.splitext(self.name_edit.text().strip() or self.analysis.filename)[0]
+
+    def _save_changed(self, *_):
+        save = self.save.currentData()
+        self.format.setEnabled(save != 'gif')
+        self.name_label.setText('Save as' if save == 'gif' else 'Name')
+        if save == 'frame' and self.picker is None:
+            self.picker = GifPicker(self.url)
+            self.body.addWidget(self.picker)
+        if self.picker is not None:
+            self.picker.setVisible(save == 'frame')
+            if save == 'frame':
+                self.picker.fetch()
+        self._show_where()
+        self.changed.emit()
+
+    def _show_where(self, *_):
+        every = self.save.currentData() == 'all'
+        self.where.setText(f'Into a folder named “{gifs.folder_name(self.stem)}”' if every else '')
+        self.where.setVisible(every)
+
+    def requests(self):
+        save = self.save.currentData()
+        if save == 'gif':
+            return super().requests()
+        return [{'type': 'gif_frames', 'url': self.url, 'title': self.stem,
+                 'which': gifs.ALL if save == 'all' else (self.picker.at if self.picker else 0),
+                 'frame_format': self.format.currentData()}]
 
 
 class MagnetCard(LinkCard):
@@ -653,6 +718,8 @@ class AddDialog(QDialog):
         if kind in (analyze_mod.KIND_GALLERY, analyze_mod.KIND_PLAYLIST):
             return GalleryCard(analysis, self.settings)
         if kind == analyze_mod.KIND_FILE:
+            if gifs.is_gif(analysis.content_type, analysis.filename):
+                return GifCard(analysis, self.settings)
             return FileCard(analysis)
         return ErrorCard(analysis.url, analysis.error or 'This link could not be read.',
                          allow_direct=analysis.url.lower().startswith(('http://', 'https://'))
