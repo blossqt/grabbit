@@ -597,7 +597,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self, f'About {APP_NAME}',
             f'<h3>{APP_NAME} {APP_VERSION}</h3>'
-            f'<p>A paste-a-link downloader.</p>'
+            f'<p>Downloads videos, photo posts, torrents and files from links.</p>'
             f'<p><b>Download engine:</b> aria2 {aria2}, compiled from source<br>'
             f'<b>Site support:</b> yt-dlp {ytdlp_version}<br>'
             f'<b>Media tools:</b> FFmpeg, Deno</p>'

@@ -208,7 +208,7 @@ class SettingsDialog(QDialog):
             gif_row.addWidget(widget)
         gif_row.addStretch(1)
         box.addLayout(gif_row)
-        box.addWidget(note('GIFs get big fast: a minute at 480 px and 15 fps is tens of megabytes.'))
+        box.addWidget(note('A minute of GIF at 480 px and 15 fps is tens of megabytes.'))
         layout.addWidget(box_frame)
 
         box_frame, box = section('Signed-in sites')

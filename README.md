@@ -1,8 +1,8 @@
 # Grabbit
 
-A paste-a-link downloader for Windows. One window, one box: drop in a YouTube
-or TikTok link, an Instagram post, a magnet link or a plain file URL, and it
-downloads. Photo carousels open a picker so you choose which slides you want.
+A Windows downloader for links: YouTube and TikTok videos, Instagram posts,
+magnet links and plain file URLs. A photo carousel opens a picker for choosing
+which slides to download.
 
 The download engine is **aria2 1.37.0, compiled from source** (`aria2/`), driven
 over its JSON-RPC interface. Site support comes from **yt-dlp**, with FFmpeg for
