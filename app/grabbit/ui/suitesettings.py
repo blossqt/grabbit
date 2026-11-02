@@ -232,7 +232,7 @@ def titled(title: str, text: str) -> QWidget:
     block = QWidget()
     column = QVBoxLayout(block)
     column.setContentsMargins(0, 0, 0, 0)
-    column.setSpacing(4)
+    column.setSpacing(ITEMS)                    # a title is no pair with its line: 4 crammed it
     column.addWidget(heading(title, theme.TYPE['title']))
     column.addWidget(label(text, wrap=True))
     return block
