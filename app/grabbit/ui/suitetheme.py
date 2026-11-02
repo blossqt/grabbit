@@ -51,6 +51,7 @@ the look and Windows' light or dark as they change.
 from __future__ import annotations
 
 import ctypes
+import re
 import itertools
 import json
 import math
@@ -79,7 +80,7 @@ __all__ = ['ACCENT', 'ACCENT_HOVER', 'ON_ACCENT', 'ROSE', 'SuiteStyle', 'install
            'motion_on', 'motion_chosen', 'set_motion', 'MODES', 'mode', 'set_mode', 'app_mode', 'restyle',
            'on_restyle', 'light_up', 'BACKDROP_OPACITY', 'fade_out', 'stagger_in', 'GAME_DOWNLOADS',
            'game_quiet_chosen', 'set_game_quiet', 'game_downloads', 'set_game_downloads', 'game_in_front',
-           'quiet_now', 'on_game', 'frame_interval', 'animate', 'stop_animation', 'leave', 'walled', 'closes_on_escape', 'ESCAPE_CLOSES', 'TYPE', 'SPACE', 'QUICK', 'STEADY', 'GENTLE', 'text', 'Label']
+           'quiet_now', 'on_game', 'frame_interval', 'animate', 'stop_animation', 'leave', 'walled', 'closes_on_escape', 'ESCAPE_CLOSES', 'TYPE', 'SPACE', 'QUICK', 'STEADY', 'GENTLE', 'text', 'Label', 'Rolling']
 
 ACCENT = '#ffd1dc'         # the suite's blossom pink: buttons, ticks, highlights
 ACCENT_HOVER = '#ffe0e8'
@@ -589,6 +590,70 @@ _serif: list[str] = []          # the family's name, once loaded ('' if the file
 
 
 
+
+def _figure(text: str) -> float:
+    found = re.search(r'-?\d+(?:\.\d+)?', text)
+    return float(found.group()) if found else 0.0
+
+
+class Rolling:
+    """Figures that roll to a new value, like an odometer's digits (after Bencho's Rolling counter,
+    2026-11-02): each character that changes slides out as its new one slides in - up when the
+    value rises, down when it falls - and those that stay the same stay still. For a widget that
+    paints its own text: set() the new text, paint() it right-aligned in a rectangle. Figures are
+    one width (tnum), so the characters keep their places. Without animations, it simply changes."""
+
+    def __init__(self, widget: QWidget, text: str = ''):
+        self.widget, self.text, self.old = widget, text, text
+        self.t, self.up = 1.0, True
+        self._roll: QVariantAnimation | None = None
+
+    def set(self, text: str) -> None:
+        if text == self.text:
+            return
+        self.old, self.text = self.text, text
+        self.up = _figure(text) >= _figure(self.old)
+        stop_animation(self._roll)
+        if not motion_on() or not self.widget.isVisible() or not self.old:
+            self.t = 1.0
+            self.widget.update()
+            return
+        roll = self._roll = QVariantAnimation(self.widget)
+        roll.setDuration(STEADY)
+        roll.setEasingCurve(QEasingCurve.OutCubic)
+        roll.setStartValue(0.0)
+        roll.setEndValue(1.0)
+        roll.valueChanged.connect(lambda v: (setattr(self, 't', float(v)), self.widget.update()))
+        self.t = 0.0
+        animate(roll)
+
+    def paint(self, painter: QPainter, rect: QRectF) -> None:
+        """The text right-aligned in rect, centred in its height, mid-roll if it is rolling."""
+        m = QFontMetricsF(painter.font())
+        rolling = self.t < 1.0 and self.old != self.text
+        n = max(len(self.old), len(self.text)) if rolling else len(self.text)
+        new, old = self.text.rjust(n), (self.old.rjust(n) if rolling else self.text.rjust(n))
+        travel = max(rect.height(), m.height())      # a whole line: out of sight at either end
+        away = -1 if self.up else 1                 # rising: the old one goes up, the new comes from below
+        painter.save()
+        painter.setClipRect(rect, Qt.IntersectClip)
+        x = rect.right()
+        for a, b in zip(reversed(old), reversed(new)):
+            width = max(m.horizontalAdvance(a), m.horizontalAdvance(b))
+            x -= width
+            slot = QRectF(x, rect.top(), width, rect.height())
+            if a == b or not rolling:
+                painter.drawText(slot, Qt.AlignRight | Qt.AlignVCenter, b)
+                continue
+            for char, shift, alpha in ((a, away * travel * self.t, 1 - self.t),
+                                       (b, -away * travel * (1 - self.t), self.t)):
+                if char.strip():
+                    painter.setOpacity(alpha)
+                    painter.drawText(slot.translated(0, shift), Qt.AlignRight | Qt.AlignVCenter, char)
+            painter.setOpacity(1.0)
+        painter.restore()
+
+
 class Label(QLabel):
     """A label whose box is its ink (CSS's text-box-trim, 2026-11-02): from the top of its first
     line's letters - capitals, or the x-height of a line with none - to the bottom of its last
@@ -596,33 +661,81 @@ class Label(QLabel):
     showed as anything from 12 to 20; with this it is the gap the eye sees, and spacing can be
     even (the user: "split all empty space evenly").
 
-    Plain text only: rich text (links, bold) and pictures are drawn as QLabel draws them, whole."""
+    Rich text (links, bold) is laid out and drawn by QLabel as ever - its links still answer - and
+    cropped through negative contents margins (_fit_rich). Pictures are drawn whole."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._rich_margins = (0, 0)
+        self._fit_rich()
+
+    def _rich(self) -> bool:
+        text = self.text()
+        return self.textFormat() == Qt.RichText or (self.textFormat() == Qt.AutoText and '<' in text and '>' in text)
+
+    def _ink(self, text: str, width: int | None) -> tuple[int, int]:
+        """The room above the first line's letters and under the last line's, in this font."""
+        m = QFontMetricsF(self.font())
+        paragraphs = [p for p in text.replace('\u2028', '\n').replace('\u2029', '\n').split('\n')] or ['']
+        lines = [paragraphs[0], paragraphs[-1]]
+        if self.wordWrap() and width:
+            wrapped = []
+            for paragraph in (paragraphs[0], paragraphs[-1]):
+                layout = QTextLayout(paragraph, self.font())
+                layout.beginLayout()
+                parts = []
+                while True:
+                    line = layout.createLine()
+                    if not line.isValid():
+                        break
+                    line.setLineWidth(width)
+                    parts.append(paragraph[line.textStart():line.textStart() + line.textLength()])
+                layout.endLayout()
+                wrapped.append(parts or [''])
+            lines = [wrapped[0][0], wrapped[1][-1]]
+        first = m.tightBoundingRect(lines[0].strip() or 'x')
+        last = m.tightBoundingRect(lines[-1].strip() or 'x')
+        return max(0, round(m.ascent() + first.top())), max(0, round(m.descent() - last.bottom()))
+
+    def _fit_rich(self) -> None:
+        """Rich text's crop, as negative contents margins (QLabel lays it out within them)."""
+        if not self._rich() or not self.text():
+            margins = (0, 0)
+        else:
+            from PySide6.QtGui import QTextDocument
+            document = QTextDocument()
+            document.setHtml(self.text())
+            width = self.width() if self.wordWrap() and self.width() > 1 else None
+            margins = self._ink(document.toPlainText(), width)
+        if margins != self._rich_margins:
+            m = self.contentsMargins()
+            old_top, old_bottom = self._rich_margins
+            self._rich_margins = margins
+            self.setContentsMargins(m.left(), m.top() + old_top - margins[0], m.right(),
+                                    m.bottom() + old_bottom - margins[1])
+
+    def setText(self, text: str) -> None:
+        super().setText(text)
+        self._fit_rich()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.wordWrap() and event.size().width() != event.oldSize().width():
+            self._fit_rich()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.FontChange:
+            self._fit_rich()
 
     def _trims(self, width: int | None = None) -> tuple[int, int]:
         text = self.text()
-        if not text or self.textFormat() == Qt.RichText or (
-                self.textFormat() == Qt.AutoText and '<' in text and '>' in text) or not self.pixmap().isNull():
+        if not text or self._rich() or not self.pixmap().isNull():
             return 0, 0
         key = (text, self.font().key(), width if self.wordWrap() else None)
         if getattr(self, '_trim_key', None) == key:
             return self._trim
-        m = QFontMetricsF(self.font())
-        lines = [text]
-        if self.wordWrap() and width:
-            layout = QTextLayout(text, self.font())
-            layout.beginLayout()
-            lines = []
-            while True:
-                line = layout.createLine()
-                if not line.isValid():
-                    break
-                line.setLineWidth(width)
-                lines.append(text[line.textStart():line.textStart() + line.textLength()])
-            layout.endLayout()
-        first = m.tightBoundingRect(lines[0].strip() or 'x')
-        last = m.tightBoundingRect(lines[-1].strip() or 'x')
-        top = max(0, round(m.ascent() + first.top()))
-        bottom = max(0, round(m.descent() - last.bottom()))
+        top, bottom = self._ink(text, width)
         self._trim_key, self._trim = key, (top, bottom)
         return top, bottom
 

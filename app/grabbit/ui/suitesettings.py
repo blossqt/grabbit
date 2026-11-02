@@ -203,6 +203,10 @@ def switch(text: str, about: str, on: bool) -> tuple[QWidget, QCheckBox]:
         line.setObjectName('about')
         words.addWidget(line)
     row.addLayout(words, 1)
+    row.setAlignment(words, Qt.AlignVCenter)
+    # A one-line row is at least the switch's height less 6, so in a run of them the switches
+    # are at least 10 apart (16 + 14 - 20); its words sit in its middle
+    holder.setMinimumHeight(theme.SuiteStyle.SWITCH[1] - 6)
     box = _Switch(name, holder)
     box.setProperty(theme.SWITCH, True)
     box.setChecked(on)
