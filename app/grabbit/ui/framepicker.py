@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (QHBoxLayout, QLabel, QSlider, QToolButton,
                                QVBoxLayout, QWidget)
 
 from .. import frames
+from . import theme
 
 PREVIEW_W, PREVIEW_H = 384, 216
 
@@ -40,9 +41,9 @@ class FramePicker(QWidget):
         self._signals.stream.connect(self._on_stream)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 2, 0, 0)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-        self.picture = QLabel('Finding the video…')
+        self.picture = theme.Label('Finding the video…')
         self.picture.setFixedSize(PREVIEW_W, PREVIEW_H)
         self.picture.setAlignment(Qt.AlignCenter)
         self.picture.setWordWrap(True)
@@ -65,7 +66,7 @@ class FramePicker(QWidget):
         self.forward.setText('›')
         self.forward.setToolTip('The frame after')
         self.forward.clicked.connect(lambda: self.step(1))
-        self.clock = QLabel()
+        self.clock = theme.Label()
         self.clock.setMinimumWidth(120)
         for button in (self.back, self.forward):
             button.setFixedSize(30, 26)

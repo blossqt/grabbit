@@ -247,10 +247,10 @@ class MainWindow(QMainWindow):
         self.banner = QWidget()
         self.banner.setObjectName('Banner')
         banner_layout = QHBoxLayout(self.banner)
-        banner_layout.setContentsMargins(12, 8, 8, 8)
-        self.banner_label = QLabel()
+        banner_layout.setContentsMargins(12, 8, 8, 8)    # right: its close button's own padding
+        self.banner_label = theme.Label()
         self.banner_label.setTextFormat(Qt.PlainText)
-        banner_layout.addWidget(QLabel(pixmap=icons.icon('clipboard', icons.theme_color('accent'), 18).pixmap(18, 18)))
+        banner_layout.addWidget(theme.Label(pixmap=icons.icon('clipboard', icons.theme_color('accent'), 18).pixmap(18, 18)))
         banner_layout.addWidget(self.banner_label, 1)
         banner_add = QPushButton('Download')
         banner_add.clicked.connect(self._banner_accept)
@@ -266,9 +266,9 @@ class MainWindow(QMainWindow):
         self.update_banner = QWidget()
         self.update_banner.setObjectName('Banner')
         update_layout = QHBoxLayout(self.update_banner)
-        update_layout.setContentsMargins(12, 8, 8, 8)
-        update_layout.addWidget(QLabel(pixmap=icons.icon('refresh', icons.theme_color('accent'), 18).pixmap(18, 18)))
-        self.update_label = QLabel()
+        update_layout.setContentsMargins(12, 8, 8, 8)    # right: its buttons' own padding
+        update_layout.addWidget(theme.Label(pixmap=icons.icon('refresh', icons.theme_color('accent'), 18).pixmap(18, 18)))
+        self.update_label = theme.Label()
         self.update_label.setTextFormat(Qt.PlainText)
         update_layout.addWidget(self.update_label, 1)
         update_get = QPushButton('Update now')
@@ -374,10 +374,10 @@ class MainWindow(QMainWindow):
 
     def _build_status_bar(self):
         bar = self.statusBar()
-        self.engine_label = QLabel()
-        self.count_label = QLabel()
-        self.down_label = QLabel()
-        self.up_label = QLabel()
+        self.engine_label = theme.Label()
+        self.count_label = theme.Label()
+        self.down_label = theme.Label()
+        self.up_label = theme.Label()
         for widget in (self.down_label, self.up_label):
             widget.setCursor(Qt.PointingHandCursor)
             widget.setToolTip('Click to set a speed limit')

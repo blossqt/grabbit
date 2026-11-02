@@ -23,18 +23,18 @@ class TorrentFilesDialog(QDialog):
         self._updating = False
 
         layout = QVBoxLayout(self)
-        title = QLabel(meta.name or 'Torrent')
+        title = theme.Label(meta.name or 'Torrent')
         title.setObjectName('CardTitle')
         title.setFont(theme.serif(13))
         title.setWordWrap(True)
         layout.addWidget(title)
 
-        subtitle = QLabel(f'{len(meta.files)} file(s) · {human_size(meta.total_size)}'
+        subtitle = theme.Label(f'{len(meta.files)} file(s) · {human_size(meta.total_size)}'
                           + (f' · {meta.info_hash[:16]}…' if meta.info_hash else ''))
         subtitle.setObjectName('Muted')
         layout.addWidget(subtitle)
         if meta.comment:
-            comment = QLabel(meta.comment)
+            comment = theme.Label(meta.comment)
             comment.setObjectName('Muted')
             comment.setWordWrap(True)
             layout.addWidget(comment)
@@ -57,7 +57,7 @@ class TorrentFilesDialog(QDialog):
         row.addWidget(select_all)
         row.addWidget(select_none)
         row.addStretch(1)
-        self.summary = QLabel()
+        self.summary = theme.Label()
         self.summary.setObjectName('Muted')
         row.addWidget(self.summary)
         layout.addLayout(row)
@@ -65,7 +65,7 @@ class TorrentFilesDialog(QDialog):
         self.folder = None
         if save_dir:
             folder_row = QHBoxLayout()
-            folder_row.addWidget(QLabel('Save to'))
+            folder_row.addWidget(theme.Label('Save to'))
             self.folder = QComboBox()
             self.folder.setEditable(True)
             folders = [save_dir, *[d for d in (recent_dirs or [])

@@ -49,9 +49,13 @@ def draw_mark(painter: QPainter, rect: QRectF, mark: str, color: QColor, size: i
     painter.drawText(rect, Qt.AlignCenter, mark)
 
 
-def label(text: str, size: float = 9.5, weight=QFont.Normal, role: str = '', wrap: bool = False) -> QLabel:
-    """Text on a settings page: role 'dim' for a line about something, 'error' for a problem."""
-    line = QLabel(text)
+BODY, SMALL = theme.TYPE['body'], theme.TYPE['small']      # a setting's name; a line about it
+
+
+def label(text: str, size: float = BODY, weight=QFont.Normal, role: str = '', wrap: bool = False) -> QLabel:
+    """Text on a settings page: role 'dim' for a line about something, 'error' for a problem. Its box
+    is its ink (theme.Label), so the gaps around it are what they say."""
+    line = theme.Label(text)
     line.setFont(theme.font(size, weight))
     if role:
         line.setProperty('role', role)
@@ -60,19 +64,50 @@ def label(text: str, size: float = 9.5, weight=QFont.Normal, role: str = '', wra
 
 
 def note(text: str) -> QLabel:
-    """A line about the settings near it: smaller, dimmer, wrapped."""
-    return label(text, 8.5, role='dim', wrap=True)
+    """A line about the settings near it: a step smaller, dimmer, wrapped."""
+    return label(text, SMALL, role='dim', wrap=True)
+
+
+# Spacing (2026-11-02, the user: "split all empty space evenly"): the gaps the eye sees, ink to
+# ink, are even (Keytap\.dev\spacing\BRIEF.md): 16 between the items of a section, 16 padding,
+# 4 inside a pair (a setting's name and the line under it). Text is theme.Label, whose box is its
+# ink, so these numbers are the gaps themselves.
+PAD = 16            # a section's padding, to the ink
+ITEMS = 16          # between the items of a section: settings rows, a form's rows, a note, buttons
+TITLE_GAP = ITEMS   # under a section's title, as between its items: even
+PAIR = 4            # a setting's name and the line under it: one item
+
+
+def group(text: str) -> tuple[QWidget, QVBoxLayout]:
+    """A group of choices inside a section, under its name (like Discord's "If Streamer Mode is
+    enabled..."): the name a setting's size and weight, its choices close under it. Add them to
+    the layout given."""
+    holder = QWidget()
+    layout = QVBoxLayout(holder)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(ITEMS)                     # its name to its choices, as between items
+    layout.addWidget(label(text, BODY, QFont.Medium, wrap=True))
+    return holder, layout
 
 
 def section(title: str) -> tuple[QFrame, QVBoxLayout]:
-    """A panel on a page, under its own heading."""
+    """A panel on a page, under its own heading (Segoe UI Semibold, as Windows' and most apps'
+    settings have it): the layout given is for its items, ITEMS apart."""
     frame = QFrame()
     frame.setObjectName('section')
-    layout = QVBoxLayout(frame)
-    layout.setContentsMargins(20, 16, 20, 16)
-    layout.setSpacing(8)
+    outer = QVBoxLayout(frame)
+    outer.setContentsMargins(PAD, PAD, PAD, PAD)
+    outer.setSpacing(0)
     if title:                           # none for a page's first, when it would say the page's name again
-        layout.addWidget(heading(title, 13))
+        line = theme.Label(title)
+        line.setObjectName('section_title')
+        line.setFont(theme.text('heading'))
+        outer.addWidget(line)
+        outer.addSpacing(TITLE_GAP)
+    layout = QVBoxLayout()
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(ITEMS)
+    outer.addLayout(layout)
     return frame, layout
 
 
@@ -84,7 +119,7 @@ def form() -> QFormLayout:
     rows.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
     rows.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
     rows.setHorizontalSpacing(16)
-    rows.setVerticalSpacing(8)
+    rows.setVerticalSpacing(ITEMS)
     return rows
 
 
@@ -94,30 +129,96 @@ def framed(widget: QWidget) -> QWidget:
     return widget
 
 
+class _Switch(QCheckBox):
+    """A setting's switch, drawn without words: its name is a label beside it, which text() and
+    setText() reach, and which dims with it."""
+
+    def __init__(self, name: QLabel, row: QWidget):
+        super().__init__()
+        self._name, self._row = name, row
+        self.setAccessibleName(name.text())
+
+    def text(self) -> str:
+        return self._name.text()
+
+    def setText(self, text: str) -> None:
+        self._name.setText(text)
+        self.setAccessibleName(text)
+
+    def changeEvent(self, event):
+        if event.type() == QEvent.EnabledChange:
+            for line in self._row.findChildren(QLabel):
+                line.setEnabled(self.isEnabled())
+        super().changeEvent(event)
+
+
+class _SwitchRow(QWidget):
+    """A setting's row: a click on its words flips its switch, as on the switch itself.
+
+    It is as tall as its words, so rows are as evenly apart as any other text (the user: "split all
+    empty space evenly"); the switch, taller than one line, is held by the row's parent and hung
+    centred on the words at the row's right, reaching into the gaps around it."""
+
+    box: QCheckBox
+
+    def event(self, event):
+        if event.type() in (QEvent.ParentChange, QEvent.Move, QEvent.Resize, QEvent.Show, QEvent.Hide):
+            self._place()
+        return super().event(event)
+
+    def _place(self) -> None:
+        box, parent = getattr(self, 'box', None), self.parentWidget()
+        if box is None or parent is None:
+            return
+        if box.parentWidget() is not parent:
+            box.setParent(parent)
+            self.destroyed.connect(box.deleteLater)
+        width, height = theme.SuiteStyle.SWITCH[0] + 2, max(theme.SuiteStyle.SWITCH[1], box.sizeHint().height())
+        box.setGeometry(self.x() + self.width() - width, self.y() + (self.height() - height) // 2, width, height)
+        box.raise_()
+        box.setVisible(not self.isHidden())
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self.box.isEnabled() and self.rect().contains(event.position().toPoint()):
+            self.box.click()
+        super().mouseReleaseEvent(event)
+
+
 def switch(text: str, about: str, on: bool) -> tuple[QWidget, QCheckBox]:
-    """A setting: a switch (21st.dev's HeroUI switch: its name in medium weight), and a line
-    about it below."""
-    box = QCheckBox(text)
+    """A setting, laid out as Windows 11, Discord and most apps lay one out: its name (medium
+    weight) and a line about it on the left, the switch (21st.dev's HeroUI switch) on the right,
+    in the middle of the row's height."""
+    holder = _SwitchRow()
+    row = QHBoxLayout(holder)
+    row.setContentsMargins(0, 0, 0, 0)
+    row.setSpacing(24)
+    words = QVBoxLayout()
+    words.setContentsMargins(0, 0, 0, 0)
+    words.setSpacing(PAIR)
+    name = label(text, BODY, QFont.Medium, wrap=True)
+    name.setObjectName('name')
+    words.addWidget(name)
+    if about:
+        line = label(about, SMALL, role='dim', wrap=True)
+        line.setObjectName('about')
+        words.addWidget(line)
+    row.addLayout(words, 1)
+    box = _Switch(name, holder)
     box.setProperty(theme.SWITCH, True)
-    box.setFont(theme.font(9.5, QFont.Medium))
     box.setChecked(on)
     box.setCursor(Qt.PointingHandCursor)
-    holder = QWidget()
-    layout = QVBoxLayout(holder)
-    layout.setContentsMargins(0, 2, 0, 2)
-    layout.setSpacing(1)
-    layout.addWidget(box)
-    if about:
-        line = label(about, 8.5, role='dim', wrap=True)
-        line.setObjectName('about')
-        indent(line)
-        layout.addWidget(line)
+    box.hide()                                  # until the row has a parent to hang it in
+    # its room at the right, with 24 between it and the words (a layout adds no spacing beside a
+    # spacer); the switch itself is placed by the row
+    row.addSpacing(24 + theme.SuiteStyle.SWITCH[0] + 2)
+    holder.box = box
+    holder.setCursor(Qt.PointingHandCursor)
     return holder, box
 
 
 def heading(text: str, size: float) -> QLabel:
     """A page's, window's or empty place's title, in Geist Serif."""
-    line = QLabel(text)
+    line = theme.Label(text)
     line.setFont(theme.serif(size))
     return line
 
@@ -134,8 +235,9 @@ def titled(title: str, text: str) -> QWidget:
 
 
 def indent(line: QLabel) -> None:
-    """A line about a setting starts under its words, past the switch beside them."""
-    line.setContentsMargins(theme.SuiteStyle.SWITCH[0] + 8, 0, 0, 0)
+    """A line about a setting starts under its words - since its switch went to the right of the
+    row (2026-11-02), at the section's left edge, with no indent."""
+    line.setContentsMargins(0, 0, 0, 0)
 
 
 def page(title: str, about: str = '') -> tuple[QWidget, QVBoxLayout]:
@@ -143,10 +245,10 @@ def page(title: str, about: str = '') -> tuple[QWidget, QVBoxLayout]:
     widget = QWidget()
     layout = QVBoxLayout(widget)
     layout.setContentsMargins(4, 4, 4, 4)
-    layout.setSpacing(12)
+    layout.setSpacing(ITEMS)                    # its title, its sections: even
     layout.addWidget(heading(title, 21))
     if about:
-        layout.addWidget(label(about, 9, role='dim', wrap=True))
+        layout.addWidget(label(about, SMALL, role='dim', wrap=True))
     return widget, layout
 
 
@@ -277,7 +379,7 @@ class Nav(QWidget):
             draw_mark(p, QRectF(row.left() + 14, row.top(), 24, row.height()), mark,
                       QColor(theme.ink()) if selected else c.dim, 18)
             p.setPen(c.text)
-            p.setFont(theme.font(9.5, QFont.DemiBold if selected else QFont.Normal))
+            p.setFont(theme.font(BODY))       # one weight: the pill shows the page chosen, and words don't shift
             p.drawText(QRectF(row.left() + 46, row.top(), row.width() - 50, row.height()),
                        Qt.AlignVCenter | Qt.AlignLeft, title)
         if self.hasFocus() and self._current >= 0:
@@ -793,11 +895,17 @@ class SettingsFrame:
     def __init__(self, window: QWidget, logo: QPixmap, title: str = 'Settings'):
         self.window = window
         window.setObjectName('settings')
+        window.setFont(theme.font(BODY))       # its buttons and boxes the size of its words (Windows 11's 14 px)
         window.setMinimumSize(800, 560)
         outer = QHBoxLayout(window)
         outer.setContentsMargins(12, 16, 20, 16)
         outer.setSpacing(12)
-        side = QVBoxLayout()
+        # The logo and pages on a pane of their own, as macOS Tahoe floats its sidebar: on clear
+        # glass the pages' names read over whatever is behind the window.
+        self.sidebar = QFrame()
+        self.sidebar.setObjectName('sidebar')
+        side = QVBoxLayout(self.sidebar)
+        side.setContentsMargins(0, 12, 0, 8)
         side.setSpacing(12)
         top = QHBoxLayout()
         top.setContentsMargins(16, 0, 0, 0)
@@ -811,7 +919,7 @@ class SettingsFrame:
         side.addWidget(self.nav)
         side.addStretch(1)
         self.side = side
-        outer.addLayout(side)
+        outer.addWidget(self.sidebar)
         right = QVBoxLayout()
         right.setSpacing(12)
         self.pages = QStackedWidget()
@@ -857,7 +965,13 @@ class SettingsFrame:
 def style() -> str:
     """A settings window's style sheet: set with theme.restyle, so it follows the look."""
     c = theme.colors()
-    return theme.card_style() + theme.panel_css('QFrame#section', 12) + f"""
+    body = theme.font(BODY)
+    # Windows gives buttons, boxes and lists a 9 pt font of their own, which a window's font
+    # doesn't reach: here they take the words' size, as in Windows 11's own settings.
+    controls = ', '.join(f'QWidget#settings {kind}' for kind in
+                         ('QAbstractButton', 'QComboBox', 'QLineEdit', 'QAbstractSpinBox', 'QAbstractItemView'))
+    return theme.card_style() + theme.panel_css('QFrame#section', 12) + theme.panel_css('QFrame#sidebar', 12) + f"""
+        {controls} {{ font-family: "{body.family()}"; font-size: {BODY}pt; }}
         QWidget#settings {{ background: {theme.css(c.card)}; }}
         QStackedWidget, QStackedWidget > QWidget {{ background: transparent; }}
         QScrollArea#scrolled, QScrollArea#scrolled > QWidget, QWidget#scrolled {{ background: transparent; }}

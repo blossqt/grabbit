@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QFormLayout, QHBoxLayout, QLabel, QPlainTextEdit,
 from ..tasks import KIND_MEDIA, State
 from ..torrentmeta import peer_client
 from ..util import human_size, human_speed, human_time
-from . import suitesettings, thumbs
+from . import suitesettings, theme, thumbs
 
 class DetailsPanel(QTabWidget):
     def __init__(self, engine, parent=None):
@@ -52,24 +52,24 @@ class DetailsPanel(QTabWidget):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(16)
 
-        self.thumb = QLabel()
+        self.thumb = theme.Label()
         self.thumb.setFixedSize(192, 108)
         self.thumb.setAlignment(Qt.AlignCenter)
         self.thumb.hide()
         layout.addWidget(self.thumb, 0, Qt.AlignTop)
 
         columns = QHBoxLayout()
-        columns.setSpacing(28)
+        columns.setSpacing(32)
         for keys in (('Name', 'Status', 'Size', 'Downloaded', 'Speed', 'Time left'),
                      ('Save path', 'Source', 'Added', 'Completed', 'Uploaded / ratio', 'Peers')):
             form = QFormLayout()
             form.setLabelAlignment(Qt.AlignRight)
-            form.setHorizontalSpacing(10)
-            form.setVerticalSpacing(5)
+            form.setHorizontalSpacing(12)
+            form.setVerticalSpacing(4)
             for key in keys:
-                label = QLabel(f'{key}:')
+                label = theme.Label(f'{key}:')
                 label.setObjectName('DetailLabel')
-                value = QLabel('—')
+                value = theme.Label('—')
                 value.setTextInteractionFlags(Qt.TextSelectableByMouse)
                 value.setWordWrap(key in ('Name', 'Source', 'Save path'))
                 value.setMaximumWidth(460)

@@ -64,9 +64,10 @@ from ctypes import wintypes
 from dataclasses import dataclass, replace
 
 from PySide6.QtCore import (QAbstractAnimation, QEasingCurve, QEvent, QObject, QPoint, QPointF, QPropertyAnimation,
-                            QRect, QRectF, Qt, QSequentialAnimationGroup, QTimer, QVariantAnimation, Signal)
+                            QRect, QRectF, QSize, Qt, QSequentialAnimationGroup, QTimer, QVariantAnimation, Signal)
 from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QFont, QFontDatabase, QGuiApplication, QImage, QLinearGradient,
-                           QPainter, QPainterPath, QPalette, QPen, QPixmap, QRadialGradient, QRegion)
+                           QFontMetricsF, QPainter, QPainterPath, QPalette, QPen, QPixmap, QRadialGradient, QRegion,
+                           QTextLayout)
 from PySide6.QtWidgets import (QAbstractItemView, QAbstractScrollArea, QAbstractSpinBox, QApplication, QCheckBox,
                                QComboBox, QDialog, QFrame, QGraphicsEffect, QLabel,
                                QGraphicsOpacityEffect, QLineEdit, QMainWindow, QMenuBar, QProgressBar, QProxyStyle,
@@ -78,16 +79,20 @@ __all__ = ['ACCENT', 'ACCENT_HOVER', 'ON_ACCENT', 'ROSE', 'SuiteStyle', 'install
            'motion_on', 'motion_chosen', 'set_motion', 'MODES', 'mode', 'set_mode', 'app_mode', 'restyle',
            'on_restyle', 'light_up', 'BACKDROP_OPACITY', 'fade_out', 'stagger_in', 'GAME_DOWNLOADS',
            'game_quiet_chosen', 'set_game_quiet', 'game_downloads', 'set_game_downloads', 'game_in_front',
-           'quiet_now', 'on_game', 'frame_interval', 'animate', 'stop_animation', 'leave', 'walled', 'closes_on_escape', 'ESCAPE_CLOSES', 'TYPE', 'SPACE', 'QUICK', 'STEADY', 'GENTLE', 'text']
+           'quiet_now', 'on_game', 'frame_interval', 'animate', 'stop_animation', 'leave', 'walled', 'closes_on_escape', 'ESCAPE_CLOSES', 'TYPE', 'SPACE', 'QUICK', 'STEADY', 'GENTLE', 'text', 'Label']
 
 ACCENT = '#ffd1dc'         # the suite's blossom pink: buttons, ticks, highlights
 ACCENT_HOVER = '#ffe0e8'
 ON_ACCENT = '#a61e4d'      # text and ticks drawn on ACCENT, which is too pale for white
 ROSE = '#c2255c'           # the mark on the icons: the pink as text or a line on white
 # The suite's scale (2026-11-01): every window takes its text sizes, gaps and timings from these,
-# so the apps feel like one. Text in points; heading, title and page are Geist Serif (serif()).
-TYPE = {'tiny': 8, 'caption': 8.5, 'small': 9, 'body': 9.5, 'strong': 10.5,
-        'heading': 13, 'title': 17, 'page': 21}
+# so the apps feel like one. Text in points; title and page are Geist Serif (serif()).
+# Since 2026-11-02 its lower steps are Windows 11's (caption 12 px, body 14 px) and steps are a
+# clear 1-2 px apart: 8.5 pt notes under 9.5 pt labels were too small and read as a mistake.
+# small (13 px) is a line about something: a setting's description, a card's.
+# heading (15 px) is a section's title, in Segoe UI Semibold.
+TYPE = {'tiny': 8, 'caption': 9, 'small': 9.75, 'body': 10.5, 'strong': 10.5,
+        'heading': 11.25, 'title': 17, 'page': 21}
 SPACE = (4, 8, 12, 16, 24, 32)     # px: gaps and margins are these (a 1-2 px nudge aside)
 QUICK, STEADY, GENTLE = 160, 220, 340   # ms: a press or fade, a slide, a panel or toast coming in
 
@@ -273,6 +278,9 @@ def install(app) -> None:
     global _style, _watch, _wall_watch
     _style = SuiteStyle()
     app.setStyle(_style)
+    # One family for every widget (2026-11-02): Windows gives buttons, boxes and menus its own
+    # Segoe UI, beside the Segoe UI Variable of font() - two fonts side by side. At its own size.
+    app.setFont(font(app.font().pointSizeF() if app.font().pointSizeF() > 0 else 9))
     _apply_mode(starting=True)
     app.styleHints().colorSchemeChanged.connect(lambda *_: _suite_changed())
     # The look is chosen in Hanami, for the whole suite: each app looks for a change now and then.
@@ -580,10 +588,91 @@ SERIF_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'GeistSeri
 _serif: list[str] = []          # the family's name, once loaded ('' if the file is missing)
 
 
+
+class Label(QLabel):
+    """A label whose box is its ink (CSS's text-box-trim, 2026-11-02): from the top of its first
+    line's letters - capitals, or the x-height of a line with none - to the bottom of its last
+    line's. A font's box holds 3-8 px of nothing above and below them, so a gap set in a layout
+    showed as anything from 12 to 20; with this it is the gap the eye sees, and spacing can be
+    even (the user: "split all empty space evenly").
+
+    Plain text only: rich text (links, bold) and pictures are drawn as QLabel draws them, whole."""
+
+    def _trims(self, width: int | None = None) -> tuple[int, int]:
+        text = self.text()
+        if not text or self.textFormat() == Qt.RichText or (
+                self.textFormat() == Qt.AutoText and '<' in text and '>' in text) or not self.pixmap().isNull():
+            return 0, 0
+        key = (text, self.font().key(), width if self.wordWrap() else None)
+        if getattr(self, '_trim_key', None) == key:
+            return self._trim
+        m = QFontMetricsF(self.font())
+        lines = [text]
+        if self.wordWrap() and width:
+            layout = QTextLayout(text, self.font())
+            layout.beginLayout()
+            lines = []
+            while True:
+                line = layout.createLine()
+                if not line.isValid():
+                    break
+                line.setLineWidth(width)
+                lines.append(text[line.textStart():line.textStart() + line.textLength()])
+            layout.endLayout()
+        first = m.tightBoundingRect(lines[0].strip() or 'x')
+        last = m.tightBoundingRect(lines[-1].strip() or 'x')
+        top = max(0, round(m.ascent() + first.top()))
+        bottom = max(0, round(m.descent() - last.bottom()))
+        self._trim_key, self._trim = key, (top, bottom)
+        return top, bottom
+
+    def _width(self) -> int | None:
+        return self.contentsRect().width() if self.wordWrap() and self.width() > 1 else None
+
+    def sizeHint(self):
+        size = super().sizeHint()
+        top, bottom = self._trims(self._width())
+        return QSize(size.width(), size.height() - top - bottom)
+
+    def minimumSizeHint(self):
+        size = super().minimumSizeHint()
+        top, bottom = self._trims(self._width())
+        return QSize(size.width(), max(0, size.height() - top - bottom))
+
+    def heightForWidth(self, width: int) -> int:
+        height = super().heightForWidth(width)
+        if height < 0:
+            return height
+        m = self.contentsMargins()
+        top, bottom = self._trims(width - m.left() - m.right())
+        return height - top - bottom
+
+    def paintEvent(self, event):
+        top, bottom = self._trims(self._width())
+        if not (top or bottom):
+            return super().paintEvent(event)
+        painter = QPainter(self)
+        room = self.contentsRect()
+        ink = self.heightForWidth(self.width()) if self.wordWrap() else self.sizeHint().height()
+        m = self.contentsMargins()
+        spare = room.height() - (ink - m.top() - m.bottom())     # a cell taller than its words
+        down = spare // 2 if self.alignment() & Qt.AlignVCenter else spare if self.alignment() & Qt.AlignBottom else 0
+        room = room.adjusted(0, down - top, 0, bottom)
+        flags = int(self.alignment() & ~Qt.AlignVertical_Mask) | int(Qt.AlignTop)
+        if self.wordWrap():
+            flags |= int(Qt.TextWordWrap)
+        self.style().drawItemText(painter, room, flags, self.palette(), self.isEnabled(), self.text(),
+                                  self.foregroundRole())
+        painter.end()
+
+
 def text(role: str, weight: QFont.Weight = QFont.Normal) -> QFont:
-    """A font from the suite's scale: TYPE's role, in Geist Serif for heading, title and page."""
-    if role in ('heading', 'title', 'page'):
+    """A font from the suite's scale: TYPE's role, in Geist Serif for title and page. A heading
+    is semibold unless asked otherwise."""
+    if role in ('title', 'page'):
         return serif(TYPE[role])
+    if role == 'heading' and weight == QFont.Normal:
+        weight = QFont.DemiBold
     return font(TYPE[role], weight)
 
 
@@ -770,20 +859,24 @@ def panel_css(selector: str, radius: int = 12) -> str:
     """Style sheet for a panel sitting on a window (an app's card, a box of settings): faintly
     tinted - and in the liquid look, a slab of glass lit from above, with bright rims and rounder
     corners. light_up() gives it the light under the pointer too."""
+    # Readability (2026-11-02, the user: "a huge problem is readability"): as Apple's Liquid Glass
+    # keeps glass for the chrome and puts what is read on solid ground, a panel - where a window's
+    # text is - is a mostly solid tint over the clear glass around it. At 45-110 of 255 it was
+    # text straight over whatever window lay behind, unblurred in the liquid look.
     c = colors()
     if not _liquid_look():
         if glass_on():          # frosted: canvasui.dev's cards - a plain tint, a hairline, rounder corners
-            fill, line = (QColor(0, 0, 0, 64), QColor(255, 255, 255, 26)) if is_dark() else \
-                (QColor(255, 255, 255, 48), QColor(0, 0, 0, 20))
+            fill, line = (QColor(16, 15, 20, 175), QColor(255, 255, 255, 26)) if is_dark() else \
+                (QColor(255, 255, 255, 190), QColor(0, 0, 0, 20))
             return (f'{selector} {{ background: {css(fill)}; border: 1px solid {css(line)}; '
                     f'border-radius: {radius + 6}px; }}')
         return (f'{selector} {{ background: {css(c.tile)}; border: 1px solid {css(c.border)}; '
                 f'border-radius: {radius}px; }}')
     if is_dark():
-        top, low, rim, side, under = (255, 255, 255, 30), (255, 255, 255, 12), (255, 255, 255, 84), \
+        top, low, rim, side, under = (40, 38, 48, 215), (26, 24, 32, 195), (255, 255, 255, 84), \
             (255, 255, 255, 30), (255, 255, 255, 46)
     else:
-        top, low, rim, side, under = (255, 255, 255, 110), (255, 255, 255, 45), (255, 255, 255, 255), \
+        top, low, rim, side, under = (255, 255, 255, 228), (255, 255, 255, 205), (255, 255, 255, 255), \
             (0, 0, 0, 20), (0, 0, 0, 30)
     top, low, rim, side, under = (css(QColor(*v)) for v in (top, low, rim, side, under))
     return (f'{selector} {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {top}, stop:1 {low}); '
@@ -2220,8 +2313,8 @@ def _clear_tint(window: QWidget) -> int:
     holds more text than a pop-up."""
     mean, busy = getattr(window, '_suite_tone', None) or (0.5, 0.05)
     if is_dark():
-        return int(min(220, 110 + 160 * max(0.0, mean - 0.25) + 600 * busy))
-    return int(min(170, 40 + 130 * max(0.0, 0.7 - mean) + 500 * busy))
+        return int(min(235, 110 + 160 * max(0.0, mean - 0.25) + 900 * busy))
+    return int(min(215, 40 + 130 * max(0.0, 0.7 - mean) + 900 * busy))
 
 
 def _paint_clear(window: QWidget, event) -> None:

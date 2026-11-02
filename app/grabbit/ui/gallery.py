@@ -134,7 +134,7 @@ class GalleryGrid(QListWidget):
         self.setResizeMode(QListWidget.Adjust)
         self.setMovement(QListWidget.Static)
         self.setSelectionMode(QListWidget.NoSelection)
-        self.setSpacing(2)
+        self.setSpacing(4)
         self.setUniformItemSizes(True)
         self.setItemDelegate(_TileDelegate(self))
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -238,12 +238,12 @@ class PreviewDialog(QDialog):
         self._loader.ready.connect(self._on_thumb)
 
         layout = QVBoxLayout(self)
-        self.image = QLabel(alignment=Qt.AlignCenter)
+        self.image = theme.Label(alignment=Qt.AlignCenter)
         self.image.setMinimumHeight(420)
         self.image.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout.addWidget(self.image, 1)
 
-        self.caption = QLabel(alignment=Qt.AlignCenter)
+        self.caption = theme.Label(alignment=Qt.AlignCenter)
         self.caption.setObjectName('Muted')
         self.caption.setWordWrap(True)
         layout.addWidget(self.caption)

@@ -66,7 +66,7 @@ class LinkCard(QFrame):
 
         header = QHBoxLayout()
         header.setSpacing(12)
-        self.thumb = QLabel()
+        self.thumb = theme.Label()
         self.thumb.setFixedSize(THUMB_W, THUMB_H)
         self.thumb.setScaledContents(False)
         self.thumb.setAlignment(Qt.AlignCenter)
@@ -74,12 +74,12 @@ class LinkCard(QFrame):
         header.addWidget(self.thumb, 0, Qt.AlignTop)
 
         text_column = QVBoxLayout()
-        text_column.setSpacing(2)
-        self.title = QLabel(url)
+        text_column.setSpacing(4)                   # the title and its line: a pair
+        self.title = theme.Label(url)
         self.title.setObjectName('CardTitle')
         self.title.setFont(theme.serif(13))
         self.title.setWordWrap(True)
-        self.subtitle = QLabel()
+        self.subtitle = theme.Label()
         self.subtitle.setObjectName('Muted')
         self.subtitle.setWordWrap(True)
         text_column.addWidget(self.title)
@@ -174,12 +174,12 @@ class FileCard(LinkCard):
         self.thumb.setPixmap(icons.icon('file', icons.theme_color('dim'), 40).pixmap(40, 40))
 
         row = QHBoxLayout()
-        row.addWidget(QLabel('Save as'))
+        row.addWidget(theme.Label('Save as'))
         self.name_edit = QLineEdit(analysis.filename or 'download')
         row.addWidget(self.name_edit, 1)
         self.body.addLayout(row)
         if analysis.hint:
-            hint = QLabel(analysis.hint)
+            hint = theme.Label(analysis.hint)
             hint.setObjectName('Muted')
             hint.setWordWrap(True)
             self.body.addWidget(hint)
@@ -196,7 +196,7 @@ class MagnetCard(LinkCard):
         self.title.setText(info.get('name') or 'Magnet link')
         self.subtitle.setText(f'BitTorrent · {info.get("info_hash", "")[:16]}…')
         self.thumb.setPixmap(icons.icon('magnet', icons.theme_color('accent'), 40).pixmap(40, 40))
-        note = QLabel('Grabbit fetches the file list from the swarm first'
+        note = theme.Label('Grabbit fetches the file list from the swarm first'
                       + (', then asks which files you want.' if settings.show_torrent_dialog
                          else ', then starts every file.'))
         note.setObjectName('Muted')
@@ -217,7 +217,7 @@ class TorrentCard(LinkCard):
         self.thumb.setPixmap(icons.icon('magnet', icons.theme_color('accent'), 40).pixmap(40, 40))
 
         row = QHBoxLayout()
-        self.summary = QLabel()
+        self.summary = theme.Label()
         self.summary.setObjectName('Muted')
         row.addWidget(self.summary, 1)
         choose = QPushButton('Choose files…')
@@ -273,7 +273,7 @@ class MetalinkCard(LinkCard):
         names = ', '.join(f.name for f in self.files[:6])
         if len(self.files) > 6:
             names += f', … and {len(self.files) - 6} more'
-        listing = QLabel(names)
+        listing = theme.Label(names)
         listing.setObjectName('Muted')
         listing.setWordWrap(True)
         self.body.addWidget(listing)
@@ -337,7 +337,7 @@ class MediaCard(LinkCard):
 
     @staticmethod
     def _menu(row, label: str) -> QComboBox:
-        row.addWidget(QLabel(label))
+        row.addWidget(theme.Label(label))
         menu = QComboBox()
         menu.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         row.addWidget(menu)
@@ -446,7 +446,7 @@ class GalleryCard(LinkCard):
 
         self.has_video = any(i.kind == 'video' for i in self.probe.items)
         if self.has_video:
-            row.addWidget(QLabel('Video quality'))
+            row.addWidget(theme.Label('Video quality'))
             self.quality = QComboBox()
             heights = sorted({h for i in self.probe.items for h in (i.heights or [])}, reverse=True)
             for value, label in quality_options(heights):
@@ -521,9 +521,10 @@ class AddDialog(QDialog):
         self.resize(880, 680)
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(12)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
 
-        prompt = QLabel('Paste links — videos, photo posts, torrent or magnet links, '
+        prompt = theme.Label('Paste links — videos, photo posts, torrent or magnet links, '
                         'or direct file links. One per line.')
         prompt.setWordWrap(True)
         layout.addWidget(prompt)
@@ -539,19 +540,19 @@ class AddDialog(QDialog):
         self.scroll.setWidgetResizable(True)
         container = QWidget()
         self.card_layout = QVBoxLayout(container)
-        self.card_layout.setContentsMargins(0, 0, 8, 0)
-        self.card_layout.setSpacing(12)
+        self.card_layout.setContentsMargins(0, 0, 8, 0)      # right: room for the scroll bar
+        self.card_layout.setSpacing(16)
         self.card_layout.addStretch(1)
         self.scroll.setWidget(container)
         layout.addWidget(self.scroll, 1)
 
-        self.empty_label = QLabel('Links you paste show up here with a preview.')
+        self.empty_label = theme.Label('Links you paste show up here with a preview.')
         self.empty_label.setObjectName('Muted')
         self.empty_label.setAlignment(Qt.AlignCenter)
         self.card_layout.insertWidget(0, self.empty_label)
 
         folder_row = QHBoxLayout()
-        folder_row.addWidget(QLabel('Save to'))
+        folder_row.addWidget(theme.Label('Save to'))
         self.folder = QComboBox()
         self.folder.setEditable(True)
         folders = [settings.download_dir, *[d for d in settings.recent_dirs
