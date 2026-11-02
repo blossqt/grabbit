@@ -63,6 +63,7 @@ class MainWindow(QMainWindow):
     def __init__(self, engine, settings):
         super().__init__()
         theme.frost(self, backdrop=theme.BACKDROP)
+        self.setProperty('_suite_place', False)     # it keeps its own size and place (settings.window_geometry)
         self.engine = engine
         self.settings = settings
         self._clipboard_seen = ''
@@ -206,6 +207,11 @@ class MainWindow(QMainWindow):
         self.action_graph = QAction('Speed graph', self)
         self.action_graph.setCheckable(True)
         self.action_graph.setShortcut(QKeySequence('Ctrl+G'))
+        suitesettings.shortcut_sheet(self, 'Grabbit', [
+            ('Downloads', [('Ctrl+N', 'Add a link'), ('Ctrl+O', 'Add a torrent file'), ('Ctrl+A', 'Choose them all'),
+                           ('Del', 'Remove'), ('Shift+Del', 'Remove and delete the files')]),
+            ('Grabbit', [('Ctrl+G', 'Speed graph'), ('Ctrl+,', 'Settings'), ('Ctrl+/', 'These shortcuts'),
+                         ('Ctrl+Q', 'Quit')])])
         self.action_graph.toggled.connect(self.show_graph)
         view_menu.addAction(self.action_graph)
 
@@ -236,12 +242,12 @@ class MainWindow(QMainWindow):
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(6)
+        right_layout.setSpacing(8)
 
         self.banner = QWidget()
         self.banner.setObjectName('Banner')
         banner_layout = QHBoxLayout(self.banner)
-        banner_layout.setContentsMargins(10, 6, 8, 6)
+        banner_layout.setContentsMargins(12, 8, 8, 8)
         self.banner_label = QLabel()
         self.banner_label.setTextFormat(Qt.PlainText)
         banner_layout.addWidget(QLabel(pixmap=icons.icon('clipboard', icons.theme_color('accent'), 18).pixmap(18, 18)))
@@ -260,7 +266,7 @@ class MainWindow(QMainWindow):
         self.update_banner = QWidget()
         self.update_banner.setObjectName('Banner')
         update_layout = QHBoxLayout(self.update_banner)
-        update_layout.setContentsMargins(10, 6, 8, 6)
+        update_layout.setContentsMargins(12, 8, 8, 8)
         update_layout.addWidget(QLabel(pixmap=icons.icon('refresh', icons.theme_color('accent'), 18).pixmap(18, 18)))
         self.update_label = QLabel()
         self.update_label.setTextFormat(Qt.PlainText)
@@ -306,7 +312,7 @@ class MainWindow(QMainWindow):
         self.view.sortByColumn(9, Qt.DescendingOrder)
         right_layout.addWidget(self.view, 1)
         # Nothing in the list: what to do, over the empty table - rather than a blank one.
-        self.empty_label = suitesettings.Empty('\ue896', '', '', self.view.viewport())
+        self.empty_label = suitesettings.Empty('download', '', '', self.view.viewport())
         self.view.viewport().installEventFilter(self)
         for signal in (self.proxy.rowsInserted, self.proxy.rowsRemoved, self.proxy.modelReset,
                        self.proxy.layoutChanged):
@@ -821,9 +827,9 @@ class MainWindow(QMainWindow):
             self.empty_label.hide()
             return
         if not self.model.rowCount():
-            self.empty_label.set('\ue896', 'No downloads yet', 'Paste a link (Ctrl+N) or drop a torrent file here.')
+            self.empty_label.set('download', 'No downloads yet', 'Paste a link (Ctrl+N) or drop a torrent file here.')
         else:
-            self.empty_label.set('\ue71c', 'None here', 'Nothing in the list matches this filter.')
+            self.empty_label.set('filter', 'None here', 'Nothing in the list matches this filter.')
         self.empty_label.setGeometry(self.view.viewport().rect())
         self.empty_label.show()
 

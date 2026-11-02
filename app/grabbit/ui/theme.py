@@ -97,7 +97,7 @@ def stylesheet() -> str:
 
     #Sidebar {{ background: {c['window']}; border: 0; outline: 0; padding: 6px 4px; }}
 
-    #SidebarHeader {{ color: {c['dim']}; font-size: 11px; font-weight: 600;
+    #SidebarHeader {{ color: {c['dim']}; font-size: 8.5pt; font-weight: 600;
                       padding: 10px 10px 2px 10px; }}
     #DetailLabel {{ color: {c['dim']}; }}
     #Card {{ background: {c['card']}; border: 1px solid {c['border']}; border-radius: 10px; }}

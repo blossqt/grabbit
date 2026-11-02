@@ -8,7 +8,7 @@ Written once, here in Hanami, and copied into each Qt app's ui\\ folder (tests\\
 keeps them the same); it uses only suitetheme.py, which is shared the same way.
 
     frame = SettingsFrame(window, icons.render_app_icon(28))
-    layout = frame.add('\\ue80f', 'General')       # a Segoe Fluent Icons glyph, the page's name
+    layout = frame.add('gear', 'General')          # an icon of the suite's (suiteicons), the page's name
     box_frame, box = section('Starting up')
     layout.addWidget(box_frame)
 """
@@ -19,11 +19,13 @@ import math
 
 from PySide6.QtCore import (QEasingCurve, QEvent, QModelIndex, QObject, QPersistentModelIndex, QPoint,
                             QPropertyAnimation, QRectF, QSize, Qt, QVariantAnimation, Signal)
-from PySide6.QtGui import QColor, QFont, QIcon, QLinearGradient, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QFormLayout, QFrame, QHBoxLayout, QLabel, QLayout,
+from PySide6.QtGui import QColor, QFont, QIcon, QKeySequence, QLinearGradient, QPainter, QPen, QPixmap, QShortcut
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
+                               QLabel, QLayout,
                                QScrollArea, QSizePolicy, QStackedWidget, QStyle, QStyledItemDelegate, QVBoxLayout,
                                QWidget)
 
+from . import suiteicons
 from . import suitetheme as theme
 
 
@@ -34,6 +36,17 @@ def glyph_font(point_size: float) -> QFont:
         f = QFont('Segoe MDL2 Assets')
     f.setPointSizeF(point_size)
     return f
+
+
+def draw_mark(painter: QPainter, rect: QRectF, mark: str, color: QColor, size: int) -> None:
+    """A page's, a tick's or an empty place's mark: one of the suite's icons (suiteicons) by name, or
+    else a Segoe Fluent glyph, centred in rect at about size px."""
+    if mark in suiteicons.SHAPES:
+        suiteicons.draw(painter, rect, mark, color, size)
+        return
+    painter.setPen(color)
+    painter.setFont(glyph_font(size * 0.62))
+    painter.drawText(rect, Qt.AlignCenter, mark)
 
 
 def label(text: str, size: float = 9.5, weight=QFont.Normal, role: str = '', wrap: bool = False) -> QLabel:
@@ -56,7 +69,7 @@ def section(title: str) -> tuple[QFrame, QVBoxLayout]:
     frame = QFrame()
     frame.setObjectName('section')
     layout = QVBoxLayout(frame)
-    layout.setContentsMargins(18, 14, 18, 16)
+    layout.setContentsMargins(20, 16, 20, 16)
     layout.setSpacing(8)
     if title:                           # none for a page's first, when it would say the page's name again
         layout.addWidget(heading(title, 13))
@@ -109,6 +122,17 @@ def heading(text: str, size: float) -> QLabel:
     return line
 
 
+def titled(title: str, text: str) -> QWidget:
+    """A dialog's title in Geist Serif, and a line under it."""
+    block = QWidget()
+    column = QVBoxLayout(block)
+    column.setContentsMargins(0, 0, 0, 0)
+    column.setSpacing(4)
+    column.addWidget(heading(title, theme.TYPE['title']))
+    column.addWidget(label(text, wrap=True))
+    return block
+
+
 def indent(line: QLabel) -> None:
     """A line about a setting starts under its words, past the switch beside them."""
     line.setContentsMargins(theme.SuiteStyle.SWITCH[0] + 8, 0, 0, 0)
@@ -120,7 +144,7 @@ def page(title: str, about: str = '') -> tuple[QWidget, QVBoxLayout]:
     layout = QVBoxLayout(widget)
     layout.setContentsMargins(4, 4, 4, 4)
     layout.setSpacing(12)
-    layout.addWidget(heading(title, 20))
+    layout.addWidget(heading(title, 21))
     if about:
         layout.addWidget(label(about, 9, role='dim', wrap=True))
     return widget, layout
@@ -192,7 +216,7 @@ class Nav(QWidget):
         if liquid:
             curve.setOvershoot(1.1)
         slide.setEasingCurve(curve)
-        slide.setDuration(360 if liquid else 220)
+        slide.setDuration(theme.GENTLE if liquid else theme.STEADY)
         slide.setStartValue(start)
         slide.setEndValue(float(index))
 
@@ -250,9 +274,8 @@ class Nav(QWidget):
         for index, (mark, title) in enumerate(self._items):
             row = QRectF(8, 8 + index * self.ROW, width, self.ROW)
             selected = index == self._current
-            p.setPen(QColor(theme.ink()) if selected else c.dim)
-            p.setFont(glyph_font(11))
-            p.drawText(QRectF(row.left() + 14, row.top(), 24, row.height()), Qt.AlignCenter, mark)
+            draw_mark(p, QRectF(row.left() + 14, row.top(), 24, row.height()), mark,
+                      QColor(theme.ink()) if selected else c.dim, 18)
             p.setPen(c.text)
             p.setFont(theme.font(9.5, QFont.DemiBold if selected else QFont.Normal))
             p.drawText(QRectF(row.left() + 46, row.top(), row.width() - 50, row.height()),
@@ -340,9 +363,7 @@ class _SideRows(QStyledItemDelegate):
         right = r.right() - 12
         count = index.data(COUNT)
         if ticked:
-            p.setPen(QColor(theme.ink()))
-            p.setFont(glyph_font(10))
-            p.drawText(QRectF(right - 16, r.top(), 16, r.height()), Qt.AlignCenter, '')
+            draw_mark(p, QRectF(right - 16, r.top(), 16, r.height()), 'check', QColor(theme.ink()), 16)
             right -= 24
         elif count not in (None, ''):
             p.setPen(c.dim)
@@ -400,7 +421,7 @@ class _SidePill(QObject):
         if liquid:
             curve.setOvershoot(1.1)
         slide.setEasingCurve(curve)
-        slide.setDuration(360 if liquid else 220)
+        slide.setDuration(theme.GENTLE if liquid else theme.STEADY)
         slide.setStartValue(0.0)
         slide.setEndValue(1.0)
 
@@ -456,8 +477,78 @@ class _Chip(QWidget):
         p.setBrush(c.chip)
         p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 10, 10)
         p.setPen(c.text)
-        p.setFont(glyph_font(13))
-        p.drawText(QRectF(self.rect()), Qt.AlignCenter, self.mark)
+        draw_mark(p, QRectF(self.rect()), self.mark, p.pen().color(), round(self.width() * 0.5))
+        p.end()
+
+
+class Shimmer(QWidget):
+    """Where something is on its way: the rows it will fill, as soft rounded bars with a light
+    sweeping across them (21st.dev's skeletons), instead of a blank space or a spinner."""
+
+    SWEEP_MS = 1400
+
+    def __init__(self, rows: int = 6, row_height: int = 44, thumb: bool = True, parent=None):
+        super().__init__(parent)
+        self.rows, self.row_height, self.thumb = rows, row_height, thumb
+        self.setMinimumHeight(row_height)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._phase = 0.0
+        self._sweep = QVariantAnimation(self)
+        self._sweep.setDuration(self.SWEEP_MS)
+        self._sweep.setStartValue(0.0)
+        self._sweep.setEndValue(1.0)
+        self._sweep.setLoopCount(-1)
+        self._sweep.valueChanged.connect(self._step)
+
+    def sizeHint(self) -> QSize:
+        return QSize(240, self.rows * self.row_height)
+
+    def _step(self, value) -> None:
+        self._phase = float(value)
+        self.update()
+
+    def showEvent(self, event):
+        if theme.motion_on():
+            self._sweep.start()
+        super().showEvent(event)
+
+    def hideEvent(self, event):
+        self._sweep.stop()
+        super().hideEvent(event)
+
+    def paintEvent(self, event):
+        c = theme.colors()
+        base = QColor(c.text)
+        base.setAlpha(18 if theme.is_dark() else 14)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        width = self.width()
+        light = QLinearGradient(-width + 2 * width * self._phase, 0, 2 * width * self._phase, 0)
+        shine = QColor(255, 255, 255, 34 if theme.is_dark() else 120)
+        light.setColorAt(0.0, QColor(255, 255, 255, 0))
+        light.setColorAt(0.5, shine)
+        light.setColorAt(1.0, QColor(255, 255, 255, 0))
+        for row in range(min(self.rows, self.height() // self.row_height + 1)):
+            top = row * self.row_height + 6
+            height = self.row_height - 12
+            left = 8
+            bars = []
+            if self.thumb and height >= 20:
+                bars.append(QRectF(left, top, height, height))
+                left += height + 12
+            room = width - left - 8
+            line = max(6, min(10, height // 3))
+            widths = (0.7, 0.45) if height >= 2 * line + 6 else (0.6,)
+            for k, share in enumerate(widths):
+                y = top + (height - line) / 2 if len(widths) == 1 else top + 2 + k * (line + 6)
+                bars.append(QRectF(left, y, room * (share - 0.08 * (row % 3)), line))
+            for bar in bars:
+                radius = min(6.0, bar.height() / 2)
+                p.setBrush(base)
+                p.drawRoundedRect(bar, radius, radius)
+                p.setBrush(light)
+                p.drawRoundedRect(bar, radius, radius)
         p.end()
 
 
@@ -475,7 +566,7 @@ class Empty(QWidget):
         self.chip = _Chip(mark)
         layout.addWidget(self.chip, 0, Qt.AlignHCenter)
         layout.addSpacing(4)
-        self.title = heading(title, 14)
+        self.title = heading(title, 13)
         self.title.setAlignment(Qt.AlignHCenter)
         layout.addWidget(self.title)
         self.text = label(text, 9.5, role='dim', wrap=True)
@@ -541,7 +632,7 @@ class Segmented(QWidget):
             return
         start = QRectF(self._pill)
         slide = self._slide = QVariantAnimation(self)
-        slide.setDuration(350)
+        slide.setDuration(theme.GENTLE)
         slide.setEasingCurve(QEasingCurve(QEasingCurve.OutBack) if theme.look() == 'liquid' and theme.glass_on()
                              else QEasingCurve(QEasingCurve.OutQuint))
         slide.setStartValue(0.0)
@@ -595,6 +686,66 @@ TOAST_BEHIND = 2        # folded, how many show behind the newest
 TOAST_SHRINK = 0.05     # each one behind is this much narrower than the one in front of it
 
 
+def keycaps(keys: str) -> QWidget:
+    """A shortcut as keycaps: Ctrl+Shift+A as three small keys side by side."""
+    row = QWidget()
+    line = QHBoxLayout(row)
+    line.setContentsMargins(0, 0, 0, 0)
+    line.setSpacing(4)
+    line.addStretch(1)                  # flush right, so the keys of a sheet's sections line up
+    for key in keys.replace('++', '+Plus').split('+'):
+        cap = QLabel(key.replace('Plus', '+'))
+        cap.setObjectName('keycap')
+        cap.setFont(theme.text('caption', QFont.DemiBold))
+        cap.setAlignment(Qt.AlignCenter)
+        cap.setMinimumWidth(22)
+        line.addWidget(cap)
+    theme.restyle(row, lambda: f"""
+        QLabel#keycap {{ color: {theme.css(theme.colors().text)}; background: {theme.css(theme.colors().chip)};
+                         border: 1px solid {theme.css(theme.colors().border)}; border-bottom-width: 2px;
+                         border-radius: 5px; padding: 1px 6px; }}""")
+    return row
+
+
+class ShortcutSheet(QDialog):
+    """Every keyboard shortcut an app has, in groups, with its keys as keycaps - opened with Ctrl+/
+    or F1 (shortcut_sheet)."""
+
+    def __init__(self, parent: QWidget, title: str, groups: list[tuple[str, list[tuple[str, str]]]]):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        theme.frost(self)
+        theme.restyle(self, style)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(24, 20, 24, 20)
+        outer.setSpacing(16)
+        outer.addWidget(heading('Keyboard shortcuts', theme.TYPE['title']))
+        for name, rows in groups:
+            box, layout = section(name)
+            grid = QGridLayout()
+            grid.setHorizontalSpacing(24)
+            grid.setVerticalSpacing(8)
+            for n, (keys, what) in enumerate(rows):
+                grid.addWidget(label(what), n, 0)
+                grid.addWidget(keycaps(keys), n, 1)
+            grid.setColumnStretch(0, 1)
+            layout.addLayout(grid)
+            outer.addWidget(box)
+        outer.addStretch(1)
+        self.resize(460, self.sizeHint().height())
+
+
+def shortcut_sheet(window: QWidget, title: str, groups) -> None:
+    """Ctrl+/ and F1 in window open its shortcut sheet. groups: [(name, [(keys, what), ...]), ...],
+    or a function giving them, for shortcuts the person can change."""
+    def show() -> None:
+        sheet = ShortcutSheet(window, title, groups() if callable(groups) else groups)
+        sheet.setAttribute(Qt.WA_DeleteOnClose)
+        sheet.show()
+    for keys in ('Ctrl+/', 'F1'):
+        QShortcut(QKeySequence(keys), window, show)
+
+
 def stack_toasts(toasts: list, corner: QPoint, shadow: int, spread: bool) -> None:
     """Toasts as Sonner stacks them: the newest at the corner (corner: where its card's bottom
     right goes), the next ones folded behind it - each peeking out above, a little narrower -
@@ -621,7 +772,7 @@ def _glide(window: QWidget, to: QPoint) -> None:
         window.move(to)
         return
     glide = window._suite_glide = QPropertyAnimation(window, b'pos', window)
-    glide.setDuration(320)
+    glide.setDuration(theme.GENTLE)
     glide.setEasingCurve(QEasingCurve.OutCubic)
     glide.setStartValue(window.pos())
     glide.setEndValue(to)
@@ -647,14 +798,14 @@ class SettingsFrame:
         outer.setContentsMargins(12, 16, 20, 16)
         outer.setSpacing(12)
         side = QVBoxLayout()
-        side.setSpacing(10)
+        side.setSpacing(12)
         top = QHBoxLayout()
-        top.setContentsMargins(14, 0, 0, 0)
-        top.setSpacing(10)
+        top.setContentsMargins(16, 0, 0, 0)
+        top.setSpacing(12)
         mark = QLabel()
         mark.setPixmap(logo)
         top.addWidget(mark)
-        top.addWidget(heading(title, 15), 1)
+        top.addWidget(heading(title, 17), 1)
         side.addLayout(top)
         self.nav = Nav()
         side.addWidget(self.nav)

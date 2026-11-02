@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import ctypes
 import itertools
+import json
 import math
 import os
 import queue
@@ -67,9 +68,9 @@ from PySide6.QtCore import (QAbstractAnimation, QEasingCurve, QEvent, QObject, Q
 from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QFont, QFontDatabase, QGuiApplication, QImage, QLinearGradient,
                            QPainter, QPainterPath, QPalette, QPen, QPixmap, QRadialGradient, QRegion)
 from PySide6.QtWidgets import (QAbstractItemView, QAbstractScrollArea, QAbstractSpinBox, QApplication, QCheckBox,
-                               QComboBox, QFrame, QGraphicsEffect,
+                               QComboBox, QDialog, QFrame, QGraphicsEffect, QLabel,
                                QGraphicsOpacityEffect, QLineEdit, QMainWindow, QMenuBar, QProgressBar, QProxyStyle,
-                               QPushButton, QStackedWidget, QStatusBar, QStyle, QToolBar, QToolButton, QWidget)
+                               QPushButton, QStackedWidget, QStatusBar, QStyle, QToolBar, QToolButton, QVBoxLayout, QWidget)
 
 __all__ = ['ACCENT', 'ACCENT_HOVER', 'ON_ACCENT', 'ROSE', 'SuiteStyle', 'install', 'Colors', 'is_dark', 'veil',
            'colors', 'ink', 'font', 'serif', 'paint_shadow', 'card_style', 'liquid_controls_css', 'panel_css', 'GLASS_RADIUS',
@@ -77,12 +78,19 @@ __all__ = ['ACCENT', 'ACCENT_HOVER', 'ON_ACCENT', 'ROSE', 'SuiteStyle', 'install
            'motion_on', 'motion_chosen', 'set_motion', 'MODES', 'mode', 'set_mode', 'app_mode', 'restyle',
            'on_restyle', 'light_up', 'BACKDROP_OPACITY', 'fade_out', 'stagger_in', 'GAME_DOWNLOADS',
            'game_quiet_chosen', 'set_game_quiet', 'game_downloads', 'set_game_downloads', 'game_in_front',
-           'quiet_now', 'on_game', 'frame_interval', 'animate', 'stop_animation']
+           'quiet_now', 'on_game', 'frame_interval', 'animate', 'stop_animation', 'walled', 'closes_on_escape', 'ESCAPE_CLOSES', 'TYPE', 'SPACE', 'QUICK', 'STEADY', 'GENTLE', 'text']
 
 ACCENT = '#ffd1dc'         # the suite's blossom pink: buttons, ticks, highlights
 ACCENT_HOVER = '#ffe0e8'
 ON_ACCENT = '#a61e4d'      # text and ticks drawn on ACCENT, which is too pale for white
 ROSE = '#c2255c'           # the mark on the icons: the pink as text or a line on white
+# The suite's scale (2026-11-01): every window takes its text sizes, gaps and timings from these,
+# so the apps feel like one. Text in points; heading, title and page are Geist Serif (serif()).
+TYPE = {'tiny': 8, 'caption': 8.5, 'small': 9, 'body': 9.5, 'strong': 10.5,
+        'heading': 13, 'title': 17, 'page': 21}
+SPACE = (4, 8, 12, 16, 24, 32)     # px: gaps and margins are these (a 1-2 px nudge aside)
+QUICK, STEADY, GENTLE = 160, 220, 340   # ms: a press or fade, a slide, a panel or toast coming in
+
 GLASS_RADIUS = 8           # the corners Windows 11 rounds a frameless glass window to
 LIQUID_RADIUS = 14         # a liquid glass pop-up's corners, rounder (Windows' own rounding lies outside them)
 
@@ -252,6 +260,7 @@ def _part_of(path: QPainterPath, share: float) -> QPainterPath:
 
 _style = None
 _watch = None
+_wall_watch = None
 
 
 def install(app) -> None:
@@ -261,7 +270,7 @@ def install(app) -> None:
     taken now; Windows going light or dark, and the look, the animations or
     light or dark changing in Hanami, are followed from here on.
     """
-    global _style, _watch
+    global _style, _watch, _wall_watch
     _style = SuiteStyle()
     app.setStyle(_style)
     _apply_mode(starting=True)
@@ -274,12 +283,47 @@ def install(app) -> None:
     _honour_timers()
     _frame_rate()
     app.installEventFilter(_wheels())
+    app.installEventFilter(_focus())
     _ui_effects()
     on_restyle(_ui_effects)
     app.screenAdded.connect(_screen_added)
     app.screenRemoved.connect(lambda *_: _frame_rate())
     for screen in app.screens():
         screen.refreshRateChanged.connect(lambda *_: _frame_rate())
+    QTimer.singleShot(_WARM_AFTER, _warm_up)
+    _wall_watch = QTimer(app)
+    _wall_watch.setInterval(60_000)
+    _wall_watch.timeout.connect(_look_at_wall)
+    _wall_watch.start()
+    QTimer.singleShot(_WARM_AFTER + 500, _look_at_wall)
+
+
+_WARM_AFTER = 3000      # ms after an app starts: what Qt sets up for the first window it draws, done unseen
+
+
+def _warm_up() -> None:
+    """Draw a hidden window of the suite's parts once, soon after the app starts: Qt reads its fonts,
+    style sheets and glyphs the first time it draws them, which made each app's first window open
+    about 0.15 s slower than the next. Not while a game is in front: once it has gone."""
+    if quiet_now():
+        QTimer.singleShot(_WARM_AFTER, _warm_up)
+        return
+    sample = QWidget()
+    sample.setAttribute(Qt.WA_DontShowOnScreen)
+    layout = QVBoxLayout(sample)
+    title = QLabel('Aa')
+    title.setFont(serif(TYPE['page']))
+    layout.addWidget(title)
+    for role in ('caption', 'body', 'strong'):
+        line = QLabel('Aa 0123')
+        line.setFont(text(role))
+        layout.addWidget(line)
+    layout.addWidget(QPushButton('Aa'))
+    layout.addWidget(QLineEdit('Aa'))
+    layout.addWidget(QCheckBox('Aa'))
+    restyle(sample, card_style)
+    sample.grab()
+    sample.deleteLater()
 
 
 # Qt moves its animations on every 16 ms, 60 times a second, whatever the monitor - on a faster one
@@ -392,9 +436,95 @@ def veil() -> QColor:
     whatever is behind the window. (In the liquid look, the tint of its clear glass, as it is
     mostly - see _paint_clear.)"""
     if look() == 'liquid':
-        return QColor(30, 28, 38, 150) if is_dark() else QColor(250, 249, 252, 80)
+        return walled(QColor(30, 28, 38, 150) if is_dark() else QColor(250, 249, 252, 80))
     # frosted, after canvasui.dev's cards: a plainer, lighter tint, so more of the blur shows
-    return QColor(10, 10, 12, 112) if is_dark() else QColor(250, 250, 252, 64)
+    return walled(QColor(10, 10, 12, 112) if is_dark() else QColor(250, 250, 252, 64))
+
+
+WALL_SHARE = 0.5          # how far the glass's tint leans to the wallpaper's hue, at its own lightness
+_wall: QColor | None = None
+_wall_seen: tuple = ()
+
+
+def walled(color: QColor) -> QColor:
+    """A glass tint leaning faintly to the wallpaper's colour (2026-11-01, the user's wish), so the
+    glass changes with the day's wallpaper; as it is when the wallpaper isn't known."""
+    if _wall is None:
+        return color
+    hue, saturation, _, _ = _wall.getHslF()
+    lightness = color.lightnessF()
+    lightness = min(lightness, 0.94) if lightness > 0.5 else max(lightness, 0.10)
+    leaning = QColor.fromHslF(max(hue, 0.0), min(saturation, 0.5), lightness)
+    mixed = QColor(round(color.red() + (leaning.red() - color.red()) * WALL_SHARE),
+                   round(color.green() + (leaning.green() - color.green()) * WALL_SHARE),
+                   round(color.blue() + (leaning.blue() - color.blue()) * WALL_SHARE))
+    mixed.setAlpha(color.alpha())
+    return mixed
+
+
+def _wallpaper() -> str:
+    """The desktop picture's file: Wallpaper Engine's picture of its wallpaper, when it has one
+    chosen (it draws the desktop itself, and Windows' own setting stays the default picture -
+    as on this PC), else Windows' ('' for a plain colour)."""
+    engine = _engine_wallpaper()
+    if engine:
+        return engine
+    buffer = ctypes.create_unicode_buffer(520)
+    try:
+        ctypes.windll.user32.SystemParametersInfoW(0x0073, len(buffer), buffer, 0)    # SPI_GETDESKWALLPAPER
+    except (AttributeError, OSError):
+        return ''
+    return buffer.value
+
+
+def _engine_wallpaper() -> str:
+    """The preview picture of the wallpaper Wallpaper Engine shows on the first screen, from its
+    config.json in Steam's folder; '' without it."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\Valve\Steam') as key:
+            steam = winreg.QueryValueEx(key, 'SteamPath')[0]
+        with open(os.path.join(steam, 'steamapps', 'common', 'wallpaper_engine', 'config.json'),
+                  encoding='utf-8') as file:
+            config = json.load(file)
+    except (OSError, ValueError):
+        return ''
+    for user in config.values() if isinstance(config, dict) else ():
+        general = user.get('general') if isinstance(user, dict) else None
+        chosen = ((general or {}).get('wallpaperconfig') or {}).get('selectedwallpapers') or {}
+        for monitor in sorted(chosen):
+            folder = os.path.dirname(str((chosen[monitor] or {}).get('file', '')))
+            for name in ('preview.jpg', 'preview.png', 'preview.gif'):
+                if folder and os.path.isfile(os.path.join(folder, name)):
+                    return os.path.join(folder, name)
+    return ''
+
+
+def _look_at_wall() -> None:
+    """Take the wallpaper's colour again if its picture changed: every minute, never while a game
+    is in front, and only on real screens. A change repaints the glass."""
+    global _wall, _wall_seen
+    if QGuiApplication.platformName() != 'windows' or os.environ.get('SUITE_WALL') == '0' or quiet_now():
+        return
+    path = _wallpaper()
+    try:
+        seen = (path, os.path.getmtime(path)) if path else ('', 0)
+    except OSError:
+        seen = (path, 0)
+    if seen == _wall_seen:
+        return
+    _wall_seen = seen
+    color = None
+    if path:
+        picture = QImage(path)
+        if not picture.isNull():
+            color = QColor(picture.scaled(1, 1, Qt.IgnoreAspectRatio, Qt.SmoothTransformation).pixel(0, 0))
+    else:
+        bgr = ctypes.windll.user32.GetSysColor(1)        # COLOR_DESKTOP, a plain colour
+        color = QColor(bgr & 0xFF, (bgr >> 8) & 0xFF, (bgr >> 16) & 0xFF)
+    if color != _wall:
+        _wall = color
+        _suite_changed()
 
 
 def css(color: QColor) -> str:
@@ -413,11 +543,28 @@ def font(point_size: float, weight: QFont.Weight = QFont.Normal) -> QFont:
         f = QFont('Segoe UI')
     f.setPointSizeF(point_size)
     f.setWeight(weight)
+    _figures(f)
     return f
+
+
+def _figures(f: QFont) -> None:
+    """Every figure one width (OpenType tnum): a speed, a count or a code changing doesn't jitter.
+    Segoe UI Variable's 1 is narrower than its other figures otherwise."""
+    try:
+        f.setFeature(QFont.Tag('tnum'), 1)
+    except (AttributeError, TypeError):
+        pass                    # a Qt before 6.7
 
 
 SERIF_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'GeistSerif-Regular.ttf')
 _serif: list[str] = []          # the family's name, once loaded ('' if the file is missing)
+
+
+def text(role: str, weight: QFont.Weight = QFont.Normal) -> QFont:
+    """A font from the suite's scale: TYPE's role, in Geist Serif for heading, title and page."""
+    if role in ('heading', 'title', 'page'):
+        return serif(TYPE[role])
+    return font(TYPE[role], weight)
 
 
 def serif(point_size: float) -> QFont:
@@ -434,6 +581,7 @@ def serif(point_size: float) -> QFont:
     f = QFont(_serif[0])
     f.setPointSizeF(point_size)
     f.setWeight(QFont.Normal)
+    _figures(f)
     return f
 
 
@@ -1147,6 +1295,10 @@ class _Frosting(QObject):
         kind = event.type()
         if not isinstance(obj, QWidget) or not obj.isWindow():
             return False
+        if kind == QEvent.KeyPress and event.key() == Qt.Key_Escape and not event.modifiers() \
+                and obj.property(ESCAPE_CLOSES) and not isinstance(obj, QDialog):
+            obj.close()                 # a dialog does this itself; a window says it should (closes_on_escape)
+            return True
         if kind == QEvent.Paint and not _frameless(obj):
             if _clear(obj):
                 _paint_clear(obj, event)
@@ -1159,6 +1311,7 @@ class _Frosting(QObject):
             if getattr(obj, '_suite_backdrop', None):
                 return _paint_backdrop(obj, event)
         elif kind == QEvent.Show:
+            _place(obj)
             if _screen_glass(obj):
                 _capture(obj)                       # not on screen yet: what is behind it, as it is
                 _watch_around(obj, start=True)
@@ -1172,6 +1325,7 @@ class _Frosting(QObject):
             elif not _frameless(obj):
                 _settle_in(obj)
         elif kind == QEvent.Hide:
+            _remember_place(obj)
             _stop_live(obj)
             _watch_around(obj, stop=True)
         elif kind in (QEvent.Move, QEvent.Resize) and obj.isVisible() and _screen_glass(obj):
@@ -1284,6 +1438,57 @@ def _paint_backdrop(window: QWidget, event) -> bool:
 
 
 _frosting_filter = None
+
+
+ESCAPE_CLOSES = '_suite_escape'
+_PLACED = '_suite_placed'
+_PLACES_KEY = _LOOK_KEY + r'\Windows'
+
+
+def closes_on_escape(window: QWidget) -> None:
+    """Esc closes this (frosted) window, as it does a dialog: for a pop-up or a side window, never
+    a main window or one holding unsaved work."""
+    window.setProperty(ESCAPE_CLOSES, True)
+
+
+def _place_name(window: QWidget) -> str | None:
+    """Under what name a framed window's size and place are kept, or None for one that isn't: a
+    pop-up, one that places itself (property _suite_place False), or with no real screens."""
+    if _frameless(window) or window.property('_suite_place') is False or os.environ.get('SUITE_PLACES') == '0' \
+            or QGuiApplication.platformName() != 'windows':
+        return None
+    return f'{QGuiApplication.applicationName() or "app"}.{window.objectName() or type(window).__name__}'
+
+
+def _place(window: QWidget) -> None:
+    """A framed window opens where it was last, at the size it had - once, as it is first shown, and
+    only if that place is still on a screen."""
+    name = _place_name(window)
+    if name is None or window.property(_PLACED):
+        return
+    window.setProperty(_PLACED, True)
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _PLACES_KEY) as key:
+            saved = bytes(winreg.QueryValueEx(key, name)[0])
+    except OSError:
+        return
+    before = window.geometry()
+    if window.restoreGeometry(saved) and not any(s.availableGeometry().intersects(window.frameGeometry())
+                                                  for s in QGuiApplication.screens()):
+        window.setGeometry(before)      # its screen is gone
+
+
+def _remember_place(window: QWidget) -> None:
+    name = _place_name(window)
+    if name is None or not window.property(_PLACED):
+        return
+    try:
+        import winreg
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _PLACES_KEY) as key:
+            winreg.SetValueEx(key, name, 0, winreg.REG_BINARY, bytes(window.saveGeometry()))
+    except OSError:
+        pass
 
 
 def _frosting() -> _Frosting:
@@ -2012,8 +2217,8 @@ def _paint_clear(window: QWidget, event) -> None:
     _paint_rim_lens(painter, window)            # the rim first, then the tint over all of it
     alpha = _clear_tint(window)
     tint = QLinearGradient(r.topLeft(), r.bottomLeft())
-    tint.setColorAt(0.0, QColor(46, 43, 54, alpha) if dark else QColor(255, 255, 255, alpha))
-    tint.setColorAt(1.0, QColor(20, 18, 26, alpha) if dark else QColor(232, 232, 238, alpha))
+    tint.setColorAt(0.0, walled(QColor(46, 43, 54, alpha) if dark else QColor(255, 255, 255, alpha)))
+    tint.setColorAt(1.0, walled(QColor(20, 18, 26, alpha) if dark else QColor(232, 232, 238, alpha)))
     painter.fillRect(r, tint)
     _paint_framed_rim(painter, window)
     painter.end()
@@ -2056,7 +2261,7 @@ def _paint_frosted(painter, rect, radius: float, window: QWidget, lens: QPixmap)
     painter.drawPixmap(QRectF(0, 0, lens.width() / dpr, lens.height() / dpr), lens, QRectF(lens.rect()))
     painter.setClipping(False)
     alpha = _frost_tint(window)
-    painter.fillPath(path, QColor(0, 0, 0, alpha) if dark else QColor(255, 255, 255, alpha))
+    painter.fillPath(path, walled(QColor(0, 0, 0, alpha) if dark else QColor(255, 255, 255, alpha)))
     painter.setPen(QPen(QColor(255, 255, 255, 26) if dark else QColor(0, 0, 0, 22), 1))
     painter.setBrush(Qt.NoBrush)
     painter.drawPath(path)
@@ -2101,8 +2306,8 @@ def _paint_liquid(painter, rect, window: QWidget, lens: QPixmap) -> None:
     # on dark), so the glass looks lit from above.
     alpha = _liquid_tint(window)
     tint = QLinearGradient(r.topLeft(), r.bottomLeft())
-    tint.setColorAt(0.0, QColor(62, 58, 70, alpha) if dark else QColor(255, 255, 255, alpha))
-    tint.setColorAt(1.0, QColor(12, 10, 16, alpha) if dark else QColor(178, 178, 184, alpha))
+    tint.setColorAt(0.0, walled(QColor(62, 58, 70, alpha) if dark else QColor(255, 255, 255, alpha)))
+    tint.setColorAt(1.0, walled(QColor(12, 10, 16, alpha) if dark else QColor(178, 178, 184, alpha)))
     painter.fillPath(path, tint)
     shade = QLinearGradient(r.topLeft(), r.bottomLeft())
     shade.setColorAt(0.0, QColor(255, 255, 255, 22))
@@ -2240,19 +2445,29 @@ class _Light(QObject):
 
     def _paint(self, obj, event) -> bool:
         state = getattr(obj, _LIGHT, None)
-        if not state or (state['hover'] < 0.01 and state['press'] < 0.01):
+        if obj.property(_RENDERING) or not state or (state['hover'] < 0.01 and state['press'] < 0.01):
             return False
         liquid = _liquid_look()
         if not liquid and not _fades(obj):
             return False
-        try:
-            type(obj).paintEvent(obj, event)                # the widget as it paints itself, then the light
-        except (AttributeError, RuntimeError, TypeError):
-            return False
-        if not liquid:
-            return _paint_fade(obj, state)
-        dark = is_dark()
+        sink = _sink(obj, state)
+        if sink is None:
+            try:
+                type(obj).paintEvent(obj, event)            # the widget as it paints itself, then the light
+            except (AttributeError, RuntimeError, TypeError):
+                return False
         painter = QPainter(obj)
+        if sink is not None:                                # pressed: the button as it paints itself, a touch smaller
+            scale, image = sink
+            centre = QPointF(obj.width() / 2, obj.height() / 2)
+            painter.translate(centre)
+            painter.scale(scale, scale)
+            painter.translate(-centre)
+            painter.setRenderHint(QPainter.SmoothPixmapTransform)
+            painter.drawPixmap(0, 0, image)
+        if not liquid:
+            return _paint_fade(obj, state, painter)
+        dark = is_dark()
         painter.setRenderHint(QPainter.Antialiasing)
         r = QRectF(obj.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         radius = getattr(obj, '_suite_light_radius', None)
@@ -2279,10 +2494,32 @@ def _fades(obj) -> bool:
     return isinstance(obj, (QPushButton, QToolButton))
 
 
-def _paint_fade(obj, state: dict) -> bool:
+_RENDERING = '_suite_rendering'     # a button drawing itself into a picture, for _sink
+PRESS_SINK = 3.0                    # px a pressed button shrinks by, at most, along its longer side
+
+
+def _sink(obj, state: dict) -> tuple[float, QPixmap] | None:
+    """A pressed button, drawn as it paints itself into a picture, and how far to shrink it: it
+    gives under the finger. None when it isn't pressed (or animations are off)."""
+    press = state['press']
+    if press < 0.01 or not motion_on() or not isinstance(obj, (QPushButton, QToolButton)) \
+            or obj.width() < 8 or obj.height() < 8:
+        return None
+    ratio = obj.devicePixelRatioF()
+    image = QPixmap(obj.size() * ratio)
+    image.setDevicePixelRatio(ratio)
+    image.fill(Qt.transparent)
+    obj.setProperty(_RENDERING, True)
+    try:
+        obj.render(image, QPoint(), QRegion(), QWidget.RenderFlag.DrawChildren)
+    finally:
+        obj.setProperty(_RENDERING, False)
+    return 1 - press * min(0.04, PRESS_SINK * 2 / max(obj.width(), obj.height())), image
+
+
+def _paint_fade(obj, state: dict, painter: QPainter) -> bool:
     """The Frosted look's hover and press, over a button as it painted itself: a soft lightening
     under the pointer, a shade as it is pressed."""
-    painter = QPainter(obj)
     painter.setRenderHint(QPainter.Antialiasing)
     r = QRectF(obj.rect()).adjusted(1, 1, -1, -1)
     radius = getattr(obj, '_suite_light_radius', None)
@@ -2349,7 +2586,7 @@ def stop_animation(animation) -> None:
 
 # --------------------------------------------------------------------------- smooth scrolling
 
-SCROLL_MS = 220           # a wheel notch's scroll glides this long (the next one picks it up from where it is)
+SCROLL_MS = STEADY           # a wheel notch's scroll glides this long (the next one picks it up from where it is)
 
 
 class _Wheels(QObject):
@@ -2442,6 +2679,105 @@ def _wheels() -> _Wheels:
     return _wheels_filter
 
 
+class _Ring(QWidget):
+    """A pink ring round the part the keyboard has reached: drawn over the window, letting the
+    mouse through."""
+
+    GAP = 3
+
+    def __init__(self, window: QWidget):
+        super().__init__(window)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WA_NoSystemBackground)
+        self.radius = 8.0
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor(ink()), 2))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), self.radius, self.radius)
+        painter.end()
+
+
+class _Focus(QObject):
+    """Where Tab (or a shortcut) moves the keyboard, a ring shows it; a click takes it away again,
+    so the mouse never leaves rings behind - what a browser's :focus-visible does. Qt's own focus
+    marks were all but invisible on glass, and some parts had none."""
+
+    def __init__(self):
+        super().__init__()
+        self._ring: _Ring | None = None
+        self._on: QWidget | None = None
+
+    def eventFilter(self, obj, event):
+        kind = event.type()
+        if kind == QEvent.FocusIn and isinstance(obj, QWidget) and not obj.isWindow():
+            if event.reason() in (Qt.TabFocusReason, Qt.BacktabFocusReason, Qt.ShortcutFocusReason):
+                self._show(obj)
+            else:
+                self._hide()
+        elif kind in (QEvent.MouseButtonPress, QEvent.WindowDeactivate) or \
+                (kind == QEvent.FocusOut and obj is self._on):
+            self._hide()
+        elif kind in (QEvent.Move, QEvent.Resize) and obj is self._on:
+            self._place()
+        return False
+
+    def _show(self, widget: QWidget) -> None:
+        parent = widget.parentWidget()
+        if isinstance(parent, (QAbstractSpinBox, QComboBox)):     # its box, not the line inside it
+            widget = parent
+        window = widget.window()
+        if self._ring is None or self._ring.parentWidget() is not window:
+            self._hide()
+            self._ring = _Ring(window)
+        if self._on is not None:
+            self._on.removeEventFilter(self)
+        self._on = widget
+        widget.installEventFilter(self)
+        self._place()
+
+    def _place(self) -> None:
+        ring, widget = self._ring, self._on
+        if ring is None or widget is None or not widget.isVisible():
+            self._hide()
+            return
+        top_left = widget.mapTo(ring.parentWidget(), QPoint(0, 0))
+        gap = _Ring.GAP
+        ring.setGeometry(top_left.x() - gap, top_left.y() - gap, widget.width() + 2 * gap, widget.height() + 2 * gap)
+        round_ = getattr(widget, '_suite_light_radius', None)
+        ring.radius = (min(widget.height() / 2, 10.0) if round_ is None else round_) + gap
+        ring.raise_()
+        ring.show()
+        ring.update()
+
+    def _hide(self) -> None:
+        if self._on is not None:
+            try:
+                self._on.removeEventFilter(self)
+            except RuntimeError:
+                pass
+            self._on = None
+        if self._ring is not None:
+            try:
+                self._ring.hide()
+                self._ring.deleteLater()
+            except RuntimeError:
+                pass
+            self._ring = None
+
+
+_focus_filter = None
+
+
+def _focus() -> _Focus:
+    global _focus_filter
+    if _focus_filter is None:
+        _focus_filter = _Focus()
+    return _focus_filter
+
+
 def _ui_effects() -> None:
     """Qt's own animations - menus and drop-down lists sliding open, tooltips fading - with the
     suite's: on while Animations is on."""
@@ -2451,7 +2787,7 @@ def _ui_effects() -> None:
         QApplication.setEffectEnabled(effect, on)
 
 
-def fade_in(widget: QWidget, ms: int = 170, window: bool = False) -> None:
+def fade_in(widget: QWidget, ms: int = QUICK, window: bool = False) -> None:
     """Fade a widget in: a window by its opacity, a page inside one by an opacity effect (left
     alone if it holds video or OpenGL, which such effects break). Not when animations are off."""
     if not motion_on():
@@ -2486,7 +2822,7 @@ def _open(window: QWidget) -> None:
         return
     window.setProperty(_UNFOLD, 0.0)
     unfold = QVariantAnimation(window)
-    unfold.setDuration(380)
+    unfold.setDuration(GENTLE)
     unfold.setStartValue(0.0)
     unfold.setEndValue(1.0)
     unfold.setEasingCurve(QEasingCurve.OutCubic)
@@ -2516,7 +2852,7 @@ def _glide(window: QWidget, start: QPoint, end: QPoint) -> None:
 
     place(start)
     glide = QVariantAnimation(window)
-    glide.setDuration(380)
+    glide.setDuration(GENTLE)
     glide.setStartValue(QPointF(start))
     glide.setEndValue(QPointF(end))
     glide.setEasingCurve(QEasingCurve.OutCubic)
@@ -2567,7 +2903,7 @@ def _page_in(page: QWidget) -> None:
     if _liquid_look():
         end = page.pos()
         slide = QPropertyAnimation(page, b'pos', page)
-        slide.setDuration(260)
+        slide.setDuration(STEADY)
         slide.setStartValue(end + QPoint(18, 0))
         slide.setEndValue(end)
         slide.setEasingCurve(QEasingCurve.OutCubic)
@@ -2585,10 +2921,10 @@ def _tick(box: QCheckBox, on: bool) -> None:
     if _liquid_look():
         spring = QEasingCurve(QEasingCurve.OutBack)
         spring.setOvershoot(1.3)
-        animation.setDuration(320)
+        animation.setDuration(GENTLE)
         animation.setEasingCurve(spring)
     else:
-        animation.setDuration(180)
+        animation.setDuration(QUICK)
         animation.setEasingCurve(QEasingCurve.OutCubic)
 
     def step(value):
@@ -2638,7 +2974,7 @@ _STAGGER_GAP = 45       # ms between one part's rising and the next's
 _STAGGER_MOST = 8       # parts after this many come in with the last
 
 
-def stagger_in(widgets, by: int = 10, ms: int = 300) -> None:
+def stagger_in(widgets, by: int = 12, ms: int = GENTLE) -> None:
     """Parts of a window coming in one after another: each fades in as it rises the last few
     pixels into place. Not when animations are off, nor for a part with video or an effect of
     its own."""
@@ -2694,7 +3030,7 @@ def _settle_in(window: QWidget) -> None:
         stagger_in(parts)
 
 
-def fade_out(window: QWidget, then=None, ms: int = 160) -> QPropertyAnimation | None:
+def fade_out(window: QWidget, then=None, ms: int = QUICK) -> QPropertyAnimation | None:
     """Close a frameless window softly: it fades away, then then() (else it hides). At once when
     animations are off. Returns the fading, which stopping (as the window is wanted again) leaves
     the window up - its opacity is then for the caller to put back - or None."""
@@ -2747,7 +3083,7 @@ def _glide_progress(bar: QProgressBar) -> None:
             return
         put(start)
         glide = QVariantAnimation(bar)
-        glide.setDuration(320)
+        glide.setDuration(GENTLE)
         glide.setStartValue(float(start))
         glide.setEndValue(float(value))
         glide.setEasingCurve(QEasingCurve.OutCubic)

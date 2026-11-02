@@ -18,8 +18,8 @@ media.REFUSED_HINT = 'Settings › Videos and photos › "Use cookies from" (Fir
 
 
 class SettingsDialog(QDialog):
-    PAGES = [('\ue896', 'Downloads'), ('\ue716', 'BitTorrent'), ('\ue714', 'Videos and photos'),
-             ('\ue80f', 'General'), ('\ue90f', 'Advanced')]
+    PAGES = [('download', 'Downloads'), ('magnet', 'BitTorrent'), ('video', 'Videos and photos'),
+             ('gear', 'General'), ('wrench', 'Advanced')]
 
     def __init__(self, settings, parent=None):
         super().__init__(parent)

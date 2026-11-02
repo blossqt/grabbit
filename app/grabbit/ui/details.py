@@ -19,7 +19,7 @@ class DetailsPanel(QTabWidget):
         self._fields = {}
 
         self.addTab(self._build_general(), 'General')
-        self.none = suitesettings.Empty('\ue946', 'No download chosen', 'Choose one in the list to see its details.',
+        self.none = suitesettings.Empty('info', 'No download chosen', 'Choose one in the list to see its details.',
                                         self)       # over the tabs, until one is chosen
         self.files_tree = QTreeWidget()
         self.files_tree.setHeaderLabels(['File', 'Size', 'Done', 'Progress'])
@@ -49,7 +49,7 @@ class DetailsPanel(QTabWidget):
     def _build_general(self) -> QWidget:
         page = QWidget()
         layout = QHBoxLayout(page)
-        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(16)
 
         self.thumb = QLabel()

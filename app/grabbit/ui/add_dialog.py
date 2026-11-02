@@ -13,7 +13,7 @@ from .. import analyze as analyze_mod
 from .. import choices
 from ..torrentmeta import parse_torrent
 from ..util import extract_links, host_of, human_size, site_name
-from . import icons, preview, theme, thumbs
+from . import icons, preview, suitesettings, theme, thumbs
 from .framepicker import FramePicker
 from .gallery import GalleryGrid, PreviewDialog
 
@@ -61,7 +61,7 @@ class LinkCard(QFrame):
         self.setObjectName('Card')
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(12, 10, 12, 12)
+        outer.setContentsMargins(12, 12, 12, 12)
         outer.setSpacing(8)
 
         header = QHBoxLayout()
@@ -132,7 +132,8 @@ class LoadingCard(LinkCard):
         super().__init__(url, parent)
         self.title.setText(url)
         self.subtitle.setText('Looking at this link…')
-        self.thumb.setPixmap(icons.icon('link', icons.theme_color('dim'), 40).pixmap(40, 40))
+        self.thumb.hide()
+        self.body.addWidget(suitesettings.Shimmer(rows=1, row_height=64))     # where its formats will be
 
 
 class ErrorCard(LinkCard):
@@ -520,7 +521,7 @@ class AddDialog(QDialog):
         self.resize(880, 680)
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(10)
+        layout.setSpacing(12)
 
         prompt = QLabel('Paste links — videos, photo posts, torrent or magnet links, '
                         'or direct file links. One per line.')
@@ -538,8 +539,8 @@ class AddDialog(QDialog):
         self.scroll.setWidgetResizable(True)
         container = QWidget()
         self.card_layout = QVBoxLayout(container)
-        self.card_layout.setContentsMargins(0, 0, 6, 0)
-        self.card_layout.setSpacing(10)
+        self.card_layout.setContentsMargins(0, 0, 8, 0)
+        self.card_layout.setSpacing(12)
         self.card_layout.addStretch(1)
         self.scroll.setWidget(container)
         layout.addWidget(self.scroll, 1)

@@ -41,7 +41,7 @@ class FramePicker(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 2, 0, 0)
-        layout.setSpacing(6)
+        layout.setSpacing(8)
         self.picture = QLabel('Finding the video…')
         self.picture.setFixedSize(PREVIEW_W, PREVIEW_H)
         self.picture.setAlignment(Qt.AlignCenter)
@@ -50,7 +50,7 @@ class FramePicker(QWidget):
         layout.addWidget(self.picture, 0, Qt.AlignLeft)
 
         row = QHBoxLayout()
-        row.setSpacing(6)
+        row.setSpacing(8)
         self.back = QToolButton()
         self.back.setText('‹')
         self.back.setToolTip('The frame before')
