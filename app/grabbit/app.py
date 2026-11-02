@@ -191,7 +191,7 @@ def main(argv=None) -> int:
         QTimer.singleShot(400, lambda: window.handle_links(arguments))
     threading.Thread(target=load_ytdlp, name='grabbit-load-ytdlp', daemon=True).start()
 
-    return app.exec()
+    return theme.leave(app.exec())
 
 
 def load_ytdlp():

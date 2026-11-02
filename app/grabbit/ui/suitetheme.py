@@ -78,7 +78,7 @@ __all__ = ['ACCENT', 'ACCENT_HOVER', 'ON_ACCENT', 'ROSE', 'SuiteStyle', 'install
            'motion_on', 'motion_chosen', 'set_motion', 'MODES', 'mode', 'set_mode', 'app_mode', 'restyle',
            'on_restyle', 'light_up', 'BACKDROP_OPACITY', 'fade_out', 'stagger_in', 'GAME_DOWNLOADS',
            'game_quiet_chosen', 'set_game_quiet', 'game_downloads', 'set_game_downloads', 'game_in_front',
-           'quiet_now', 'on_game', 'frame_interval', 'animate', 'stop_animation', 'walled', 'closes_on_escape', 'ESCAPE_CLOSES', 'TYPE', 'SPACE', 'QUICK', 'STEADY', 'GENTLE', 'text']
+           'quiet_now', 'on_game', 'frame_interval', 'animate', 'stop_animation', 'leave', 'walled', 'closes_on_escape', 'ESCAPE_CLOSES', 'TYPE', 'SPACE', 'QUICK', 'STEADY', 'GENTLE', 'text']
 
 ACCENT = '#ffd1dc'         # the suite's blossom pink: buttons, ticks, highlights
 ACCENT_HOVER = '#ffe0e8'
@@ -296,6 +296,26 @@ def install(app) -> None:
     _wall_watch.timeout.connect(_look_at_wall)
     _wall_watch.start()
     QTimer.singleShot(_WARM_AFTER + 500, _look_at_wall)
+
+
+def leave(code: int) -> int:
+    """End the app's process once its event loop is over: settings waiting to be written are
+    written, output flushed, and then the process ends there, before Python and PySide take Qt,
+    COM and Windows' text readers apart. That teardown hung Hanami 0.1.49 with a core busy, and
+    crashed Dropshift 0.1.27 inside Windows' OCR module (2026-11-01). TerminateProcess, not
+    os._exit: that runs the DLLs' own teardown, and crashed with Qt still alive."""
+    app = QApplication.instance()
+    if app is not None:
+        app.processEvents()                 # QSettings write themselves on a posted event
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream and stream.flush()
+        except (OSError, ValueError):
+            pass
+    kernel32 = ctypes.windll.kernel32
+    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+    kernel32.TerminateProcess(ctypes.c_void_p(kernel32.GetCurrentProcess()), code)
+    return code
 
 
 _WARM_AFTER = 3000      # ms after an app starts: what Qt sets up for the first window it draws, done unseen
@@ -2413,6 +2433,7 @@ class _Light(QObject):
             self._to(obj, 'hover', 0.0, 380)
         elif kind == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
             self._state(obj)['at'] = event.position()
+            _sink(obj, True)
             self._to(obj, 'press', 1.0, 110)
         elif kind == QEvent.MouseButtonRelease:
             self._to(obj, 'press', 0.0, 480)
@@ -2439,32 +2460,24 @@ class _Light(QObject):
             state[which] = float(v)
             obj.update()
         animation.valueChanged.connect(step)
+        if which == 'press' and value == 0.0:
+            animation.finished.connect(lambda: _sink(obj, False))      # eased back: drawn as it is again
         state['moving'][which] = animation
         _keep(animation)
         animation.start()
 
     def _paint(self, obj, event) -> bool:
         state = getattr(obj, _LIGHT, None)
-        if obj.property(_RENDERING) or not state or (state['hover'] < 0.01 and state['press'] < 0.01):
+        if not state or (state['hover'] < 0.01 and state['press'] < 0.01):
             return False
         liquid = _liquid_look()
         if not liquid and not _fades(obj):
             return False
-        sink = _sink(obj, state)
-        if sink is None:
-            try:
-                type(obj).paintEvent(obj, event)            # the widget as it paints itself, then the light
-            except (AttributeError, RuntimeError, TypeError):
-                return False
+        try:
+            type(obj).paintEvent(obj, event)                # the widget as it paints itself, then the light
+        except (AttributeError, RuntimeError, TypeError):
+            return False
         painter = QPainter(obj)
-        if sink is not None:                                # pressed: the button as it paints itself, a touch smaller
-            scale, image = sink
-            centre = QPointF(obj.width() / 2, obj.height() / 2)
-            painter.translate(centre)
-            painter.scale(scale, scale)
-            painter.translate(-centre)
-            painter.setRenderHint(QPainter.SmoothPixmapTransform)
-            painter.drawPixmap(0, 0, image)
         if not liquid:
             return _paint_fade(obj, state, painter)
         dark = is_dark()
@@ -2494,27 +2507,52 @@ def _fades(obj) -> bool:
     return isinstance(obj, (QPushButton, QToolButton))
 
 
-_RENDERING = '_suite_rendering'     # a button drawing itself into a picture, for _sink
 PRESS_SINK = 3.0                    # px a pressed button shrinks by, at most, along its longer side
 
 
-def _sink(obj, state: dict) -> tuple[float, QPixmap] | None:
-    """A pressed button, drawn as it paints itself into a picture, and how far to shrink it: it
-    gives under the finger. None when it isn't pressed (or animations are off)."""
-    press = state['press']
-    if press < 0.01 or not motion_on() or not isinstance(obj, (QPushButton, QToolButton)) \
-            or obj.width() < 8 or obj.height() < 8:
-        return None
-    ratio = obj.devicePixelRatioF()
-    image = QPixmap(obj.size() * ratio)
-    image.setDevicePixelRatio(ratio)
-    image.fill(Qt.transparent)
-    obj.setProperty(_RENDERING, True)
-    try:
-        obj.render(image, QPoint(), QRegion(), QWidget.RenderFlag.DrawChildren)
-    finally:
-        obj.setProperty(_RENDERING, False)
-    return 1 - press * min(0.04, PRESS_SINK * 2 / max(obj.width(), obj.height())), image
+class _Sink(QGraphicsEffect):
+    """A pressed button gives under the finger: drawn as it painted itself (its light too), a touch
+    smaller. Set only while it is pressed or easing back (_Light), and taken off after. Until
+    0.1.53 the button drew itself into a picture from inside its own paint, which Qt can't do:
+    pressed buttons lost their text, or showed a square behind the capsule."""
+
+    def __init__(self, button: QWidget):
+        super().__init__(button)
+        self._button = button
+
+    def scale(self) -> float:
+        state = getattr(self._button, _LIGHT, None) or {}
+        b = self._button
+        return 1 - state.get('press', 0.0) * min(0.04, PRESS_SINK * 2 / max(b.width(), b.height(), 1))
+
+    def draw(self, painter):
+        scale = self.scale()
+        if scale > 0.999:
+            self.drawSource(painter)
+            return
+        image = self.sourcePixmap(Qt.LogicalCoordinates, QPoint(), QGraphicsEffect.NoPad)
+        if image.isNull():
+            return
+        ratio = image.devicePixelRatio() or 1.0
+        centre = QPointF(image.width() / ratio / 2, image.height() / ratio / 2)
+        painter.save()
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        painter.translate(centre)
+        painter.scale(scale, scale)
+        painter.translate(-centre)
+        painter.drawPixmap(QPointF(0, 0), image)
+        painter.restore()
+
+
+def _sink(obj, on: bool) -> None:
+    """Put a button's _Sink on as it is pressed, and take it off once it has eased back."""
+    if not isinstance(obj, (QPushButton, QToolButton)):
+        return
+    effect = obj.graphicsEffect()
+    if on and effect is None and motion_on():
+        obj.setGraphicsEffect(_Sink(obj))
+    elif not on and isinstance(effect, _Sink):
+        obj.setGraphicsEffect(None)
 
 
 def _paint_fade(obj, state: dict, painter: QPainter) -> bool:
