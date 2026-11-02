@@ -1,12 +1,12 @@
 """Thumbnail grid for picking carousel slides / playlist items, and a preview window."""
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
                                QPushButton, QSizePolicy, QStyle, QStyledItemDelegate, QVBoxLayout)
 
 from ..util import human_duration, human_size
-from . import theme, thumbs
+from . import icons, theme, thumbs
 
 ITEM_ROLE = Qt.UserRole + 1
 PIXMAP_ROLE = Qt.UserRole + 2
@@ -49,12 +49,8 @@ class _TileDelegate(QStyledItemDelegate):
             if has_thumbnail:
                 painter.drawText(option.rect, Qt.AlignCenter, 'loading…')
             else:
-                glyph = {'audio': '♪', 'video': '▶'}.get(getattr(item, 'kind', ''), '□')
-                glyph_font = QFont(option.font)
-                glyph_font.setPointSizeF(option.font.pointSizeF() + 16)
-                painter.setFont(glyph_font)
-                painter.drawText(option.rect, Qt.AlignCenter, glyph)
-                painter.setFont(option.font)
+                glyph = {'audio': 'music', 'video': 'video'}.get(getattr(item, 'kind', ''), 'image')
+                icons.suiteicons.draw(painter, QRectF(option.rect), glyph, painter.pen().color(), 32)
 
         if not checked:  # dim what will not be downloaded
             painter.fillPath(path, QColor(0, 0, 0, 110))
@@ -68,23 +64,24 @@ class _TileDelegate(QStyledItemDelegate):
                 label = f'{item.width}×{item.height}'
             elif item.filesize:
                 label = human_size(item.filesize)
-            if item.kind == 'audio':
-                label = ('♪ ' + label).strip()
-            elif item.kind == 'video':
-                label = ('▶ ' + label).strip()
         if label:
             font = QFont(option.font)
             font.setPointSizeF(max(7.0, font.pointSizeF() - 1.0))
             painter.setFont(font)
             metrics = painter.fontMetrics()
-            width = metrics.horizontalAdvance(label) + 10
+            kind = {'audio': 'music', 'video': 'play'}.get(item.kind)
+            mark = 12 if kind else 0                # the kind's icon before the words
+            width = metrics.horizontalAdvance(label) + 10 + (mark + 4 if mark else 0)
             badge = QRectF(rect.left() + 6, rect.bottom() - metrics.height() - 10,
                            width, metrics.height() + 4)
             painter.setPen(Qt.NoPen)
             painter.setBrush(QColor(0, 0, 0, 165))
             painter.drawRoundedRect(badge, 5, 5)
+            if kind:
+                icons.suiteicons.draw(painter, QRectF(badge.left() + 5, badge.top(), mark, badge.height()),
+                                      kind, '#ffffff', mark)
             painter.setPen(QPen(QColor('#ffffff')))
-            painter.drawText(badge, Qt.AlignCenter, label)
+            painter.drawText(badge.adjusted(mark + 4 if mark else 0, 0, 0, 0), Qt.AlignCenter, label)
 
         # index pill
         number = str(index.row() + 1)
@@ -249,8 +246,11 @@ class PreviewDialog(QDialog):
         layout.addWidget(self.caption)
 
         bar = QHBoxLayout()
-        self.previous_button = QPushButton('←  Previous')
-        self.next_button = QPushButton('Next  →')
+        self.previous_button = QPushButton('Previous')
+        self.previous_button.setIcon(icons.icon('back', size=16))
+        self.next_button = QPushButton('Next')
+        self.next_button.setIcon(icons.icon('next', size=16))
+        self.next_button.setLayoutDirection(Qt.RightToLeft)     # its arrow after the word
         self.include_button = QPushButton()
         self.include_button.setCheckable(True)
         close_button = QPushButton('Close')
@@ -280,7 +280,8 @@ class PreviewDialog(QDialog):
 
     def _update_include_label(self):
         included = self.checked[self.index] if self.index < len(self.checked) else False
-        self.include_button.setText('✓  Included' if included else 'Include this item')
+        self.include_button.setText('Included' if included else 'Include this item')
+        self.include_button.setIcon(icons.icon('check', size=16) if included else QIcon())
 
     def _show_current(self):
         item = self.items[self.index]
