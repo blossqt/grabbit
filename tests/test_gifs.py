@@ -52,7 +52,11 @@ GIF = make_gif()
 
 class Site(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path != '/funny.gif':
+        # /guarded.gif is served only to its own site's pages, as Tenor's are.
+        if self.path == '/guarded.gif' and self.headers.get('Referer') != 'https://tenor.example/':
+            self.send_error(403)
+            return
+        if self.path not in ('/funny.gif', '/guarded.gif'):
             self.send_error(404)
             return
         self.send_response(200)
@@ -235,6 +239,67 @@ class CardTests(WithSite):
                                  content_type='application/zip')
         self.assertIsInstance(add_dialog.AddDialog._card_for(dialog, gif), add_dialog.GifCard)
         self.assertNotIsInstance(add_dialog.AddDialog._card_for(dialog, other), add_dialog.GifCard)
+
+
+class PageOfOneGifTests(WithSite):
+    """A page whose one picture is a GIF (Tenor's): the GIF's card, not a gallery's."""
+
+    def analysis(self, *items):
+        from grabbit import analyze
+        from grabbit.mediaitems import ProbeResult
+        return analyze.Analysis(url='https://tenor.example/view/funny-gif-1', kind=analyze.KIND_GALLERY,
+                                probe=ProbeResult(url='https://tenor.example/view/funny-gif-1',
+                                                  kind='gallery', site='Tenor', title='Funny',
+                                                  items=list(items)))
+
+    def item(self, url=None, ext='gif'):
+        from grabbit.mediaitems import MediaItem
+        return MediaItem(kind='image', ext=ext, filename='funny.gif', width=40, height=30,
+                         direct_url=url or self.url.replace('funny', 'guarded'),
+                         headers={'Referer': 'https://tenor.example/'})
+
+    def card_for(self, analysis):
+        from grabbit.ui import add_dialog
+        dialog = add_dialog.AddDialog.__new__(add_dialog.AddDialog)
+        dialog.settings = SimpleNamespace(frame_format='png', video_quality='best',
+                                          video_container='mp4')
+        return add_dialog.AddDialog._card_for(dialog, analysis)
+
+    def test_its_frames(self):
+        from grabbit.ui.add_dialog import GifCard
+        analysis = self.analysis(self.item())
+        card = self.card_for(analysis)
+        self.assertIsInstance(card, GifCard)
+        self.assertEqual(card.url, analysis.url, "the card stays the page's, for removing it")
+        self.assertEqual(card.title.text(), 'Funny')
+        card.save.setCurrentIndex(card.save.findData('frame'))
+        wait(self, lambda: len(card.picker.shown) == 3 or not card.picker.picture.text().startswith('Reading'))
+        self.assertEqual(len(card.picker.shown), 3, card.picker.picture.text())
+        card.picker.step(1)
+        self.assertEqual(card.requests(), [{'type': 'gif_frames', 'url': self.item().direct_url,
+                                            'title': 'funny', 'which': 1, 'frame_format': 'png',
+                                            'headers': {'Referer': 'https://tenor.example/'}}])
+
+    def test_the_gif_itself_as_before(self):
+        analysis = self.analysis(self.item())
+        request = self.card_for(analysis).requests()[0]
+        self.assertEqual(request['type'], 'image')
+        self.assertIs(request['probe'], analysis.probe)
+
+    def test_the_site_sees_its_own_page(self):
+        from grabbit.tasks import State
+        engine = EngineTests.engine(self)
+        task = engine.add_gif_frames(self.item().direct_url, gifs.ALL, 'png', self.folder, 'funny',
+                                     {'Referer': 'https://tenor.example/'})
+        wait(self, lambda: task.state in (State.COMPLETED, State.ERROR))
+        self.assertEqual(task.state, State.COMPLETED, task.error)
+
+    def test_still_a_gallery(self):
+        from grabbit.ui.add_dialog import GalleryCard
+        for analysis in (self.analysis(self.item(), self.item()),                  # two of them
+                         self.analysis(self.item(self.url.replace('.gif', '.jpg'), 'jpg'))):
+            with self.subTest(len(analysis.probe.items)):
+                self.assertIsInstance(self.card_for(analysis), GalleryCard)
 
 
 if __name__ == '__main__':

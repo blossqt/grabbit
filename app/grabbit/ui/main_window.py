@@ -518,7 +518,8 @@ class MainWindow(QMainWindow):
                 elif kind == 'gif_frames':
                     self.engine.add_gif_frames(request['url'], request['which'],
                                                request.get('frame_format', 'png'), save_dir,
-                                               request.get('title', ''), start=start)
+                                               request.get('title', ''), request.get('headers'),
+                                               start=start)
                 elif kind == 'magnet':
                     self.engine.add_magnet(request['url'], save_dir, start)
                 elif kind == 'torrent':

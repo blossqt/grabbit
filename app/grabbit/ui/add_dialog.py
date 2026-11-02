@@ -1,6 +1,7 @@
 """The 'paste a link' dialog: analyses links and shows what will be downloaded."""
 
 import os
+import urllib.parse
 
 from PySide6.QtCore import QObject, QRunnable, QSize, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QPixmap
@@ -193,14 +194,30 @@ class FileCard(LinkCard):
 
 class GifCard(FileCard):
     """A GIF: saved whole, as the one frame chosen, or as every frame
-    (grabbit.gifs)."""
+    (grabbit.gifs). Either a link to the GIF itself, or a page whose one
+    picture is a GIF (Tenor's, say): then `item` is that picture, and the
+    card stays the page's."""
 
     SAVES = [('gif', 'The GIF'), ('frame', 'One frame'), ('all', 'Every frame')]
 
-    def __init__(self, analysis, settings, parent=None):
+    def __init__(self, analysis, settings, item=None, parent=None):
+        self.item = item
+        self.gif_url = item.direct_url if item else analysis.url
+        self.headers = dict(item.headers or {}) if item else {}
+        if item:
+            page = analysis
+            analysis = analyze_mod.Analysis(
+                url=page.url, filename=item.filename or analyze_mod.name_from_url(item.direct_url),
+                content_type='image/gif', filesize=item.filesize or 0)
         super().__init__(analysis, parent)
         self.settings = settings
-        self.set_thumbnail(analysis.url)
+        if item:
+            self.probe = page.probe
+            self.title.setText(page.probe.title or self.analysis.filename)
+            size = f'{item.width}×{item.height}' if item.width and item.height else ''
+            self.subtitle.setText('   ·   '.join(b for b in ('GIF', size, page.probe.site
+                                                              or site_name(page.url)) if b))
+        self.set_thumbnail(item.thumbnail if item and item.thumbnail else self.gif_url, self.headers)
         row = QHBoxLayout()
         self.save = MediaCard._menu(row, 'Save')
         self.format = MediaCard._menu(row, 'Format')
@@ -230,7 +247,7 @@ class GifCard(FileCard):
         self.format.setEnabled(save != 'gif')
         self.name_label.setText('Save as' if save == 'gif' else 'Name')
         if save == 'frame' and self.picker is None:
-            self.picker = GifPicker(self.url)
+            self.picker = GifPicker(self.gif_url, self.headers)
             self.body.addWidget(self.picker)
         if self.picker is not None:
             self.picker.setVisible(save == 'frame')
@@ -247,10 +264,15 @@ class GifCard(FileCard):
     def requests(self):
         save = self.save.currentData()
         if save == 'gif':
+            if self.item:                           # as the page's picture always was
+                return [{'type': 'image', 'item': self.item, 'probe': self.probe}]
             return super().requests()
-        return [{'type': 'gif_frames', 'url': self.url, 'title': self.stem,
-                 'which': gifs.ALL if save == 'all' else (self.picker.at if self.picker else 0),
-                 'frame_format': self.format.currentData()}]
+        request = {'type': 'gif_frames', 'url': self.gif_url, 'title': self.stem,
+                   'which': gifs.ALL if save == 'all' else (self.picker.at if self.picker else 0),
+                   'frame_format': self.format.currentData()}
+        if self.headers:
+            request['headers'] = self.headers
+        return [request]
 
 
 class MagnetCard(LinkCard):
@@ -716,6 +738,12 @@ class AddDialog(QDialog):
         if kind == analyze_mod.KIND_MEDIA:
             return MediaCard(analysis, self.settings)
         if kind in (analyze_mod.KIND_GALLERY, analyze_mod.KIND_PLAYLIST):
+            items = analysis.probe.items if analysis.probe else []
+            if (kind == analyze_mod.KIND_GALLERY and len(items) == 1 and items[0].kind == 'image'
+                    and items[0].direct_url and gifs.is_gif(
+                        'image/gif' if (items[0].ext or '').lower() == 'gif' else '',
+                        urllib.parse.urlparse(items[0].direct_url).path)):
+                return GifCard(analysis, self.settings, item=items[0])     # a page of one GIF
             return GalleryCard(analysis, self.settings)
         if kind == analyze_mod.KIND_FILE:
             if gifs.is_gif(analysis.content_type, analysis.filename):

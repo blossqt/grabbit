@@ -41,17 +41,18 @@ def _shown(image: QImage, scale: float) -> bytes:
     return bytes(data)
 
 
-def read_frames(url: str, scale: float = 1.0) -> list:
+def read_frames(url: str, scale: float = 1.0, headers: dict | None = None) -> list:
     """Every frame of the GIF at `url`, ready to look at."""
-    return [_shown(image, scale) for image in gifs.frames(gifs.fetch(url))]
+    return [_shown(image, scale) for image in gifs.frames(gifs.fetch(url, headers))]
 
 
 class GifPicker(QWidget):
     """The frame, the slider, and which frame of how many."""
 
-    def __init__(self, url: str, parent=None):
+    def __init__(self, url: str, headers: dict | None = None, parent=None):
         super().__init__(parent)
         self.url = url
+        self.headers = dict(headers or {})
         self.shown: list = []          # each frame as a JPEG to look at
         self._asked = False
         self._signals = _Signals()
@@ -121,11 +122,11 @@ class GifPicker(QWidget):
         if self._asked:
             return
         self._asked = True
-        signals, url, scale = self._signals, self.url, self.devicePixelRatioF()
+        signals, url, headers, scale = self._signals, self.url, self.headers, self.devicePixelRatioF()
 
         def work():
             try:
-                signals.read.emit(read_frames(url, scale))
+                signals.read.emit(read_frames(url, scale, headers))
             except gifs.GifError as exc:
                 signals.failed.emit(str(exc))
             except Exception as exc:                  # never silently
