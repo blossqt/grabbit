@@ -611,17 +611,17 @@ class AddDialog(QDialog):
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(16)
 
-        prompt = theme.Label('Paste links — videos, photo posts, torrent or magnet links, '
-                        'or direct file links. One per line.')
-        prompt.setWordWrap(True)
+        prompt = theme.Label('Links, one per line')
         layout.addWidget(prompt)
 
+        # The box has the room until there are cards to show, so no empty list needs a line
+        # saying what will appear in it (_show_cards).
         self.input = QPlainTextEdit()
         self.input.setPlaceholderText('https://www.youtube.com/watch?v=…\n'
-                                      'https://www.instagram.com/p/…\nmagnet:?xt=urn:btih:…')
-        self.input.setMaximumHeight(96)
+                                      'https://www.instagram.com/p/…\nmagnet:?xt=urn:btih:…\n'
+                                      'or a link to any file or .torrent')
         self.input.textChanged.connect(self._schedule_analysis)
-        layout.addWidget(self.input)
+        layout.addWidget(self.input, 1)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -632,11 +632,7 @@ class AddDialog(QDialog):
         self.card_layout.addStretch(1)
         self.scroll.setWidget(container)
         layout.addWidget(self.scroll, 1)
-
-        self.empty_label = theme.Label('Links you paste show up here with a preview.')
-        self.empty_label.setObjectName('Muted')
-        self.empty_label.setAlignment(Qt.AlignCenter)
-        self.card_layout.insertWidget(0, self.empty_label)
+        self._show_cards(False)
 
         folder_row = QHBoxLayout()
         folder_row.addWidget(theme.Label('Save to'))
@@ -710,8 +706,14 @@ class AddDialog(QDialog):
         card.removed.connect(lambda c=card: self._drop_card(c.url))
         card.changed.connect(self._update_state)
         self.card_layout.insertWidget(self.card_layout.count() - 1, card)
-        self.empty_label.setVisible(False)
+        self._show_cards(True)
         self._update_state()
+
+    def _show_cards(self, shown: bool) -> None:
+        """With cards, the box keeps four lines and the cards take the rest; without, the box does."""
+        self.scroll.setVisible(shown)
+        self.input.setMaximumHeight(96 if shown else 16777215)      # (QWIDGETSIZE_MAX)
+        self.layout().setStretchFactor(self.input, 0 if shown else 1)
 
     def _drop_card(self, url: str):
         card = self._cards.pop(url, None)
@@ -719,7 +721,7 @@ class AddDialog(QDialog):
             getattr(card, 'shutdown', lambda: None)()
             self.card_layout.removeWidget(card)
             card.deleteLater()
-        self.empty_label.setVisible(not self._cards)
+        self._show_cards(bool(self._cards))
         self._update_state()
 
     def _on_analyzed(self, url: str, analysis):

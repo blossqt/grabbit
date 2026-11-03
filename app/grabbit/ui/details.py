@@ -19,8 +19,7 @@ class DetailsPanel(QTabWidget):
         self._fields = {}
 
         self.addTab(self._build_general(), 'General')
-        self.none = suitesettings.Empty('info', 'No download chosen', 'Choose one in the list to see its details.',
-                                        self)       # over the tabs, until one is chosen
+        self.none = suitesettings.Empty('info', 'No download chosen', parent=self)    # over the tabs, until one is chosen
         self.files_tree = QTreeWidget()
         self.files_tree.setHeaderLabels(['File', 'Size', 'Done', 'Progress'])
         self.files_tree.setColumnWidth(0, 420)

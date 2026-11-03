@@ -834,7 +834,7 @@ class MainWindow(QMainWindow):
         if not self.model.rowCount():
             self.empty_label.set('download', 'No downloads yet', 'Paste a link (Ctrl+N) or drop a torrent file here.')
         else:
-            self.empty_label.set('filter', 'None here', 'Nothing in the list matches this filter.')
+            self.empty_label.set('filter', 'Nothing matches this filter')
         self.empty_label.setGeometry(self.view.viewport().rect())
         self.empty_label.show()
 
