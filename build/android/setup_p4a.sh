@@ -16,6 +16,14 @@ echo ">> host python: $(python3 --version)"
 if [ ! -d "$VENV" ]; then
   echo ">> creating $VENV"
   python3 -m venv "$VENV"
+elif ! "$VENV/bin/python" --version >/dev/null 2>&1; then
+  # A venv points at the Python that made it. Restored from the cache onto a
+  # runner with a newer one, it points at nothing, and activating it quietly
+  # falls through to the runner's own: p4a then fails, much later, as a "bad
+  # interpreter". Point it at this Python and keep what is installed in it.
+  echo ">> $VENV has lost its Python: pointing it at this one"
+  rm -f "$VENV"/bin/python "$VENV"/bin/python3*
+  python3 -m venv --upgrade "$VENV"
 fi
 # shellcheck disable=SC1091
 source "$VENV/bin/activate"
