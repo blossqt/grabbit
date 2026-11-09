@@ -51,6 +51,13 @@ ENTER = 0.35            # a page, dialog or sheet coming in
 LEAVE = 0.2             # and going
 CHANGE = 0.2            # a colour, as something is chosen
 
+# The furthest one frame moves a page on. Time that ran on through a long frame
+# would skip the part of the move nobody saw; this only slows it for a moment.
+MOST = 1 / 30
+# How far through its entrance a page has all but arrived: the curve is 97% of
+# the way there, and what is left is too little to see a frame missed.
+SETTLED = 0.6
+
 
 # ------------------------------------------------------------------ frames
 class _Pace:
@@ -224,6 +231,26 @@ def blend(color, target, duration=CHANGE, widget=None):
     _blending[id(color)] = Clock.schedule_interval(step, 0)
 
 
+def glide(widget, name, target, duration=CHANGE, curve=None, then=None):
+    """Move a widget's number to `target`, never more than MOST in one frame, so
+    a frame that runs long slows the move a moment and hides none of it. Gives
+    what stops it (cancel); then() once it has arrived."""
+    start, moved = getattr(widget, name), [0.0]
+
+    def step(dt):
+        moved[0] += min(dt, MOST)
+        progress = min(1.0, moved[0] / duration) if duration > 0 else 1.0
+        eased = curve(progress) if curve is not None else progress
+        setattr(widget, name, target if progress >= 1.0 else start + (target - start) * eased)
+        if progress < 1.0:
+            return True
+        if then is not None:
+            then()
+        return False
+
+    return Clock.schedule_interval(step, 0)
+
+
 def fade_in(widget, duration=ENTER):
     """Bring a widget that has just been put on screen up from nothing."""
     Animation.cancel_all(widget, 'opacity')
@@ -249,17 +276,72 @@ class Entrance:
         self._moved = None              # (widget moved, its Translate or Scale)
         self._shown = 0.0
         self._leaving = False
+        self._glide = None              # the clock moving it, while it moves
+        self._start = None              # the wait for its first frame
+        self._waiting = []              # what when_settled was given
         self.fbind('_anim_alpha', self._move)
 
     def open(self, *args, **kwargs):
+        if self._is_open:
+            return
         self._anim_duration = ENTER
         self._shown = 0.0
         self._move(self, 0.0)           # hidden from the very first frame
         super().open(*args, **kwargs)
+        Animation.cancel_all(self, '_anim_alpha')       # Kivy's: this one is below
+        # The first frame with it in is the slow one - everything in it is laid
+        # out and its words drawn. The move starts once that is on the screen.
+        Window.bind(on_flip=self._drawn)
+        self._start = Clock.schedule_once(self._drawn, 0.25)
+
+    def _drawn(self, *_):
+        Window.unbind(on_flip=self._drawn)
+        if self._start is None:
+            return
+        self._start.cancel()
+        self._start = None
+        self._glide_to(1.0, ENTER, lambda: self.dispatch('on_open'))
+
+    def when_settled(self, then):
+        """then() once this has all but arrived - for work that would take the
+        interpreter from the frames of its entrance. Not if it is closed first."""
+        if self._anim_alpha >= SETTLED and not self._leaving:
+            then()
+        else:
+            self._waiting.append(then)
 
     def dismiss(self, *args, **kwargs):
+        if not self._is_open or (self._glide is not None and self._leaving):
+            return
+        Window.unbind(on_flip=self._drawn)
+        if self._start is not None:
+            self._start.cancel()
+            self._start = None
+        self._waiting.clear()
+        self._stop_gliding()
         self._anim_duration = LEAVE
         super().dismiss(*args, **kwargs)
+        Animation.cancel_all(self, '_anim_alpha')
+        if self._anim_alpha <= 0:
+            self._real_remove_widget()          # closed before it was ever seen
+        else:
+            self._leaving = True
+            self._glide_to(0.0, LEAVE * self._anim_alpha)
+
+    def _stop_gliding(self):
+        if self._glide is not None:
+            self._glide.cancel()
+            self._glide = None
+
+    def _glide_to(self, target, duration, then=None):
+        self._stop_gliding()
+
+        def arrived():
+            self._glide = None
+            if then is not None:
+                then()
+
+        self._glide = glide(self, '_anim_alpha', target, duration, then=arrived)
 
     # On its way out, it no longer takes touches: a tap on what it is
     # uncovering is meant for that, not for something already closing.
@@ -280,6 +362,10 @@ class Entrance:
     def _move(self, _, alpha):
         self._leaving = alpha < self._shown
         self._shown = alpha
+        if self._waiting and not self._leaving and alpha >= SETTLED:
+            waiting, self._waiting = self._waiting, []
+            for then in waiting:
+                then()
         target = self._moving()
         if target is None:
             return
@@ -296,11 +382,14 @@ class Entrance:
         else:
             progress = EMPHASIZED_DECELERATE(alpha)
         step = self._moved[1]
+        # Seen over the first half of its time, evenly. On the curve, it would
+        # be two thirds there by the second frame: a jump, not a fade.
+        seen = min(1.0, alpha * 2)
         if self.entrance == 'page':
-            target.opacity = progress
+            target.opacity = seen
             step.x = (1 - progress) * dp(30)
         elif self.entrance == 'card':
-            target.opacity = progress
+            target.opacity = seen
             step.origin = target.center
             step.x = step.y = 0.9 + 0.1 * progress
         else:

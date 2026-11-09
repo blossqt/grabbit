@@ -7,9 +7,11 @@ holding it brings up Android's own Cut, Copy, Paste and Select all, with its
 selection handles and the keyboard's clipboard - the stock behaviour, rather
 than an imitation of it.
 
-Android draws its views above the surface Kivy draws on, so the field is
-hidden while anything opens over the main screen (a page, a sheet, a dialog),
-and shown again once it closes. And the keyboard's focus goes back to Kivy's
+Android draws its views above the surface Kivy draws on, a frame or two behind
+it, and nothing Kivy draws can pass over them. So the field is hidden while
+anything is over the main screen (a page, a sheet, a dialog), and Kivy draws
+what it held in its place, under whatever is opening - the link stays where it
+was and is covered like everything around it. And the keyboard's focus goes back to Kivy's
 surface whenever the field is done with: a Back press that reached Android
 while the field held focus would close the whole app, not the page open in it.
 Off a phone - the desktop preview - a Kivy TextInput stands in, so the layout
@@ -20,7 +22,8 @@ import logging
 
 from kivy.clock import Clock
 from kivy.core.window import Window
-from kivy.graphics import Color, RoundedRectangle
+from kivy.core.text import Label as CoreLabel
+from kivy.graphics import Color, Rectangle, RoundedRectangle
 from kivy.metrics import dp
 from kivy.properties import StringProperty
 from kivy.uix.boxlayout import BoxLayout
@@ -35,6 +38,12 @@ log = logging.getLogger(__name__)
 # android.view.View's values for these, which Android keeps fixed: reading them
 # through pyjnius would mean reading all of View first.
 VISIBLE, GONE = 0, 8
+
+# Either side of the words in the box.
+SIDE = dp(20)
+# How long Kivy's copy of the words stays once Android has been told to show
+# the field: until the field has been drawn, a frame or two behind.
+HANDOVER = 0.07
 
 
 def _android():
@@ -60,7 +69,12 @@ class LinkBox(BoxLayout):
         with self.canvas.before:
             Color(*theme.SURFACE_CONTAINER_HIGH)
             self._fill = RoundedRectangle()
-        self.bind(pos=self._redraw, size=self._redraw)
+        with self.canvas:
+            self._copy_color = Color(*theme.TRANSPARENT)
+            self._copy = Rectangle()
+        self._copied = False            # Kivy is drawing what the field holds
+        self._scrolled = 0
+        self.bind(pos=self._redraw, size=self._redraw, text=self._draw_copy)
         pieces = _android()
         self.native = _NativeField(self, *pieces) if pieces else None
         if self.native is None:
@@ -73,6 +87,31 @@ class LinkBox(BoxLayout):
         self._fill.pos = self.pos
         self._fill.size = self.size
         self._fill.radius = [self.height / 2]
+        self._draw_copy()
+
+    def copy_field(self, scrolled: int):
+        """Draw what the field holds, as far along as it is scrolled."""
+        self._copied, self._scrolled = True, scrolled
+        self._draw_copy()
+
+    def drop_copy(self):
+        self._copied = False
+        self._copy_color.rgba = theme.TRANSPARENT
+        self._copy.texture = None
+
+    def _draw_copy(self, *_):
+        if not self._copied:
+            return
+        label = CoreLabel(text=self.text or self.hint, font_size=theme.BODY_LARGE)
+        label.refresh()
+        words = label.texture
+        room = max(1, self.width - 2 * SIDE)
+        along = min(max(0, self._scrolled if self.text else 0), max(0, words.width - room))
+        width = min(room, words.width - along)
+        self._copy.texture = words.get_region(along, 0, width, words.height)
+        self._copy.size = (width, words.height)
+        self._copy.pos = (self.x + SIDE, self.center_y - words.height / 2)
+        self._copy_color.rgba = theme.ON_SURFACE if self.text else theme.ON_SURFACE_VARIANT
 
     def _stand_in(self):
         field = TextInput(hint_text=self.hint, multiline=False, background_normal='',
@@ -132,6 +171,7 @@ class _NativeField:
         self.wanted = False         # set by LinkBox.ready()
         self._making = False
         self._placed = None
+        self._copy_going = None         # the end of the handover to the field
         self._ui = run_on_ui_thread
         self._autoclass = autoclass
 
@@ -183,9 +223,12 @@ class _NativeField:
 
         # Held here: a listener Java still calls must not be collected.
         self._watcher, self._actions, self._keys = Watcher(), Actions(), Keys()
-        self._place_later = Clock.create_trigger(lambda _: self._place(), 0)
+        # In the frame the layout changes, so the field is told as Kivy draws it.
+        self._place_later = Clock.create_trigger(lambda _: self._place(), -1)
         box.bind(pos=self._place_later, size=self._place_later)
         Window.bind(size=self._place_later)
+        # The moment anything opens or goes, rather than whenever follow next looks.
+        Window.fbind('children', self._follow_cover)
         Clock.schedule_interval(lambda _: self.follow(), 0.15)
 
     def create(self):
@@ -259,23 +302,54 @@ class _NativeField:
         the layout last put the box, which may have moved before Android had
         made the field to move. Made, once wanted, when nothing covers it."""
         box = self.box
-        covered = any(isinstance(child, ModalView) for child in Window.children)
         if self.view is None:
-            if self.wanted and not covered and not self._making:
+            if self.wanted and not self._covered() and not self._making:
                 self._making = True
                 self.create()
             return
         if self._placed != (*box.to_window(box.x, box.y), box.width, box.height, Window.height):
             self._place()
-        if covered == (not self.visible):
+        self._follow_cover()
+
+    @staticmethod
+    def _covered() -> bool:
+        return any(isinstance(child, ModalView) for child in Window.children)
+
+    def _follow_cover(self, *_):
+        """Hand the words over to Kivy as something opens, and back as it goes.
+
+        Going, Kivy draws them first and the field goes once that frame is out,
+        so the link is never missing from the box. Coming back, the field is
+        shown and Kivy's copy stays until the field has had time to be drawn."""
+        covered = self._covered()
+        view = self.view
+        if view is None or covered == (not self.visible):
             return
         self.visible = not covered
-        view = self.view
+        if self._copy_going is not None:
+            self._copy_going.cancel()
+            self._copy_going = None
+        if not covered:
+            self._show_field(view, True)
+            self._copy_going = Clock.schedule_once(lambda _: self.box.drop_copy(), HANDOVER)
+            return
+        try:
+            scrolled = view.getScrollX()
+        except Exception:
+            scrolled = 0
+        self.box.copy_field(scrolled)
 
+        def drawn(*_):
+            Window.unbind(on_flip=drawn)
+            if not self.visible:
+                self._show_field(view, False)
+        Window.bind(on_flip=drawn)
+
+    def _show_field(self, view, shown: bool):
         @self._ui
         def show():
-            view.setVisibility(GONE if covered else VISIBLE)
-            if covered:
+            view.setVisibility(VISIBLE if shown else GONE)
+            if not shown:
                 # Hidden first, so the focus it gives up cannot land back on it.
                 self._drop_keyboard(view)
         show()

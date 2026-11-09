@@ -221,6 +221,8 @@ class GrabbitApp(App):
         # their own heights, so they stay laid out over whatever is above
         # them, invisible and still taking every touch meant for the chips.
         self.graph_slot = BoxLayout(size_hint_y=None, height=0)
+        self.graph_slot.bind(height=self._graph_follows)
+        self._graph_moving = None
         root.add_widget(self.graph_slot)
 
         root.add_widget(self._build_filters())
@@ -263,12 +265,19 @@ class GrabbitApp(App):
         self._apply_insets()
         Clock.schedule_once(lambda *_: self._apply_insets(), 0.3)
         Clock.schedule_once(lambda *_: self._apply_insets(), 1.5)
+        # At once, so the layout moves with the surface rather than after it,
+        # and once more when things have settled.
         self._insets_later = Clock.create_trigger(lambda *_: self._apply_insets(), 0.35)
-        Window.bind(on_resize=lambda *_: self._insets_later(),
-                    keyboard_height=lambda *_: self._insets_later())
+
+        def surface_changed(*_):
+            self._apply_insets()
+            self._insets_later()
+        Window.bind(on_resize=surface_changed, keyboard_height=surface_changed)
         # Back leaves picking downloads before it leaves the app.
         Window.bind(on_keyboard=self._on_key)
         Clock.schedule_interval(lambda *_: self.refresh(), 1.0)
+        self._refresh_owed = False
+        Window.fbind('children', self._after_closing)
         # The first check comes as soon as the app is on screen (_on_screen);
         # after that twice a day while open, and each time it is opened again
         # (on_resume).
@@ -680,8 +689,11 @@ class GrabbitApp(App):
         page.bind(on_dismiss=lambda *_: self._page_closed(page))
         self.page = page
         page.open()
-        self.engine.analyze_link(url, lambda result: Clock.schedule_once(
-            lambda *_: page.show(result)))
+        # Reading a link is Python on a thread of this process, and it takes the
+        # interpreter from the interface. Left to run from the start it takes
+        # the frames of the page sliding in - nearly all of them, on a phone.
+        page.when_settled(lambda: self.engine.analyze_link(
+            url, lambda result: Clock.schedule_once(lambda *_: page.show(result))))
 
     def _page_closed(self, page):
         if self.page is page:
@@ -727,12 +739,14 @@ class GrabbitApp(App):
         for option, chip in self._status_chips.items():
             chip.set_selected(option == key)
         self.refresh()
+        motion.fade_in(self.list, motion.CHANGE)
 
     def _choose_kind(self, key: str):
         self.kind_filter = key
         for option, chip in self._kind_chips.items():
             chip.set_selected(option == key)
         self.refresh()
+        motion.fade_in(self.list, motion.CHANGE)
 
     def show_graph(self, visible: bool):
         """The sidebar's Speed graph entry, as a chip."""
@@ -740,16 +754,35 @@ class GrabbitApp(App):
         self.graph_chip.set_selected(self.graph_shown)
         height = getattr(self, '_graph_height', 0) or int(Window.height * 0.42)
         self._graph_height = height
-        self.graph_slot.clear_widgets()
-        if self.graph_shown:
-            self.graph_slot.add_widget(self.graph_pane)
-            self.graph_slot.height = height + dp(26)
-            self.graph.height = height
+        slot = self.graph_slot
+        self._stop_graph()
+        target = height + dp(26) if self.graph_shown else 0
+        if self.graph_shown and self.graph_pane.parent is None:
+            slot.add_widget(self.graph_pane)
+        if slot.get_root_window() is None:
+            slot.height = target
+            self._graph_gone()
         else:
-            self.graph_slot.height = 0
+            self._graph_moving = motion.glide(slot, 'height', target, curve=motion.STANDARD,
+                                              then=self._graph_gone)
         self.settings.show_graph = self.graph_shown
         if self.graph_shown:
             self.graph.refresh()
+
+    def _graph_follows(self, _, height):
+        """The graph as tall as its slot allows, seen as far as it has opened."""
+        self.graph.height = max(0, height - dp(26))
+        self.graph_pane.opacity = min(1.0, height / max(1, self._graph_height + dp(26)))
+
+    def _stop_graph(self):
+        if self._graph_moving is not None:
+            self._graph_moving.cancel()
+            self._graph_moving = None
+
+    def _graph_gone(self):
+        self._graph_moving = None
+        if not self.graph_shown:
+            self.graph_slot.clear_widgets()
 
     # -------------------------------------------------------------- updates
     def show_update(self, answer):
@@ -889,7 +922,7 @@ class GrabbitApp(App):
             return
         smallest, largest = dp(120), Window.height * 0.7
         self._graph_height = max(smallest, min(largest, self._graph_height + delta))
-        self.graph.height = self._graph_height
+        self._stop_graph()
         self.graph_slot.height = self._graph_height + dp(26)
 
     def select_task(self, task_id: str):
@@ -1103,7 +1136,27 @@ class GrabbitApp(App):
                                           else theme.DISABLED_TEXT)
 
     # --------------------------------------------------------------- drawing
+    @staticmethod
+    def _closing() -> bool:
+        return any(isinstance(child, motion.Entrance) and child._leaving
+                   for child in Window.children)
+
+    def _after_closing(self, *_):
+        if self._refresh_owed and not self._closing():
+            self._refresh_owed = False
+            self.refresh()
+
     def refresh(self):
+        # A new row is the most a refresh ever builds, and a download just asked
+        # for makes one as its page leaves: it waits until the page has gone.
+        if self._closing():
+            self._refresh_owed = True
+            return
+        # And behind one coming in, nothing is worth a frame of it: the next
+        # second's refresh, a moment away, draws whatever this one would have.
+        if any(isinstance(child, motion.Entrance) and child._glide is not None
+               for child in Window.children):
+            return
         tasks = [t for t in self.engine.store
                  if matches(t, self.status_filter, self.kind_filter)]
         seen = {task.id for task in tasks}
@@ -1122,6 +1175,7 @@ class GrabbitApp(App):
                               on_open=self.open_task, on_share=lambda i: self.share_tasks([i]),
                               on_hold=self.start_choosing, on_choose=self.toggle_chosen)
                 self._rows[task.id] = row
+                motion.fade_in(row, motion.CHANGE)
             row.show(task, selected=(task.id == self.selected_id),
                      choosing=(task.id in self.chosen) if self.choosing else None)
         for task_id in list(self._rows):

@@ -23,7 +23,7 @@ from grabbit.util import human_eta, human_size, human_speed, human_time
 
 from ..files import finished, finished_files
 from . import theme
-from .motion import Entrance, ripple
+from .motion import CHANGE, Entrance, fade_in, ripple
 from .widgets import Card, Handle, IconButton, Tabs
 
 TABS = ['General', 'Files', 'Peers', 'Trackers', 'Log']
@@ -36,6 +36,22 @@ class Rows(BoxLayout):
         super().__init__(orientation='vertical', size_hint_y=None,
                          padding=[dp(2), dp(4)], spacing=dp(2), **kwargs)
         self.bind(minimum_height=self.setter('height'))
+        self._pair_keys = []
+        self._pair_values = []
+
+    def pairs(self, pairs: list):
+        """The General tab's lines. The same lines as last time keep their
+        widgets and change only the words that did: it is asked for every second."""
+        keys = [key for key, _ in pairs]
+        if keys != self._pair_keys or len(self.children) != len(keys):
+            self.clear_widgets()
+            self._pair_keys = keys
+            self._pair_values = []
+            for key, value in pairs:
+                self.pair(key, value)
+            return
+        for label, (_, value) in zip(self._pair_values, pairs):
+            label.text = value or '—'
 
     def pair(self, key: str, value: str):
         """One label-and-value line, as the General tab has."""
@@ -52,6 +68,7 @@ class Rows(BoxLayout):
         line.add_widget(name)
         line.add_widget(content)
         self.add_widget(line)
+        self._pair_values.append(content)
 
     def line(self, text: str, color=None, size=12):
         label = Label(text=text, color=color or theme.ON_SURFACE, font_size=dp(size),
@@ -108,6 +125,7 @@ class DetailsSheet(Entrance, ModalView):
         self.tab = 'General'
         self._refresher = None
         self._listed = None             # the finished files on show, as last listed
+        self._painted = None            # what a tab that asks for its lines last showed
 
         # Rounded at the top only: the sheet comes up out of the bottom edge.
         top = theme.EXTRA_LARGE
@@ -156,10 +174,22 @@ class DetailsSheet(Entrance, ModalView):
         return super().on_dismiss()
 
     def show_tab(self, name: str):
+        changed = name != self.tab
         self.tab = name
-        self._listed = None
+        self._listed = self._painted = None
         self.tabs.select(name)
+        self.rows.clear_widgets()
         self.refresh()
+        if changed:
+            fade_in(self.rows, CHANGE)
+
+    def _new(self, what) -> bool:
+        """Whether a tab's lines differ from those on show. Those tabs are asked
+        again every second, and the same lines drawn again are only a hitch."""
+        if what == self._painted:
+            return False
+        self._painted = what
+        return True
 
     def refresh(self):
         task = self.engine.store.get(self.task_id)
@@ -177,7 +207,6 @@ class DetailsSheet(Entrance, ModalView):
                 self._list_finished(found)
             return
         self._listed = None
-        self.rows.clear_widgets()
         getattr(self, f'_show_{self.tab.lower()}')(task)
 
     # ------------------------------------------------------------ the tabs
@@ -193,7 +222,7 @@ class DetailsSheet(Entrance, ModalView):
             shared = '—'
             peers = f'{task.connections} connection(s)' if task.connections else '—'
 
-        for key, value in (
+        lines = [
                 ('Name', task.name or task.source),
                 ('Status', task.status_text),
                 ('Size', human_size(task.total) or 'unknown'),
@@ -205,10 +234,10 @@ class DetailsSheet(Entrance, ModalView):
                 ('Added', human_time(task.added_at)),
                 ('Completed', human_time(task.completed_at) or '—'),
                 ('Uploaded / ratio', shared),
-                ('Peers', peers)):
-            self.rows.pair(key + ':', value)
+                ('Peers', peers)]
         if task.error:
-            self.rows.pair('Error:', task.error)
+            lines.append(('Error', task.error))
+        self.rows.pairs([(key + ':', value) for key, value in lines])
 
     def _list_finished(self, found):
         if not found:
@@ -229,11 +258,12 @@ class DetailsSheet(Entrance, ModalView):
 
     def _show_files(self, task):
         widths = [0, 62, 62, 46]
-        self.rows.columns(['File', 'Size', 'Done', ''], widths, header=True)
 
         def show(files):
             def paint(_):
                 if self.engine.store.get(self.task_id) is not task or self.tab != 'Files':
+                    return
+                if not self._new(files):
                     return
                 self.rows.clear_widgets()
                 self.rows.columns(['File', 'Size', 'Done', ''], widths, header=True)
@@ -263,13 +293,16 @@ class DetailsSheet(Entrance, ModalView):
 
     def _show_peers(self, task):
         if not task.is_torrent:
-            self.rows.line('Peers are a torrent thing.', theme.ON_SURFACE_VARIANT)
+            if self._new('none'):
+                self.rows.line('Peers are a torrent thing.', theme.ON_SURFACE_VARIANT)
             return
         widths = [0, 86, 40, 70, 70]
 
         def show(peers):
             def paint(_):
                 if self.engine.store.get(self.task_id) is not task or self.tab != 'Peers':
+                    return
+                if not self._new(peers):
                     return
                 self.rows.clear_widgets()
                 self.rows.columns(['Address', 'Client', 'Done', 'Down', 'Up'],
@@ -291,12 +324,15 @@ class DetailsSheet(Entrance, ModalView):
 
     def _show_trackers(self, task):
         if not task.is_torrent:
-            self.rows.line('Trackers are a torrent thing.', theme.ON_SURFACE_VARIANT)
+            if self._new('none'):
+                self.rows.line('Trackers are a torrent thing.', theme.ON_SURFACE_VARIANT)
             return
 
         def show(status):
             def paint(_):
                 if self.engine.store.get(self.task_id) is not task or self.tab != 'Trackers':
+                    return
+                if not self._new(status):
                     return
                 self.rows.clear_widgets()
                 announce = (status.get('bittorrent') or {}).get('announceList') or []
@@ -315,6 +351,8 @@ class DetailsSheet(Entrance, ModalView):
         def show(entries):
             def paint(_):
                 if self.engine.store.get(self.task_id) is not task or self.tab != 'Log':
+                    return
+                if not self._new(entries):
                     return
                 self.rows.clear_widgets()
                 if not entries and task.kind != KIND_MEDIA:

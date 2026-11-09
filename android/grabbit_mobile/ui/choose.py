@@ -15,6 +15,7 @@ import threading
 import urllib.request
 from io import BytesIO
 
+from kivy.animation import Animation
 from kivy.clock import Clock
 from kivy.core.image import Image as CoreImage
 from kivy.core.window import Window
@@ -37,7 +38,7 @@ from grabbit.tasks import State
 from grabbit.util import human_duration, human_size, site_name
 
 from . import theme
-from .motion import Entrance, blend, ripple
+from .motion import CHANGE, Entrance, blend, fade_in, ripple
 from .widgets import Card, ChipWrap, FlatButton, IconButton, SegmentedRow, top_bar
 
 log = logging.getLogger(__name__)
@@ -240,7 +241,7 @@ class Tile(ButtonBehavior, FloatLayout):
         side = min(width, height)
         self._picture.texture = texture.get_region((width - side) / 2, (height - side) / 2,
                                                    side, side)
-        self._picture_color.a = 1
+        blend(self._picture_color, (1, 1, 1, 1), widget=self)
 
     def on_release(self):
         self.set_chosen(not self.chosen)
@@ -431,6 +432,7 @@ class ChoosePage(Entrance, ModalView):
         self.url = url
         self.settings = settings
         self.analysis = None
+        self._early = None              # an answer that came before the page had landed
         self._on_choose = on_choose
         self._reader = None
         self._frame_texture = None
@@ -512,6 +514,9 @@ class ChoosePage(Entrance, ModalView):
     # --------------------------------------------------------------- fill
     def show(self, analysis):
         """The link has been read: say what it is, and offer its choices."""
+        if self._anim_alpha < 1:
+            self._early = analysis      # filled in once it has stopped moving (on_open)
+            return
         self.analysis = analysis
         title, about = summary(analysis)
         self.title.text = title
@@ -550,7 +555,7 @@ class ChoosePage(Entrance, ModalView):
             self.detail = BoxLayout(orientation='vertical', spacing=dp(8), size_hint_y=None)
             self.detail.bind(minimum_height=self.detail.setter('height'))
             self.choices.add_widget(self.detail)
-            self.choose_kind(self.kind)
+            self._show_kind(self.kind)
         elif failed and analysis.url.lower().startswith(('http://', 'https://')):
             self.go.text = 'Save as a file'
         if self.tiles:
@@ -558,6 +563,15 @@ class ChoosePage(Entrance, ModalView):
         self._enable(not failed or analysis.url.lower().startswith(('http://', 'https://')))
         if self.tiles:
             self._count_ticked()
+        # What the page now says comes up in place, rather than appearing.
+        fade_in(self.title, CHANGE)
+        fade_in(self.about, CHANGE)
+        fade_in(self.choices, CHANGE)
+
+    def on_open(self):
+        early, self._early = self._early, None
+        if early is not None:
+            self.show(early)
 
     # --------------------------------------------------------------- grid
     def _show_grid(self, pieces):
@@ -576,6 +590,7 @@ class ChoosePage(Entrance, ModalView):
         place = self.column.children.index(self.filler)
         self.column.remove_widget(self.filler)
         self.column.add_widget(self.grid_scroller, index=place)
+        fade_in(self.grid_scroller, CHANGE)
 
         # How many are ticked, and a way to tick or untick them all at once.
         self.tick_row = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(8))
@@ -619,6 +634,10 @@ class ChoosePage(Entrance, ModalView):
         return 'video'
 
     def choose_kind(self, kind: str):
+        self._show_kind(kind)
+        fade_in(self.detail, CHANGE)
+
+    def _show_kind(self, kind: str):
         self.kind = kind
         self.detail.clear_widgets()
         if kind == 'video':
@@ -771,10 +790,12 @@ class ChoosePage(Entrance, ModalView):
         texture = texture or self._picture_texture
         self.picture.color = (1, 1, 1, 1)
         if texture is None:
+            Animation.cancel_all(self.picture, 'opacity')
             self.picture.opacity = 0
             return
         self.picture.texture = texture
-        self.picture.opacity = 1
+        if self.picture.opacity == 0:
+            fade_in(self.picture, CHANGE)
 
     # ------------------------------------------------------------- answer
     def choice(self) -> dict:
