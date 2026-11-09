@@ -274,6 +274,12 @@ def analyze(url: str, settings) -> Analysis:
         scraped = pagescrape.scrape(url, settings)       # read the page ourselves
         if scraped.items:
             return _from_probe(url, scraped, analysis)
+        if head.get('status', 0) >= 400:
+            analysis.kind = KIND_ERROR
+            analysis.error = (f'{analysis.site or host_of(url) or "The site"} answered '
+                              f'{head["status"]}: nothing to download at this link. It may have '
+                              'expired, or work only in the browser that opened it.')
+            return analysis
         analysis = _as_file(url, head, analysis)
         analysis.hint = ('No video, photos or files were found on this page - Grabbit would '
                          'just save the page itself.')

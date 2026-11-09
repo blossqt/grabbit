@@ -750,7 +750,10 @@ class AddDialog(QDialog):
         if kind == analyze_mod.KIND_FILE:
             if gifs.is_gif(analysis.content_type, analysis.filename):
                 return GifCard(analysis, self.settings)
-            return FileCard(analysis)
+            card = FileCard(analysis)
+            if analysis.content_type.startswith('image/'):
+                card.set_thumbnail(analysis.url)
+            return card
         return ErrorCard(analysis.url, analysis.error or 'This link could not be read.',
                          allow_direct=analysis.url.lower().startswith(('http://', 'https://'))
                          and not analysis.robot)        # it would save the robot check

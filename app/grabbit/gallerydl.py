@@ -29,6 +29,9 @@ TIMEOUT = 90
 
 # Message types gallery-dl prints with --dump-json.
 DIRECTORY, URL = 2, 3
+# Its catch-all for any address ending in a picture's or a video's extension.
+# That is a file, not a post: left to the file check, which knows its real type.
+DIRECT_LINK = 'directlink'
 
 
 # How to run it, where it is not an executable of its own: the command and
@@ -154,6 +157,8 @@ def probe(url: str, settings, max_items: int = 400) -> ProbeResult | None:
     for message in messages:
         if not isinstance(message, list) or not message:
             continue
+        if isinstance(message[-1], dict) and message[-1].get('category') == DIRECT_LINK:
+            return None
         if message[0] == URL and len(message) >= 3:
             items.append(_item(message[1], message[2] or {}, len(items) + 1, referer))
         elif message[0] == DIRECTORY and len(message) >= 2:
