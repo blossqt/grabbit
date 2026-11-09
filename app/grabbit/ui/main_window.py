@@ -7,7 +7,7 @@ import threading
 from PySide6.QtCore import QByteArray, QEvent, QPoint, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QDialog, QFileDialog,
-                               QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
+                               QHBoxLayout, QInputDialog, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
                                QProgressDialog, QPushButton, QSplitter,
                                QToolBar, QTreeView, QVBoxLayout, QWidget)
@@ -20,6 +20,7 @@ from ..torrentmeta import parse_torrent
 from ..util import extract_links, human_speed, open_path, reveal_in_explorer
 from . import icons, suitesettings, theme
 from .add_dialog import AddDialog
+from .columns import FittingHeader
 from .details import DetailsPanel
 from .settings_dialog import SettingsDialog
 from .speedgraph import SpeedGraph
@@ -28,6 +29,8 @@ from .transfer_model import (COL_NAME, COL_PROGRESS, ProgressDelegate, TASK_ID_R
                              TransferFilter, TransferModel)
 
 log = logging.getLogger(__name__)
+
+COLUMN_LEAST = {COL_NAME: 96, 1: 62, 2: 60, 3: 84, 4: 56, 5: 68, 6: 68, 7: 52, 8: 44, 9: 104}     # px each column's contents read in
 
 STATUS_FILTERS = [
     ('all', 'All', 'queue'),
@@ -287,6 +290,8 @@ class MainWindow(QMainWindow):
         self.proxy.setSourceModel(self.model)
 
         self.view = QTreeView()
+        header = FittingHeader(self.view, COL_NAME, COLUMN_LEAST)
+        self.view.setHeader(header)
         self.view.setModel(self.proxy)
         self.view.setRootIsDecorated(False)
         self.view.setUniformRowHeights(True)
@@ -298,18 +303,13 @@ class MainWindow(QMainWindow):
         self.view.customContextMenuRequested.connect(self._show_context_menu)
         self.view.doubleClicked.connect(self._on_double_click)
         self.view.setItemDelegateForColumn(COL_PROGRESS, ProgressDelegate(self))
-        header = self.view.header()
         header.setSectionsMovable(True)
-        header.setStretchLastSection(False)
-        header.setSectionResizeMode(QHeaderView.Interactive)
-        header.setMinimumSectionSize(50)
         header.setContextMenuPolicy(Qt.CustomContextMenu)
         header.customContextMenuRequested.connect(self._show_header_menu)
-        for column, width in ((COL_NAME, 320), (1, 80), (2, 100), (3, 150), (4, 95), (5, 95),
-                              (6, 85), (7, 70), (8, 55), (9, 120), (10, 200)):
-            self.view.setColumnWidth(column, width)
-        self.view.header().setSectionHidden(10, True)   # save path: on demand
+        header.setSectionHidden(10, True)               # save path: on demand
         self.view.sortByColumn(9, Qt.DescendingOrder)
+        header.set_widths({COL_NAME: 320, 1: 80, 2: 100, 3: 150, 4: 95, 5: 95,
+                           6: 85, 7: 70, 8: 55, 9: 120, 10: 200})
         right_layout.addWidget(self.view, 1)
         # Nothing in the list: what to do, over the empty table - rather than a blank one.
         self.empty_label = suitesettings.Empty('download', '', '', self.view.viewport())
@@ -840,7 +840,7 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, watched, event):
         if watched is self.view.viewport() and event.type() == QEvent.Resize:
-            self.empty_label.setGeometry(self.view.viewport().rect().adjusted(24, 24, -24, -24))
+            self.empty_label.setGeometry(self.view.viewport().rect())
         return super().eventFilter(watched, event)
 
     def _on_selection_changed(self):
@@ -1080,8 +1080,7 @@ class MainWindow(QMainWindow):
                     pass
         if self.settings.header_state:
             try:
-                self.view.header().restoreState(
-                    QByteArray.fromBase64(self.settings.header_state.encode('ascii')))
+                self.view.header().restore(QByteArray.fromBase64(self.settings.header_state.encode('ascii')))
             except Exception:
                 pass
         for value, splitter in ((self.settings.splitter_state, self.splitter),
@@ -1105,7 +1104,7 @@ class MainWindow(QMainWindow):
 
         self.settings.window_geometry = encode(self.saveGeometry())
         self.settings.window_state = encode(self.saveState())
-        self.settings.header_state = encode(self.view.header().saveState())
+        self.settings.header_state = encode(self.view.header().remembered())
         self.settings.splitter_state = encode(self.splitter.saveState())
         self.settings.details_splitter_state = encode(self.vertical_splitter.saveState())
         self.settings.save()

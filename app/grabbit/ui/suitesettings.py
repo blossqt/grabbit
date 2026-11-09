@@ -322,7 +322,7 @@ class Nav(QWidget):
         if liquid:
             curve.setOvershoot(1.1)
         slide.setEasingCurve(curve)
-        slide.setDuration(theme.GENTLE if liquid else theme.STEADY)
+        slide.setDuration(theme.STEADY)
         slide.setStartValue(start)
         slide.setEndValue(float(index))
 
@@ -556,7 +556,7 @@ class _SidePill(QObject):
         if liquid:
             curve.setOvershoot(1.1)
         slide.setEasingCurve(curve)
-        slide.setDuration(theme.GENTLE if liquid else theme.STEADY)
+        slide.setDuration(theme.STEADY)
         slide.setStartValue(0.0)
         slide.setEndValue(1.0)
 
@@ -717,7 +717,26 @@ class Empty(QWidget):
         self.chip.update()
         self.title.setText(title)
         self.text.setText(text)
-        self.text.setVisible(bool(text))
+        self._fit()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit()
+
+    def _fit(self) -> None:
+        """A short place keeps what matters most, rather than squashing it all together: the
+        margins tighten first, then the icon goes, then the line under the title."""
+        has_line = bool(self.text.text())
+
+        def needs(margin: int, chip: bool, line: bool) -> int:
+            words = self.text.heightForWidth(max(1, self.width() - 2 * margin)) + 8 if line else 0
+            return 2 * margin + (self.chip.height() + 12 if chip else 0) + self.title.sizeHint().height() + words
+
+        options = ((24, True, has_line), (8, True, has_line), (8, False, has_line), (8, False, False))
+        margin, chip, line = next((o for o in options if needs(*o) <= self.height()), options[-1])
+        self.layout().setContentsMargins(24, margin, 24, margin)
+        self.chip.setVisible(chip)
+        self.text.setVisible(line)
 
 
 class Segmented(QWidget):
@@ -767,7 +786,7 @@ class Segmented(QWidget):
             return
         start = QRectF(self._pill)
         slide = self._slide = QVariantAnimation(self)
-        slide.setDuration(theme.GENTLE)
+        slide.setDuration(theme.STEADY)
         slide.setEasingCurve(QEasingCurve(QEasingCurve.OutBack) if theme.look() == 'liquid' and theme.glass_on()
                              else QEasingCurve(QEasingCurve.OutQuint))
         slide.setStartValue(0.0)

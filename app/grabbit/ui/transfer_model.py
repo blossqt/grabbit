@@ -15,8 +15,7 @@ TASK_ID_ROLE = Qt.UserRole + 2
 COL_NAME, COL_SIZE, COL_PROGRESS, COL_STATUS, COL_PEERS, COL_DOWN, COL_UP, COL_ETA, \
     COL_RATIO, COL_ADDED, COL_PATH = range(11)
 
-HEADERS = ['Name', 'Size', 'Progress', 'Status', 'Seeds / Peers', 'Down speed',
-           'Up speed', 'ETA', 'Ratio', 'Added', 'Save path']
+HEADERS = ['Name', 'Size', 'Progress', 'Status', 'Peers', 'Down', 'Up', 'ETA', 'Ratio', 'Added', 'Save path']
 
 STATE_COLORS = {
     State.DOWNLOADING: '#e64980',

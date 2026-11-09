@@ -95,7 +95,7 @@ ROSE = '#c2255c'           # the mark on the icons: the pink as text or a line o
 TYPE = {'tiny': 8, 'caption': 9, 'small': 9.75, 'body': 10.5, 'strong': 10.5,
         'heading': 11.25, 'title': 17, 'page': 21}
 SPACE = (4, 8, 12, 16, 24, 32)     # px: gaps and margins are these (a 1-2 px nudge aside)
-QUICK, STEADY, GENTLE = 160, 220, 340   # ms: a press or fade, a slide, a panel or toast coming in
+QUICK, STEADY, GENTLE = 120, 180, 240   # ms: a press or fade, a slide, a panel or toast coming in
 
 GLASS_RADIUS = 8           # the corners Windows 11 rounds a frameless glass window to
 LIQUID_RADIUS = 14         # a liquid glass pop-up's corners, rounder (Windows' own rounding lies outside them)
@@ -3040,7 +3040,7 @@ def stop_animation(animation) -> None:
 
 # --------------------------------------------------------------------------- smooth scrolling
 
-SCROLL_MS = STEADY           # a wheel notch's scroll glides this long (the next one picks it up from where it is)
+SCROLL_MS = 220              # a wheel notch's scroll glides this long (the next one picks it up from where it is)
 
 
 class _Wheels(QObject):
@@ -3357,8 +3357,8 @@ def _page_in(page: QWidget) -> None:
     if _liquid_look():
         end = page.pos()
         slide = QPropertyAnimation(page, b'pos', page)
-        slide.setDuration(STEADY)
-        slide.setStartValue(end + QPoint(18, 0))
+        slide.setDuration(QUICK)
+        slide.setStartValue(end + QPoint(12, 0))
         slide.setEndValue(end)
         slide.setEasingCurve(QEasingCurve.OutCubic)
         _keep(slide)
@@ -3375,7 +3375,7 @@ def _tick(box: QCheckBox, on: bool) -> None:
     if _liquid_look():
         spring = QEasingCurve(QEasingCurve.OutBack)
         spring.setOvershoot(1.3)
-        animation.setDuration(GENTLE)
+        animation.setDuration(STEADY)
         animation.setEasingCurve(spring)
     else:
         animation.setDuration(QUICK)
@@ -3424,11 +3424,11 @@ class _Rise(QGraphicsEffect):
         painter.restore()
 
 
-_STAGGER_GAP = 45       # ms between one part's rising and the next's
-_STAGGER_MOST = 8       # parts after this many come in with the last
+_STAGGER_GAP = 16       # ms between one part's rising and the next's
+_STAGGER_MOST = 4       # parts after this many come in with the last
 
 
-def stagger_in(widgets, by: int = 12, ms: int = GENTLE) -> None:
+def stagger_in(widgets, by: int = 8, ms: int = QUICK) -> None:
     """Parts of a window coming in one after another: each fades in as it rises the last few
     pixels into place. Not when animations are off, nor for a part with video or an effect of
     its own."""

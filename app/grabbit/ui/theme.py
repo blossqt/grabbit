@@ -107,7 +107,7 @@ def stylesheet() -> str:
     QTreeView, QTableView {{ border: 1px solid {c['border']}; border-radius: 8px;
                              background: {c['card']}; alternate-background-color: {c['alt']}; }}
     QHeaderView::section {{ background: {c['window']}; border: 0;
-                            border-bottom: 1px solid {c['border']}; padding: 5px 8px; }}
+                            border-bottom: 1px solid {c['border']}; padding: 5px 6px; }}
     QStatusBar {{ border-top: 1px solid {c['border']}; }}
     QStatusBar::item {{ border: 0; }}
     QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QTextEdit {{
