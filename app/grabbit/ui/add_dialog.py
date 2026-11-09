@@ -549,9 +549,9 @@ class GalleryCard(LinkCard):
     def _update_counts(self):
         items = self.probe.items
         chosen = self.grid.selected_items()
-        photos = sum(1 for i in items if i.kind == 'image')
-        videos = sum(1 for i in items if i.kind == 'video')
-        audio = sum(1 for i in items if i.kind == 'audio')
+        # A file a gallery fetches directly is 'image' to the engine, whatever it holds.
+        kinds = [i.group or i.kind for i in items]
+        photos, videos, audio, files = (kinds.count(k) for k in ('image', 'video', 'audio', 'file'))
         parts = [self.probe.site or site_name(self.url)]
         if self.probe.uploader:
             parts.append(self.probe.uploader)
@@ -562,6 +562,8 @@ class GalleryCard(LinkCard):
             inventory.append(f'{videos} video' + ('s' if videos != 1 else ''))
         if audio:
             inventory.append(f'{audio} audio track' + ('s' if audio != 1 else ''))
+        if files:
+            inventory.append(f'{files} file' + ('s' if files != 1 else ''))
         parts.append(', '.join(inventory))
         parts.append(f'{len(chosen)} selected')
         self.subtitle.setText('   ·   '.join(p for p in parts if p))

@@ -49,7 +49,8 @@ class _TileDelegate(QStyledItemDelegate):
             if has_thumbnail:
                 painter.drawText(option.rect, Qt.AlignCenter, 'loading…')
             else:
-                glyph = {'audio': 'music', 'video': 'video'}.get(getattr(item, 'kind', ''), 'image')
+                shown = getattr(item, 'group', '') or getattr(item, 'kind', '')
+                glyph = {'audio': 'music', 'video': 'video', 'file': 'file'}.get(shown, 'image')
                 icons.suiteicons.draw(painter, QRectF(option.rect), glyph, painter.pen().color(), 32)
 
         if not checked:  # dim what will not be downloaded
@@ -69,7 +70,7 @@ class _TileDelegate(QStyledItemDelegate):
             font.setPointSizeF(max(7.0, font.pointSizeF() - 1.0))
             painter.setFont(font)
             metrics = painter.fontMetrics()
-            kind = {'audio': 'music', 'video': 'play'}.get(item.kind)
+            kind = {'audio': 'music', 'video': 'play'}.get(item.group or item.kind)
             mark = 12 if kind else 0                # the kind's icon before the words
             width = metrics.horizontalAdvance(label) + 10 + (mark + 4 if mark else 0)
             badge = QRectF(rect.left() + 6, rect.bottom() - metrics.height() - 10,

@@ -297,7 +297,7 @@ def _try_gallery_dl(url: str, settings):
     except Exception as exc:
         log.debug('gallery-dl failed for %s: %s', url, exc)
         return None
-    return result if (result and result.items) else None
+    return result if (result and (result.items or result.error)) else None
 
 
 def _try_metalink(url: str, analysis: Analysis):
