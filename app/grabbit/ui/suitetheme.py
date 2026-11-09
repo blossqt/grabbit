@@ -127,6 +127,8 @@ class SuiteStyle(QProxyStyle):
         return super().pixelMetric(metric, option, widget)
 
     def drawPrimitive(self, element, option, painter, widget=None):
+        if element == QStyle.PE_FrameFocusRect:     # no focus outlines, dotted or otherwise (the user's wish)
+            return
         if element != QStyle.PE_IndicatorCheckBox:
             super().drawPrimitive(element, option, painter, widget)
             return
@@ -297,7 +299,6 @@ def install(app) -> None:
     _honour_timers()
     _frame_rate()
     app.installEventFilter(_wheels())
-    app.installEventFilter(_focus())
     _ui_effects()
     on_restyle(_ui_effects)
     app.screenAdded.connect(_screen_added)
@@ -3131,105 +3132,6 @@ def _wheels() -> _Wheels:
     if _wheels_filter is None:
         _wheels_filter = _Wheels()
     return _wheels_filter
-
-
-class _Ring(QWidget):
-    """A pink ring round the part the keyboard has reached: drawn over the window, letting the
-    mouse through."""
-
-    GAP = 3
-
-    def __init__(self, window: QWidget):
-        super().__init__(window)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents)
-        self.setAttribute(Qt.WA_NoSystemBackground)
-        self.radius = 8.0
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(QPen(QColor(ink()), 2))
-        painter.setBrush(Qt.NoBrush)
-        painter.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), self.radius, self.radius)
-        painter.end()
-
-
-class _Focus(QObject):
-    """Where Tab (or a shortcut) moves the keyboard, a ring shows it; a click takes it away again,
-    so the mouse never leaves rings behind - what a browser's :focus-visible does. Qt's own focus
-    marks were all but invisible on glass, and some parts had none."""
-
-    def __init__(self):
-        super().__init__()
-        self._ring: _Ring | None = None
-        self._on: QWidget | None = None
-
-    def eventFilter(self, obj, event):
-        kind = event.type()
-        if kind == QEvent.FocusIn and isinstance(obj, QWidget) and not obj.isWindow():
-            if event.reason() in (Qt.TabFocusReason, Qt.BacktabFocusReason, Qt.ShortcutFocusReason):
-                self._show(obj)
-            else:
-                self._hide()
-        elif kind in (QEvent.MouseButtonPress, QEvent.WindowDeactivate) or \
-                (kind == QEvent.FocusOut and obj is self._on):
-            self._hide()
-        elif kind in (QEvent.Move, QEvent.Resize) and obj is self._on:
-            self._place()
-        return False
-
-    def _show(self, widget: QWidget) -> None:
-        parent = widget.parentWidget()
-        if isinstance(parent, (QAbstractSpinBox, QComboBox)):     # its box, not the line inside it
-            widget = parent
-        window = widget.window()
-        if self._ring is None or self._ring.parentWidget() is not window:
-            self._hide()
-            self._ring = _Ring(window)
-        if self._on is not None:
-            self._on.removeEventFilter(self)
-        self._on = widget
-        widget.installEventFilter(self)
-        self._place()
-
-    def _place(self) -> None:
-        ring, widget = self._ring, self._on
-        if ring is None or widget is None or not widget.isVisible():
-            self._hide()
-            return
-        top_left = widget.mapTo(ring.parentWidget(), QPoint(0, 0))
-        gap = _Ring.GAP
-        ring.setGeometry(top_left.x() - gap, top_left.y() - gap, widget.width() + 2 * gap, widget.height() + 2 * gap)
-        round_ = getattr(widget, '_suite_light_radius', None)
-        ring.radius = (min(widget.height() / 2, 10.0) if round_ is None else round_) + gap
-        ring.raise_()
-        ring.show()
-        ring.update()
-
-    def _hide(self) -> None:
-        if self._on is not None:
-            try:
-                self._on.removeEventFilter(self)
-            except RuntimeError:
-                pass
-            self._on = None
-        if self._ring is not None:
-            try:
-                self._ring.hide()
-                self._ring.deleteLater()
-            except RuntimeError:
-                pass
-            self._ring = None
-
-
-_focus_filter = None
-
-
-def _focus() -> _Focus:
-    global _focus_filter
-    if _focus_filter is None:
-        _focus_filter = _Focus()
-    return _focus_filter
 
 
 def _ui_effects() -> None:

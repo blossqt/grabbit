@@ -386,10 +386,6 @@ class Nav(QWidget):
             p.setFont(theme.font(BODY))       # one weight: the pill shows the page chosen, and words don't shift
             p.drawText(QRectF(row.left() + 46, row.top(), row.width() - 50, row.height()),
                        Qt.AlignVCenter | Qt.AlignLeft, title)
-        if self.hasFocus() and self._current >= 0:
-            p.setPen(QPen(QColor(theme.ink()), 1, Qt.DotLine))
-            p.setBrush(Qt.NoBrush)
-            p.drawRoundedRect(pill.adjusted(-2, -2, 2, 2), 10, 10)
         p.end()
 
 

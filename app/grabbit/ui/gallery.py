@@ -110,7 +110,7 @@ class _TileDelegate(QStyledItemDelegate):
                 QPointF(left + size * 0.74, top + size * 0.32),
             ])
 
-        if checked or (option.state & QStyle.StateFlag.State_HasFocus):
+        if checked:
             painter.setBrush(Qt.NoBrush)
             painter.setPen(QPen(palette.link().color(), 2))
             painter.drawPath(path)
