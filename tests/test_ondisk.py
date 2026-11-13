@@ -278,5 +278,71 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(self.engine.client.added, [])
 
 
+class PhoneTests(unittest.TestCase):
+    """The phone's engine (android\\grabbit_mobile\\engine.py, no Qt) looks first too, on a thread."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, True)
+        os.environ['ANDROID_PRIVATE'] = os.path.join(self.root, 'private')
+        paths.set_data_dir(os.path.join(self.root, 'data'))
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'android'))
+        from grabbit.settings import Settings
+        from grabbit_mobile.engine import MobileEngine
+        self.saves = os.path.join(self.root, 'saves')
+        os.makedirs(self.saves)
+        self.changes = 0
+        self.engine = MobileEngine(Settings(android_download_dir=self.saves), on_change=self.changed)
+        self.engine.client = FakeClient()
+        self.engine.running = True
+        self.data = noise(30 * PIECE, 11)
+
+    def changed(self):
+        self.changes += 1
+
+    def settle(self, task):
+        end = time.perf_counter() + 5
+        while time.perf_counter() < end and task.id in self.engine._looks:
+            time.sleep(0.005)
+        time.sleep(0.05)
+
+    def test_nothing_there_goes_straight_to_aria2(self):
+        task = self.engine.add_torrent(torrent('movie.mkv', self.data))
+        self.assertEqual(len(self.engine.client.added), 1)
+        self.assertNotIn('check-integrity', self.engine.client.added[0])
+        self.assertTrue(task.gid)
+
+    def test_its_own_file_cut_off_is_checked_and_filled_in(self):
+        Path(self.saves, 'movie.mkv').write_bytes(self.data[:20 * PIECE] + bytes(10 * PIECE))
+        task = self.engine.add_torrent(torrent('movie.mkv', self.data))
+        self.settle(task)
+        self.assertEqual(self.engine.client.added[0].get('check-integrity'), 'true')
+        self.assertEqual(task.state, 'queued')
+        self.assertTrue(self.changes)
+
+    def test_another_file_is_left_alone_and_said_so(self):
+        Path(self.saves, 'movie.mkv').write_bytes(noise(30 * PIECE, 12))
+        task = self.engine.add_torrent(torrent('movie.mkv', self.data))
+        self.settle(task)
+        self.assertEqual(self.engine.client.added, [])
+        self.assertEqual(task.state, 'error')
+        self.assertIn('Another file named', task.error)
+
+    def test_paused_while_looking_is_handed_over_paused(self):
+        Path(self.saves, 'movie.mkv').write_bytes(self.data[:20 * PIECE] + bytes(10 * PIECE))
+        with self.engine._lock:          # the look waits for this, as it would for the window
+            task = self.engine.add_torrent(torrent('movie.mkv', self.data))
+            self.engine.pause([task.id])
+        self.settle(task)
+        self.assertEqual(self.engine.client.added[0].get('pause'), 'true')
+        self.assertEqual(task.state, 'paused')
+
+    def test_aria2s_own_check_shows_as_checking(self):
+        task = self.engine.add_torrent(torrent('movie.mkv', self.data))
+        self.engine._apply(task, {'gid': task.gid, 'status': 'active', 'totalLength': str(len(self.data)),
+                                  'completedLength': '0', 'verifiedLength': str(5 * PIECE)})
+        self.assertEqual(task.state, 'checking')
+
+
 if __name__ == '__main__':
     unittest.main()

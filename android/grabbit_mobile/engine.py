@@ -18,6 +18,7 @@ import threading
 import time
 
 from grabbit import analyze as analyze_mod
+from grabbit import ondisk
 from grabbit.aria2rpc import Aria2Error, Aria2Process
 from grabbit.tasks import (KIND_HTTP, KIND_IMAGE, KIND_MAGNET, KIND_MEDIA, KIND_TORRENT,
                            FINISHED_STATES, State, Task, TaskStore, note_file, task_paths)
@@ -30,7 +31,7 @@ log = logging.getLogger(__name__)
 
 POLL_KEYS = ['gid', 'status', 'totalLength', 'completedLength', 'uploadLength',
              'downloadSpeed', 'uploadSpeed', 'connections', 'numSeeders', 'seeder',
-             'errorCode', 'errorMessage', 'infoHash']
+             'errorCode', 'errorMessage', 'infoHash', 'verifiedLength', 'verifyIntegrityPending']
 
 # A video that fails for want of a network is tried again by itself, waiting
 # longer each time - 10 seconds, then 20, 40... up to five minutes - for about
@@ -97,6 +98,7 @@ class MobileEngine:
         self._media_gids: dict = {}
         self._held: set = set()             # what hold() stopped, to start again
         self._retry_at: dict = {}           # task id -> when a failed video goes again
+        self._looks: dict = {}              # task id -> the look at its files under way (ondisk)
 
     # ------------------------------------------------------------------ start
     def start(self) -> bool:
@@ -518,15 +520,30 @@ class MobileEngine:
         except Aria2Error as exc:
             task.state, task.error = State.ERROR, str(exc)
 
-    def _add_torrent(self, task: Task, paused: bool = False, seed_only: bool = False):
+    def _add_torrent(self, task: Task, paused: bool = False, seed_only: bool = False,
+                     verdict: str = ''):
         import base64
         try:
-            data = open(task.torrent_file, 'rb').read()
+            with open(task.torrent_file, 'rb') as handle:
+                data = handle.read()
         except OSError as exc:
             task.state, task.error = State.ERROR, f'torrent file missing: {exc}'
             return
+        self._looks.pop(task.id, None)
+        if not verdict and not seed_only and ondisk.needs_look(task.save_dir, data):
+            # Its file is there without aria2's control file, which aria2 refuses outright.
+            self._look_first(task, data, paused)
+            return
+        if verdict == ondisk.OTHER:
+            task.state = State.ERROR
+            task.error = (f'Another file named “{task.name}” is already in {task.save_dir}. '
+                          'Move or rename it, then start this again.')
+            return
         paused = self._hold_new(task, paused)
         options = {'dir': task.save_dir, 'gid': self._gid(task), 'continue': 'true'}
+        if verdict == ondisk.CHECK:
+            # The pieces already there are hashed, and only those missing or wrong are fetched.
+            options['check-integrity'] = 'true'
         if task.select_files:
             options['select-file'] = task.select_files
         if paused:
@@ -549,6 +566,39 @@ class MobileEngine:
             task.error = ''
         except Aria2Error as exc:
             task.state, task.error = State.ERROR, str(exc)
+
+    def _look_first(self, task: Task, data: bytes, paused: bool):
+        """Hash a few of the pieces already there (ondisk.look) on a thread of its own, then hand
+        the torrent to aria2 as that says."""
+        token = object()
+        self._looks[task.id] = token
+        task.state = State.CHECKING
+        task.progress_note = ''
+        save_dir, select = task.save_dir, task.select_files
+
+        def work():
+            try:
+                verdict = ondisk.look(save_dir, data, select)
+            except OSError as exc:
+                verdict = exc
+            with self._lock:
+                if self._looks.get(task.id) is not token or self.store.get(task.id) is not task:
+                    return              # removed, or started again, meanwhile
+                self._looks.pop(task.id, None)
+                if isinstance(verdict, OSError):
+                    task.state = State.ERROR
+                    task.error = f'Could not read the file already there: {verdict}'
+                else:
+                    still_paused = paused or task.state == State.PAUSED
+                    task.state = State.PAUSED if still_paused else State.QUEUED
+                    try:
+                        self._add_torrent(task, paused=still_paused, verdict=verdict)
+                    except Aria2Error as exc:
+                        task.state, task.error = State.ERROR, str(exc)
+                self.store.mark_dirty()
+            self.on_change()
+
+        threading.Thread(target=work, name='grabbit-look', daemon=True).start()
 
     # ---------------------------------------------------------- media jobs
     def _queue_media(self, task: Task):
@@ -865,7 +915,9 @@ class MobileEngine:
         task.eta = remaining / task.down_speed if task.down_speed and remaining > 0 else None
 
         if state == 'active':
-            if task.kind == KIND_MAGNET:
+            if status.get('verifyIntegrityPending') or status.get('verifiedLength'):
+                task.state = State.CHECKING         # the pieces already there, being hashed
+            elif task.kind == KIND_MAGNET:
                 task.state = State.METADATA
             elif status.get('seeder') == 'true' and task.total and task.done >= task.total:
                 task.state = State.SEEDING
@@ -948,6 +1000,8 @@ class MobileEngine:
                 except Aria2Error:
                     pass
                 task.state = State.PAUSED
+            elif task_id in self._looks:
+                task.state = State.PAUSED   # handed to aria2 paused once the look is done
             task.down_speed = task.up_speed = 0
             task.eta = None
         self.store.mark_dirty()

@@ -8,7 +8,7 @@ already there are good and only the rest need fetching, and check-integrity has 
 piece and fetch only those that fail. Or it may be some other file of the same name, which must be
 left alone. A few of its pieces, hashed here against the torrent's own hashes, tell which.
 
-Desktop only (build\\release.py leaves it out of the phone app's inputs).
+Used by the desktop engine and the phone's (android\\grabbit_mobile\\engine.py) alike.
 """
 
 import hashlib
