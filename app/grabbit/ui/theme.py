@@ -30,11 +30,14 @@ _LIGHT = {
 
 
 # On glass (suitetheme.frost), the window's own colour is the suite's veil, painted under it, so
-# the style sheet leaves it see-through and keeps its panels and lists faint: as faint as the
-# suite's cards (card), its boxes as its own (base). Alternate rows are drawn over the list.
-_DARK_GLASS = {**_DARK, 'window': '#00000000', 'base': '#10ffffff', 'card': '#10ffffff', 'alt': '#0affffff',
+# the style sheet leaves it see-through: the menu, toolbar and status bar sit on the clear glass.
+# What is read - the sidebar, the list, the details, boxes - sits on solid ground, as the suite's
+# panels (suitetheme.panel_css): at 6-25% white the list was text over whatever lay behind the
+# window (2026-11-13, the user: "grabbit is still pretty bad"). Alternate rows are a faint shade
+# drawn over the list's own panel.
+_DARK_GLASS = {**_DARK, 'window': '#00000000', 'base': '#d0202026', 'card': '#d01c1b22', 'alt': '#0affffff',
                'border': '#2effffff', 'hover': '#20ffffff', 'bar': '#2affffff'}
-_LIGHT_GLASS = {**_LIGHT, 'window': '#00000000', 'base': '#40ffffff', 'card': '#26ffffff', 'alt': '#12ffffff',
+_LIGHT_GLASS = {**_LIGHT, 'window': '#00000000', 'base': '#e0ffffff', 'card': '#d9ffffff', 'alt': '#0a000000',
                 'border': '#22000000', 'hover': '#14000000', 'bar': '#20000000'}
 
 
@@ -120,10 +123,13 @@ def stylesheet() -> str:
     QTabBar::tab {{ padding: 6px 12px; border: 0; margin-right: 2px; border-radius: 6px; }}
     QTabBar::tab:selected {{ background: {c['hover']}; }}
     QScrollArea {{ border: 0; }}
-    """ + _liquid()
+    """ + _panels() + liquid_controls_css()
 
 
-def _liquid() -> str:
-    """In the suite's liquid look, its capsules of glass for buttons and boxes, and glass cards."""
-    controls = liquid_controls_css()
-    return controls + panel_css('#Card', 10) if controls else ''
+def _panels() -> str:
+    """On glass, in either look: the places that are read on the suite's solid panels, as the
+    settings windows' sections and sidebar are."""
+    if not glass_on():
+        return ''
+    return ''.join(panel_css(selector, 10) for selector in
+                   ('#Sidebar', '#Card', '#Banner', 'QTreeView', 'QTableView', 'QTabWidget::pane'))

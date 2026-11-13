@@ -7,7 +7,7 @@ from PySide6.QtWidgets import QApplication, QStyledItemDelegate
 from ..tasks import (KIND_IMAGE, KIND_MAGNET, KIND_MEDIA, KIND_TORRENT, RUNNING_STATES,
                      State)
 from ..util import human_eta, human_size, human_speed, human_time
-from . import icons
+from . import icons, theme
 
 SORT_ROLE = Qt.UserRole + 1
 TASK_ID_ROLE = Qt.UserRole + 2
@@ -242,7 +242,11 @@ class TransferFilter(QSortFilterProxyModel):
 
 
 class ProgressDelegate(QStyledItemDelegate):
-    """Draws the progress column as a filled bar with the percentage on top."""
+    """Draws the progress column as a small ring filling round in the state's colour, the
+    percentage beside it (the user's choice of six, 2026-11-13: a bar filling the row was chunky)."""
+
+    RING = 14           # px across
+    STROKE = 3.0
 
     def paint(self, painter: QPainter, option, index):
         self.initStyleOption(option, index)
@@ -263,28 +267,25 @@ class ProgressDelegate(QStyledItemDelegate):
             task = source.engine.store.get(task_id)
             state = task.state if task else None
 
-        rect = QRectF(option.rect).adjusted(6, 6, -6, -6)
-        radius = rect.height() / 2
-        palette = option.palette
-        track = QColor(palette.window().color())
-        track = track.darker(112) if track.lightness() > 128 else track.lighter(135)
+        cell = QRectF(option.rect)
+        ring = QRectF(cell.x() + 6, cell.center().y() - self.RING / 2, self.RING, self.RING)
+        ring = ring.adjusted(self.STROKE / 2, self.STROKE / 2, -self.STROKE / 2, -self.STROKE / 2)
+        # The app's own track colour: the list's palette is see-through on glass, and a track made
+        # from it came out black.
+        track = QColor(theme.colors()['bar'])
 
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(track)
-        painter.drawRoundedRect(rect, radius, radius)
-
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(track, self.STROKE))
+        painter.drawEllipse(ring)
         if fraction > 0:
-            fill = QRectF(rect)
-            fill.setWidth(max(rect.height(), rect.width() * fraction))
-            painter.setBrush(QColor(STATE_COLORS.get(state, '#e64980')))
-            painter.drawRoundedRect(fill, radius, radius)
+            painter.setPen(QPen(QColor(STATE_COLORS.get(state, '#e64980')), self.STROKE, Qt.SolidLine, Qt.RoundCap))
+            painter.drawArc(ring, 90 * 16, -round(360 * 16 * fraction))     # from the top, clockwise
 
         text = f'{fraction * 100:.1f}%'
-        painter.setPen(QPen(palette.windowText().color()))
-        font = painter.font()
-        font.setPointSizeF(max(7.0, font.pointSizeF() - 0.5))
-        painter.setFont(font)
-        painter.drawText(option.rect, Qt.AlignCenter, text)
+        painter.setPen(QPen(option.palette.windowText().color()))
+        painter.setFont(option.font)
+        painter.drawText(QRectF(ring.right() + self.STROKE / 2 + 8, cell.y(), cell.width(), cell.height()),
+                         Qt.AlignVCenter | Qt.AlignLeft, text)
         painter.restore()

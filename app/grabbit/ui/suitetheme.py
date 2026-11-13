@@ -75,7 +75,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QAbstractScrollArea, QAbstract
                                QPushButton, QStackedWidget, QStatusBar, QStyle, QToolBar, QToolButton, QVBoxLayout, QWidget)
 
 __all__ = ['ACCENT', 'ACCENT_HOVER', 'ON_ACCENT', 'ROSE', 'SuiteStyle', 'install', 'Colors', 'is_dark', 'veil',
-           'colors', 'ink', 'font', 'serif', 'paint_shadow', 'card_style', 'liquid_controls_css', 'panel_css', 'GLASS_RADIUS',
+           'colors', 'ink', 'font', 'serif', 'paint_shadow', 'card_style', 'liquid_controls_css', 'panel_css', 'panel_fill', 'GLASS_RADIUS',
            'LIQUID_RADIUS', 'glass_on', 'frost', 'paint_glass', 'css', 'fade_in', 'LOOKS', 'look', 'set_look',
            'motion_on', 'motion_chosen', 'set_motion', 'MODES', 'mode', 'set_mode', 'app_mode', 'restyle',
            'on_restyle', 'light_up', 'BACKDROP_OPACITY', 'fade_out', 'stagger_in', 'GAME_DOWNLOADS',
@@ -701,7 +701,9 @@ class Label(QLabel):
         lines = [paragraphs[0], paragraphs[-1]]
         if self.wordWrap() and width:
             wrapped = []
-            for paragraph in (paragraphs[0], paragraphs[-1]):
+            # one paragraph (most labels) is wrapped once, not once for its first line and again
+            # for its last: a resizing window asks every wrapped label at each new width
+            for paragraph in ((paragraphs[0],) if len(paragraphs) == 1 else (paragraphs[0], paragraphs[-1])):
                 layout = QTextLayout(paragraph, self.font())
                 layout.beginLayout()
                 parts = []
@@ -713,7 +715,7 @@ class Label(QLabel):
                     parts.append(paragraph[line.textStart():line.textStart() + line.textLength()])
                 layout.endLayout()
                 wrapped.append(parts or [''])
-            lines = [wrapped[0][0], wrapped[1][-1]]
+            lines = [wrapped[0][0], wrapped[-1][-1]]
         first = m.tightBoundingRect(lines[0].strip() or 'x')
         last = m.tightBoundingRect(lines[-1].strip() or 'x')
         return (max(0, math.floor(m.ascent() + first.top()) - 1),
@@ -1024,6 +1026,16 @@ def liquid_controls_css() -> str:
         QToolButton:hover {{ color: {text}; border: 1px solid {side}; border-top-color: {rim};
                              background: {middle}; }}
     """
+
+
+def panel_fill() -> QColor:
+    """The solid ground panel_css puts under what is read, as one colour: for panes that run edge
+    to edge (a vault's sidebar and list) rather than floating as a rounded panel."""
+    if not glass_on():
+        return QColor(colors().tile)
+    if _liquid_look():
+        return QColor(33, 31, 40, 205) if is_dark() else QColor(255, 255, 255, 216)
+    return QColor(16, 15, 20, 175) if is_dark() else QColor(255, 255, 255, 190)
 
 
 def panel_css(selector: str, radius: int = 12) -> str:
@@ -1588,7 +1600,7 @@ class _Frosting(QObject):
                 _paint_clear(obj, event)
             elif glass_on():
                 painter = QPainter(obj)
-                painter.setClipRect(event.rect())
+                painter.setClipRegion(event.region())    # the parts asked for: a rim repaint is its band, not the whole window
                 _paint_bridge(painter, obj)
                 painter.fillRect(event.rect(), veil())      # frosted: Windows' blur under a plain tint, no rim
                 painter.end()
@@ -1711,7 +1723,7 @@ def _paint_backdrop(window: QWidget, event) -> bool:
         window._suite_backdrop_at = now
         _backdrop_later(window)
         painter = QPainter(window)
-        painter.setClipRect(event.rect())
+        painter.setClipRegion(event.region())
         painter.setOpacity(BACKDROP_OPACITY)
         kw, kh = kept.width() / kept.devicePixelRatio(), kept.height() / kept.devicePixelRatio()
         if abs(kw - window.width()) <= 48 and abs(kh - window.height()) <= 48:
@@ -1733,7 +1745,7 @@ def _paint_backdrop(window: QWidget, event) -> bool:
         window._suite_backdrop_pixmap = picture
         window._suite_backdrop_key = key
     painter = QPainter(window)
-    painter.setClipRect(event.rect())
+    painter.setClipRegion(event.region())
     painter.setOpacity(BACKDROP_OPACITY)
     painter.drawPixmap(0, 0, window._suite_backdrop_pixmap)
     painter.end()
@@ -2230,13 +2242,19 @@ def _tone(shot, inner: QRectF) -> tuple[float, float]:
     part = shot.copy(QRect(round(inner.x() * dpr), round(inner.y() * dpr), max(1, round(inner.width() * dpr)),
                            max(1, round(inner.height() * dpr))))
     n = 32
-    image = (part.toImage() if isinstance(part, QPixmap) else part).scaled(
-        n, n, Qt.IgnoreAspectRatio, Qt.SmoothTransformation).convertToFormat(QImage.Format_RGB32)
-    raw, line = image.constBits(), image.bytesPerLine()          # blue, green, red, - for each spot
-    lum = [[(0.0722 * raw[i] + 0.7152 * raw[i + 1] + 0.2126 * raw[i + 2]) / 255
-            for i in range(y * line, y * line + 4 * n, 4)] for y in range(n)]
-    mean = sum(map(sum, lum)) / (n * n)
-    busy = sum(abs(lum[y][x] - lum[y][x + 1]) + abs(lum[y][x] - lum[y + 1][x])
+    whole = part.toImage() if isinstance(part, QPixmap) else part
+
+    def lum(transform) -> list:
+        image = whole.scaled(n, n, Qt.IgnoreAspectRatio, transform).convertToFormat(QImage.Format_RGB32)
+        raw, line = image.constBits(), image.bytesPerLine()      # blue, green, red, - for each spot
+        return [[(0.0722 * raw[i] + 0.7152 * raw[i + 1] + 0.2126 * raw[i + 2]) / 255
+                 for i in range(y * line, y * line + 4 * n, 4)] for y in range(n)]
+
+    mean = sum(map(sum, lum(Qt.SmoothTransformation))) / (n * n)
+    # Busy from single pixels, not averages: averaging blurred lines of small text - the hardest
+    # thing to read over - into a calm grey, and the tint stayed near 100 over a page of text.
+    spots = lum(Qt.FastTransformation)
+    busy = sum(abs(spots[y][x] - spots[y][x + 1]) + abs(spots[y][x] - spots[y + 1][x])
                for y in range(n - 1) for x in range(n - 1)) / ((n - 1) ** 2)
     return mean, busy
 
@@ -2638,7 +2656,9 @@ def _clear_tint(window: QWidget) -> int:
     mean, busy = getattr(window, '_suite_tone', None) or (0.5, 0.05)
     if is_dark():
         return int(min(235, 110 + 160 * max(0.0, mean - 0.25) + 900 * busy))
-    return int(min(215, 40 + 130 * max(0.0, 0.7 - mean) + 900 * busy))
+    # Up to 235, as dark, and sooner: at 215 (and 900 a unit of busy) a page of text behind still
+    # competed with a menu bar's words.
+    return int(min(235, 40 + 130 * max(0.0, 0.7 - mean) + 1200 * busy))
 
 
 def _paint_clear(window: QWidget, event) -> None:
@@ -2649,7 +2669,7 @@ def _paint_clear(window: QWidget, event) -> None:
     painter = QPainter(window)
     painter.setRenderHint(QPainter.Antialiasing)
     painter.setRenderHint(QPainter.SmoothPixmapTransform)
-    painter.setClipRect(event.rect())
+    painter.setClipRegion(event.region())
     r = QRectF(window.rect())
     _paint_rim_lens(painter, window)            # the rim first, then the tint over all of it
     alpha = _clear_tint(window)
