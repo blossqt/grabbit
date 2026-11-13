@@ -9,6 +9,7 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from . import gallerydl, metalink, pagescrape, suiteweb
+from .mediaitems import MediaItem, ProbeResult
 from .torrentmeta import TorrentInfo, parse_magnet, parse_torrent
 from .util import host_of, safe_filename, site_name
 
@@ -188,6 +189,11 @@ def analyze(url: str, settings) -> Analysis:
         analysis.error = 'Not a link Grabbit understands.'
         return analysis
 
+    seller = suiteweb.paid(url)
+    if seller:
+        # A paid picture, or a page selling one: never fetched. Free ones like it instead.
+        return _free_instead(url, analysis, f'{seller} pictures require a paid licence and are not downloaded.')
+
     path = urllib.parse.urlparse(url).path.lower()
     if path.endswith('.torrent'):
         try:
@@ -243,13 +249,11 @@ def analyze(url: str, settings) -> Analysis:
 
     head = http_head(url)
     if head.get('robot'):
-        analysis.kind = KIND_ERROR
         analysis.robot = True
         site = analysis.site or host_of(url) or 'This site'
-        analysis.error = (f'{site} checks for robots before it shows this page, '
-                          "so Grabbit can't read it. Right-click the picture you want, choose "
-                          'Copy image address, and paste that here instead.')
-        return analysis
+        return _free_instead(url, analysis, (
+            f'{site} requires a browser check before it shows this page. In the browser, '
+            'right-click the picture, choose Copy image address, and paste that address here.'))
     content_type = head.get('content_type', '')
     if content_type in ('application/x-bittorrent', 'application/octet-stream') and path.endswith('.torrent'):
         try:
@@ -286,6 +290,39 @@ def analyze(url: str, settings) -> Analysis:
         return analysis
 
     return _as_file(url, head, analysis)
+
+
+def _free_instead(url: str, analysis: Analysis, notice: str) -> Analysis:
+    """notice, with pictures under free licences like the one at url, when its address says
+    what it shows (suiteweb.words) and Openverse has some; else notice as the error."""
+    query = suiteweb.words(url)
+    matches = suiteweb.free_matches(query) if query else []
+    if not matches:
+        analysis.kind = KIND_ERROR
+        analysis.error = notice
+        return analysis
+    items = []
+    for number, match in enumerate(matches, 1):
+        ext = os.path.splitext(urllib.parse.urlparse(match['url']).path)[1].lstrip('.').lower()
+        ext = ext if ext in pagescrape.IMAGE_EXTS else 'jpg'
+        title = match['title'] or 'Untitled'
+        credit = f' by {match["creator"]}' if match['creator'] else ''
+        name = safe_filename(f'{title}{credit}')[:120] or f'picture {number}'
+        item = MediaItem(key=str(number), kind='image', title=f'{title}{credit} · {match["licence"]}',
+                         thumbnail=match['thumbnail'], preview=match['url'], ext=ext,
+                         direct_url=match['url'], filename=f'{name}.{ext}', width=match['width'],
+                         height=match['height'], index=number, optional=True)
+        item.group = 'image'
+        items.append(item)
+    sources = sorted({'Wikimedia Commons' if 'wikimedia.org' in match['url'] else
+                      'Flickr' if 'staticflickr.com' in match['url'] else host_of(match['url'])
+                      for match in matches})
+    result = ProbeResult(url=url, kind='gallery', site=', '.join(sources), title=f'Free pictures: {query}',
+                         thumbnail=items[0].thumbnail, items=items,
+                         description=f'{len(items)} free pictures')
+    analysis = _from_probe(url, result, analysis)
+    analysis.hint = f'{notice} Pictures with free licences that match "{query}" are listed below.'
+    return analysis
 
 
 def _try_gallery_dl(url: str, settings):

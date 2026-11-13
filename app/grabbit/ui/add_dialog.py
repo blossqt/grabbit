@@ -515,6 +515,11 @@ class GalleryCard(LinkCard):
 
         self.title.setText(self.probe.title or analysis.url)
         self.set_thumbnail(self.probe.thumbnail, self.probe.items[0].headers if self.probe.items else None)
+        if analysis.hint:
+            hint = theme.Label(analysis.hint)
+            hint.setObjectName('Muted')
+            hint.setWordWrap(True)
+            self.body.addWidget(hint)
 
         self.grid = GalleryGrid()
         self.grid.set_items(self.probe.items)

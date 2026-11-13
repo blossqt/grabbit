@@ -77,7 +77,7 @@ class LinkCheckTests(unittest.TestCase):
             found = analyze.analyze(f'{self.base}/i/blossom', None)
         self.assertEqual(found.kind, analyze.KIND_ERROR)
         self.assertTrue(found.robot, 'no "Download the file anyway": it would save the check')
-        self.assertIn('checks for robots', found.error)
+        self.assertIn('requires a browser check', found.error)
         self.assertIn('Copy image address', found.error)
 
     def test_the_full_size_picture(self):

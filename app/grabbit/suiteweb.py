@@ -13,15 +13,24 @@ Shared (Hanami's copy is the original; tests/check_copies.py keeps the others th
     banner_1200x1200.jpg is not a resized copy.
   - Only what a site shows freely: never a paid site's (Shutterstock, Getty, Adobe Stock,
     iStock) or a paid picture's (Unsplash+, Freepik Premium, Vecteezy's originals).
+- **Paid pictures.** paid() names the paid site or licence behind an address (PAID), and
+  free_matches() finds similar pictures with free licences instead, using words() from the
+  address. It asks Wikimedia Commons (about 0.1-0.5 s) and Openverse (Flickr and more; no key,
+  20 searches a minute, 200 a day, often 8-15 s or a 504 for a search it hasn't cached) at once,
+  and takes Openverse's only if they come within OPENVERSE_WAIT.
 - **Robot checks.** Some sites check for robots before they show a page (Cloudflare's "Just a
   moment..."). A program asking for the page gets the check, never the page, and getting
   round it is not on. robot_check() tells such a reply apart, so the user hears why and what
-  does work: the picture's own address, which is not checked.
+  does work: the picture's own address, which is not checked. Anubis (Unsplash's photo pages
+  since 2026) sends a browser to /.within.website for a proof-of-work puzzle.
 """
 
 from __future__ import annotations
 
+import json
 import re
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -110,7 +119,51 @@ SITES = (
     _sub(r'^(https?://i\.ebayimg\.com/.+/s-l)\d+(\.\w+)$', r'\g<1>1600\2'),
     # Etsy: il_340x270.<id>.jpg -> il_fullxfull.
     _sub(r'^(https?://i\.etsystatic\.com/.+/il_)\d+x\d+(\.[^/]+)$', r'\1fullxfull\2'),
+    # NASA's image library: <id>/<id>~thumb.jpg (~small, ~medium, ~large) -> ~orig. Checked 2026-11-13.
+    _sub(r'^(https?://images-assets\.nasa\.gov/image/([^/]+)/\2)~(?:thumb|small|medium|large)(\.\w+)$',
+         r'\1~orig\3'),
+    # The Met's open access: CRDImages/<dept>/web-large/<name>.jpg -> original/. Checked 2026-11-13.
+    _sub(r'^(https?://images\.metmuseum\.org/CRDImages/[^/]+/)(?:web-large|web-additional|mobile-large)/',
+         r'\1original/'),
+    # IIIF (museums and libraries: the Art Institute of Chicago, Library of Congress, Wellcome...):
+    # .../iiif/2/<id>/<region>/<size>/<rotation>/<quality>.<format> -> the whole picture at its
+    # largest. The Art Institute turns max and full away, and gives 1,686 px. Checked 2026-11-13.
+    lambda url: _iiif(url),
 )
+
+
+def _iiif(url: str) -> list[str]:
+    match = re.match(r'^(https?://[^?#]+/iiif/[23]/[^/?#]+)/[^/]+/([^/]+)/[^/]+/\w+\.\w+$', url)
+    if not match or match.group(2) in ('max', 'full'):
+        return []
+    sizes = ('max', 'full') + (('1686,',) if 'artic.edu' in match.group(1) else ())
+    return [f'{match.group(1)}/full/{size}/0/default.jpg' for size in sizes]
+
+
+def _hostname(url: str) -> str:
+    return (urllib.parse.urlsplit(url).hostname or '').lower()
+
+
+# Paid pictures, by where they come from: (test, the name the user knows it by). Grabbit and
+# Dropshift fetch none of these, and offer free_matches() instead.
+PAID = (
+    (_host('plus.unsplash.com'), 'Unsplash+'),
+    (_host('shutterstock.com'), 'Shutterstock'),
+    (lambda url: re.search(r'(^|\.)gettyimages\.[a-z.]+$', _hostname(url)) is not None, 'Getty Images'),
+    (_host('istockphoto.com'), 'iStock'),
+    (_host('stock.adobe.com', 'ftcdn.net'), 'Adobe Stock'),
+    (lambda url: _host('freepik.com', 'magnific.com')(url) and '/premium-' in url, 'Freepik Premium'),
+    (_host('dreamstime.com'), 'Dreamstime'),
+    (_host('depositphotos.com'), 'Depositphotos'),
+    (_host('123rf.com'), '123RF'),
+    (_host('alamy.com'), 'Alamy'),
+)
+
+# Words in an address that say nothing of what the picture shows.
+_NOT_WORDS = {'image', 'images', 'photo', 'photos', 'picture', 'pictures', 'stock', 'vector', 'vectors',
+              'premium', 'free', 'royalty', 'detail', 'illustration', 'illustrations', 'editorial',
+              'download', 'search', 'the', 'and', 'with', 'for', 'from', 'top', 'into', 'onto', 'jpg',
+              'jpeg', 'png', 'webp', 'htm', 'html', 'php', 'aspx'}
 
 
 def _shared(url: str) -> list[str]:
@@ -129,6 +182,149 @@ def _shared(url: str) -> list[str]:
         kept = [key for key, _ in query if key.lower() not in _SIZING]
         found += [_query(address, keep=kept) for address in (found or [url])]
     return found
+
+
+def paid(url: str) -> str:
+    """The paid site or licence a picture's address (or its page's) belongs to, or ''."""
+    for test, name in PAID:
+        if url and test(url):
+            return name
+    return ''
+
+
+def words(url: str, most: int = 6) -> str:
+    """What a page or picture shows, as far as its address says: the words of its longest
+    hyphenated part, without ids, numbers or words like "photo" ("a-person-standing-on-top-of-a-
+    large-rock-nEkqdbCjbg0" -> "person standing large rock"). '' if it says nothing."""
+    parts = urllib.parse.urlsplit(url or '')
+    pieces = [urllib.parse.unquote(piece).rsplit('.', 1)[0].replace('_', '-')
+              for piece in parts.path.split('/') if piece]
+    pieces = [piece for piece in pieces if '-' in piece]
+    if not pieces:
+        return ''
+    found = []
+    for word in max(pieces, key=lambda piece: piece.count('-')).lower().split('-'):
+        if len(word) > 2 and word.isalpha() and word not in _NOT_WORDS and word not in found:
+            found.append(word)
+    return ' '.join(found[:most])
+
+
+_LICENCES = {'cc0': 'CC0', 'pdm': 'Public domain'}
+OPENVERSE_WAIT = 2.5           # s: Openverse's results join only if they are back by then
+# Wikimedia's rules ask a program to say what it is; nothing about the user is in it.
+_API_AGENT = 'blossqt-suite/1.0 (https://github.com/blossqt)'
+
+
+def _json(address: str, timeout: float):
+    request = urllib.request.Request(address, headers={'User-Agent': _API_AGENT, 'Accept': 'application/json'})
+    with urllib.request.urlopen(request, timeout=timeout) as reply:
+        return json.loads(reply.read(4 * 1024 * 1024))
+
+
+def _plain(text: str) -> str:
+    return re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', text or '')).strip()
+
+
+def _commons(query: str, count: int, timeout: float) -> list[dict]:
+    """Wikimedia Commons' pictures for query: every one there is under a free licence. Commons
+    wants every word, so while fewer than half of count come back, the last word is dropped."""
+    found, said = [], query.split()
+    while said:
+        for match in _commons_once(' '.join(said), count, timeout):
+            if match['url'] not in {other['url'] for other in found}:
+                found.append(match)
+        if len(found) >= count // 2:
+            break
+        said = said[:-1]
+    return found[:count]
+
+
+def _commons_once(query: str, count: int, timeout: float) -> list[dict]:
+    data = _json('https://commons.wikimedia.org/w/api.php?' + urllib.parse.urlencode({
+        'action': 'query', 'format': 'json', 'generator': 'search', 'gsrnamespace': 6,
+        'gsrsearch': f'filetype:bitmap {query}', 'gsrlimit': count, 'prop': 'imageinfo',
+        'iiprop': 'url|size|extmetadata', 'iiurlwidth': 400,
+        'iiextmetadatafilter': 'LicenseShortName|Artist'}), timeout)
+    pages = sorted((data.get('query') or {}).get('pages', {}).values(), key=lambda page: page.get('index', 0))
+    found = []
+    for page in pages:
+        info = (page.get('imageinfo') or [{}])[0]
+        meta = info.get('extmetadata') or {}
+        url = str(info.get('url') or '').split('?')[0]
+        if not url.startswith('https://') or re.search(r'\.(tiff?|djvu|pdf)$', url, re.IGNORECASE):
+            continue                    # scans and documents, often hundreds of megabytes
+        title = re.sub(r'\.\w+$', '', str(page.get('title') or '').removeprefix('File:')).replace('_', ' ')
+        found.append({'title': title, 'url': url, 'thumbnail': info.get('thumburl') or url,
+                      'licence': _plain((meta.get('LicenseShortName') or {}).get('value')) or 'Free licence',
+                      'creator': _plain((meta.get('Artist') or {}).get('value'))[:80],
+                      'page': info.get('descriptionurl') or '',
+                      'width': int(info.get('width') or 0), 'height': int(info.get('height') or 0)})
+    return found
+
+
+def _openverse(query: str, count: int, timeout: float) -> list[dict]:
+    """Openverse's pictures for query (Flickr and other open collections)."""
+    data = _json('https://api.openverse.org/v1/images/?' + urllib.parse.urlencode(
+        {'q': query, 'page_size': count, 'mature': 'false'}), timeout)
+    found = []
+    for item in data.get('results') or []:
+        if not str(item.get('url') or '').startswith(('http://', 'https://')):
+            continue
+        code, version = str(item.get('license') or '').lower(), str(item.get('license_version') or '')
+        licence = _LICENCES.get(code) or ' '.join(bit for bit in ('CC', code.upper(), version) if bit)
+        found.append({'title': str(item.get('title') or '').strip(), 'url': item['url'],
+                      'thumbnail': item.get('thumbnail') or item['url'], 'licence': licence,
+                      'creator': str(item.get('creator') or '').strip()[:80],
+                      'page': item.get('foreign_landing_url') or '',
+                      'width': int(item.get('width') or 0), 'height': int(item.get('height') or 0)})
+    return found
+
+
+def free_matches(query: str, count: int = 12, timeout: float = 10) -> list[dict]:
+    """Pictures under free licences that match query: each {title, url, thumbnail, licence,
+    creator, page, width, height}. Wikimedia Commons' first, then Openverse's if they are back
+    within OPENVERSE_WAIT; [] when neither has any or can be reached. Off the window's thread."""
+    if not query.strip():
+        return []
+    results: dict = {}
+
+    def ask(name, source):
+        try:
+            results[name] = source(query, count, timeout)
+        except (OSError, ValueError, AttributeError):
+            results[name] = []
+
+    threads = {name: threading.Thread(target=ask, args=(name, source), daemon=True)
+               for name, source in (('commons', _commons), ('openverse', _openverse))}
+    for thread in threads.values():
+        thread.start()
+    started = time.perf_counter()
+    threads['commons'].join(timeout)
+    threads['openverse'].join(max(0.0, OPENVERSE_WAIT - (time.perf_counter() - started)))
+    found, seen = [], set()
+    for match in results.get('commons', []) + results.get('openverse', []):
+        if match['url'] not in seen:
+            seen.add(match['url'])
+            found.append(match)
+    return found[:count]
+
+
+_OPENVERSE_THUMB = re.compile(r'^https?://api\.openverse\.org/v1/images/([0-9a-f-]{36})/thumb/?(?:\?.*)?$')
+
+
+def _openverse_original(url: str, timeout: float) -> str:
+    """The picture an Openverse thumbnail stands for, as Openverse gives it, or ''."""
+    match = _OPENVERSE_THUMB.match(url or '')
+    if not match:
+        return ''
+    request = urllib.request.Request(f'https://api.openverse.org/v1/images/{match.group(1)}/',
+                                     headers={'User-Agent': USER_AGENT, 'Accept': 'application/json'})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as reply:
+            original = str(json.loads(reply.read(256 * 1024)).get('url') or '')
+    except (OSError, ValueError):
+        return ''
+    return original if original.startswith(('http://', 'https://')) else ''
 
 
 def candidates(url: str) -> list[tuple[str, bool]]:
@@ -166,7 +362,8 @@ def best(url: str, referer: str = '', timeout: float = 10) -> str:
     """The fullest picture to be had for url: the first candidate whose server answers with a
     picture (and, for a shared guess, a larger one), else url itself. Off the window's thread:
     each candidate is a request."""
-    found = candidates(url)
+    original = _openverse_original(url, timeout)
+    found = ([(original, True)] if original else []) + candidates(original or url)
     if not found:
         return url
     start = None
@@ -212,5 +409,10 @@ def robot_check(status: int, headers) -> bool:
     anything with .get, as urllib's are."""
     if (headers.get('cf-mitigated') or '').lower() == 'challenge':
         return True
+    if '/.within.website' in (headers.get('location') or ''):
+        return True                                         # Anubis, on its way to its puzzle
+    cookies = headers.get_all('set-cookie') if hasattr(headers, 'get_all') else [headers.get('set-cookie')]
+    if status in (401, 403) and any('anubis' in (cookie or '').lower() for cookie in cookies or []):
+        return True                                         # Anubis's puzzle page itself
     server = (headers.get('server') or '').lower()
     return status in (403, 429, 503) and any(name in server for name in _CHECKERS)

@@ -4,6 +4,12 @@ When neither yt-dlp nor gallery-dl knows a site, Grabbit reads the page itself
 and lists the videos, images, audio and documents it links to, so they land in
 the same tick-box picker. Everything found is a direct file URL handed to
 aria2 - no scripts from the page are executed.
+
+Pictures are taken wherever a page says it has one - <img>, lazy-loading
+attributes, srcset, og:image, JSON-LD, CSS backgrounds - with or without a file
+extension: image servers rarely give one. Those without are asked what they
+are (at most ASK_MOST, in parallel). Each picture a site rule knows
+(suiteweb.candidates) is then swapped for its full size (suiteweb.best).
 """
 
 import html
@@ -11,8 +17,10 @@ import logging
 import os
 import re
 import urllib.request
-from urllib.parse import urljoin, urlparse
+from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import parse_qs, urljoin, urlparse
 
+from . import suiteweb
 from .mediaitems import MediaItem, ProbeResult
 from .util import host_of, safe_filename
 
@@ -33,16 +41,30 @@ JUNK = re.compile(r'(sprite|favicon|logo|icon[-_.]|avatar|spacer|pixel|blank|1x1
                   r'placeholder|loading|badge|emoji)', re.IGNORECASE)
 
 _ATTR = r'''(?:"([^"]+)"|'([^']+)'|([^\s"'>]+))'''
+# Addresses that are files only if their extension says so.
 PATTERNS = (
-    re.compile(rf'<(?:img|source|video|audio|embed)[^>]+?\bsrc\s*=\s*{_ATTR}', re.IGNORECASE),
-    re.compile(rf'<[^>]+?\bdata-(?:src|original|lazy-src|full|zoom-image)\s*=\s*{_ATTR}', re.IGNORECASE),
+    re.compile(rf'<(?:source|video|audio|embed)[^>]+?\bsrc\s*=\s*{_ATTR}', re.IGNORECASE),
     re.compile(rf'<a[^>]+?\bhref\s*=\s*{_ATTR}', re.IGNORECASE),
-    re.compile(rf'<meta[^>]+?(?:og:image|og:video|twitter:image)[^>]+?\bcontent\s*=\s*{_ATTR}',
+    re.compile(rf'<meta[^>]+?og:video[^>]+?\bcontent\s*=\s*{_ATTR}', re.IGNORECASE),
+)
+# Addresses that are pictures by where they stand, extension or not.
+PICTURES = (
+    re.compile(rf'<img[^>]+?\bsrc\s*=\s*{_ATTR}', re.IGNORECASE),
+    re.compile(rf'<[^>]+?\bdata-(?:src|original|lazy-src|lazy|full|full-src|zoom-image|large|hires|image)'
+               rf'\s*=\s*{_ATTR}', re.IGNORECASE),
+    re.compile(rf'<meta[^>]+?(?:og:image|twitter:image)(?::src|:url|:secure_url)?["\'][^>]+?\bcontent\s*=\s*{_ATTR}',
                re.IGNORECASE),
     re.compile(rf'<link[^>]+?\brel\s*=\s*["\']?image_src["\']?[^>]+?\bhref\s*=\s*{_ATTR}',
                re.IGNORECASE),
+    re.compile(r'"(?:contentUrl|image|thumbnailUrl)"\s*:\s*"(https?:[^"]+)"'),                  # JSON-LD
+    re.compile(r'''background(?:-image)?\s*:[^;"'>]*?url\(\s*["']?([^"')]+)''', re.IGNORECASE),      # CSS
 )
-SRCSET = re.compile(rf'\bsrcset\s*=\s*{_ATTR}', re.IGNORECASE)
+SRCSET = re.compile(rf'\b(?:data-)?(?:lazy-)?srcset\s*=\s*{_ATTR}', re.IGNORECASE)
+_TYPES = {'image/jpeg': 'jpg', 'image/pjpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp',
+          'image/gif': 'gif', 'image/avif': 'avif', 'image/bmp': 'bmp', 'image/tiff': 'tiff',
+          'image/heic': 'heic'}
+ASK_MOST = 48           # pictures without an extension asked about, and pictures made full-size
+WORKERS = 8
 TITLE = re.compile(r'<title[^>]*>(.*?)</title>', re.IGNORECASE | re.DOTALL)
 
 
@@ -62,6 +84,21 @@ def _value(match) -> str:
 def _extension(url: str) -> str:
     path = urlparse(url).path
     return os.path.splitext(path)[1].lstrip('.').lower()
+
+
+def _said_format(url: str) -> str:
+    """An image server's ?fm=webp / ?format=png, as an extension, or ''."""
+    query = parse_qs(urlparse(url).query)
+    said = (query.get('fm') or query.get('format') or query.get('f') or [''])[0].lower()
+    said = 'jpg' if said in ('jpeg', 'pjpg', 'pjpeg') else said
+    return said if said in IMAGE_EXTS else ''
+
+
+def _in_parallel(work, things: list) -> list:
+    if not things:
+        return []
+    with ThreadPoolExecutor(max_workers=min(WORKERS, len(things))) as pool:
+        return list(pool.map(work, things))
 
 
 def _largest_from_srcset(value: str) -> str:
@@ -90,23 +127,42 @@ def scrape(url: str, settings=None, max_items: int = 300) -> ProbeResult:
     title_match = TITLE.search(page)
     result.title = html.unescape(title_match.group(1)).strip()[:160] if title_match else host_of(url)
 
-    found: dict = {}
-    def consider(raw: str):
+    found: dict = {}                    # address -> extension ('' for a picture still to be asked)
+    def consider(raw: str, picture: bool = False):
         if not raw or raw.startswith(('data:', 'javascript:', 'mailto:', '#')):
             return
-        absolute = urljoin(final_url, raw)
-        if not absolute.startswith(('http://', 'https://')):
+        absolute = urljoin(final_url, html.unescape(raw).replace('\\/', '/'))
+        if not absolute.startswith(('http://', 'https://')) or JUNK.search(absolute):
             return
         extension = _extension(absolute)
-        if extension not in ALL_EXTS or JUNK.search(absolute):
-            return
+        if extension not in ALL_EXTS:
+            if not picture or extension in ('svg', 'js', 'css', 'html', 'htm', 'php', 'json'):
+                return
+            extension = _said_format(absolute)
         found.setdefault(absolute.split('#')[0], extension)
 
     for pattern in PATTERNS:
         for match in pattern.finditer(page):
             consider(_value(match))
+    for pattern in PICTURES:
+        for match in pattern.finditer(page):
+            consider(_value(match), picture=True)
     for match in SRCSET.finditer(page):
-        consider(_largest_from_srcset(_value(match)))
+        consider(_largest_from_srcset(_value(match)), picture=True)
+
+    # Pictures without an extension: what the server says they are. Anything else goes.
+    unknown = [link for link, extension in found.items() if not extension][:ASK_MOST]
+    for link, (kind, _) in zip(unknown, _in_parallel(lambda link: suiteweb._ask(link, final_url, 8), unknown)):
+        found[link] = _TYPES.get(kind, '')
+    found = {link: extension for link, extension in found.items() if extension}
+
+    # Full-size pictures where a site rule knows the way (Pixabay's _640, WordPress's -300x200...).
+    full: dict = {}
+    upgradable = [link for link, extension in found.items()
+                  if extension in IMAGE_EXTS and suiteweb.candidates(link)][:ASK_MOST]
+    for link, better in zip(upgradable, _in_parallel(lambda link: suiteweb.best(link, final_url, 8), upgradable)):
+        if better != link:
+            full[link] = better
 
     order = {'video': 0, 'audio': 1, 'image': 2, 'file': 3}
 
@@ -119,18 +175,24 @@ def scrape(url: str, settings=None, max_items: int = 300) -> ProbeResult:
             return 'image'
         return 'file'
 
-    items = []
+    items, taken = [], set()
     for link, extension in list(found.items())[:max_items]:
         group = category(extension)
-        name = safe_filename(os.path.basename(urlparse(link).path)) or f'file.{extension}'
+        target = full.get(link, link)
+        if target in taken:
+            continue                            # the same picture in another size
+        taken.add(target)
+        name = safe_filename(os.path.basename(urlparse(target).path)) or 'file'
+        if _extension(name) not in ALL_EXTS:
+            name = f'{name}.{extension}'
         items.append(MediaItem(
             key=str(len(items) + 1),
             kind='image',                       # direct download either way
             title=name,
             thumbnail=link if group == 'image' else '',
-            preview=link if group == 'image' else '',
+            preview=target if group == 'image' else '',
             ext=extension,
-            direct_url=link,
+            direct_url=target,
             filename=name,
             headers={'Referer': final_url},
             index=len(items) + 1,
