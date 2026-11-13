@@ -429,7 +429,8 @@ ANDROID_INPUTS = ('android', 'app/grabbit', 'build/android', '.github/workflows/
                   ':(exclude)app/grabbit/version.py', ':(exclude)app/grabbit/ui',
                   ':(exclude)app/grabbit/app.py', ':(exclude)app/grabbit/engine.py',
                   ':(exclude)app/grabbit/associations.py', ':(exclude)app/grabbit/player.py',
-                  ':(exclude)app/grabbit/selfupdate.py', ':(exclude)app/grabbit/gifs.py')
+                  ':(exclude)app/grabbit/selfupdate.py', ':(exclude)app/grabbit/gifs.py',
+                  ':(exclude)app/grabbit/ondisk.py')
 _APK_NAME = re.compile(r'^Grabbit-(\d+\.\d+\.\d+)-arm64')
 
 

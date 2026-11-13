@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from . import ondisk
 from .aria2rpc import Aria2Client, Aria2Error, Aria2Process
 from .paths import find_tool, logs_dir, torrents_dir
 from .tasks import (KIND_HTTP, KIND_IMAGE, KIND_MAGNET, KIND_MEDIA, KIND_TORRENT,
@@ -73,6 +74,7 @@ class Engine(QObject):
         self._media_jobs: dict = {}        # task_id -> MediaJob
         self._media_queue: list = []
         self._media_gids: dict = {}        # aria2 gid -> task_id (parts of media jobs)
+        self._looks: dict = {}             # task_id -> the look at its files under way (ondisk)
 
         self._snapshot_ready.connect(self._apply_snapshot)
         self._media_event.connect(self._on_media_event)
@@ -417,17 +419,32 @@ class Engine(QObject):
         self.store.mark_dirty()
         return task
 
-    def _add_torrent_task(self, task: Task, paused: bool = False, seed_only: bool = False):
+    def _add_torrent_task(self, task: Task, paused: bool = False, seed_only: bool = False,
+                          verdict: str = ''):
         try:
-            data = open(task.torrent_file, 'rb').read()
+            with open(task.torrent_file, 'rb') as handle:
+                data = handle.read()
         except OSError as exc:
             task.state, task.error = State.ERROR, f'torrent file missing: {exc}'
+            return
+        self._looks.pop(task.id, None)
+        if not verdict and not seed_only and ondisk.needs_look(task.save_dir, data):
+            # Its file is there without aria2's control file, which aria2 refuses outright.
+            self._look_first(task, data, paused)
+            return
+        if verdict == ondisk.OTHER:
+            task.state = State.ERROR
+            task.error = (f'Another file named “{task.name}” is already in {task.save_dir}. '
+                          'Move or rename it, then start this again.')
             return
         options = {
             'dir': task.save_dir,
             'gid': _gid_for(task),
             'continue': 'true',
         }
+        if verdict == ondisk.CHECK:
+            # The pieces already there are hashed, and only those missing or wrong are fetched.
+            options['check-integrity'] = 'true'
         if task.select_files:
             options['select-file'] = task.select_files
         if paused:
@@ -441,6 +458,38 @@ class Engine(QObject):
         except Aria2Error as exc:
             task.state = State.ERROR
             task.error = str(exc)
+
+    def _look_first(self, task: Task, data: bytes, paused: bool):
+        """Hash a few of the pieces already there (ondisk.look) off the window's thread, then
+        hand the torrent to aria2 as that says."""
+        token = object()
+        self._looks[task.id] = token
+        task.state = State.CHECKING
+        task.progress_note = ''
+        save_dir, select = task.save_dir, task.select_files
+
+        def work():
+            try:
+                verdict = ondisk.look(save_dir, data, select)
+            except OSError as exc:
+                verdict = exc
+            self._deferred_result.emit(done, verdict)
+
+        def done(verdict):
+            if self._looks.get(task.id) is not token or self.store.get(task.id) is not task:
+                return                  # removed, or started again, meanwhile
+            self._looks.pop(task.id, None)
+            if isinstance(verdict, OSError):
+                task.state = State.ERROR
+                task.error = f'Could not read the file already there: {verdict}'
+            else:
+                still_paused = paused or task.state == State.PAUSED
+                task.state = State.PAUSED if still_paused else State.QUEUED
+                self._add_torrent_task(task, paused=still_paused, verdict=verdict)
+            self.store.mark_dirty()
+            self.tasks_updated.emit([task.id])
+
+        self._executor.submit(self._guard, work)
 
     def start_torrent_from_metadata(self, task: Task, selected: list | None,
                                     save_dir: str = '', start: bool = True):
@@ -853,6 +902,8 @@ class Engine(QObject):
                 gid = task.gid
                 self._submit(lambda g=gid: self.client.call('aria2.forcePause', g))
                 task.state = State.PAUSED
+            elif task_id in self._looks:
+                task.state = State.PAUSED   # handed to aria2 paused once the look is done
             task.down_speed = task.up_speed = 0
             changed.append(task_id)
         if changed:
