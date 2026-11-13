@@ -34,12 +34,36 @@ def setup_logging():
         root.addHandler(console)
 
 
+def server_pid(socket: QLocalSocket) -> int:
+    """The process at the other end of a connected local socket (a named pipe on Windows), or 0."""
+    if sys.platform != 'win32':
+        return 0
+    import ctypes
+    pid = ctypes.c_ulong(0)
+    handle = ctypes.c_void_p(int(socket.socketDescriptor()))
+    if ctypes.windll.kernel32.GetNamedPipeServerProcessId(handle, ctypes.byref(pid)):
+        return pid.value
+    return 0
+
+
+def let_forward(pid: int) -> None:
+    """Pass this process's right to bring a window to the front on to pid. A browser starting
+    Grabbit for a magnet link gives that right to the Grabbit it starts, not to the one already
+    running, which then could not come forward: its window and add box stayed behind the
+    browser, only flashing on the taskbar."""
+    if sys.platform == 'win32':
+        import ctypes
+        ASFW_ANY = -1
+        ctypes.windll.user32.AllowSetForegroundWindow(ctypes.c_long(pid or ASFW_ANY))
+
+
 def send_to_running_instance(arguments) -> bool:
     """True when another Grabbit took over these arguments."""
     socket = QLocalSocket()
     socket.connectToServer(SERVER_NAME)
     if not socket.waitForConnected(300):
         return False
+    let_forward(server_pid(socket))
     payload = '\n'.join(arguments).encode('utf-8')
     socket.write(payload if payload else b'\n')
     socket.flush()

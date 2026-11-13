@@ -37,6 +37,12 @@ grabbit.SERVER_NAME = sys.argv[2]
 links = open(sys.argv[3], encoding='utf-8').read().splitlines()
 if sys.argv[4] == 'own':
     sys.exit(0 if grabbit.send_to_running_instance(links) else 1)
+if sys.argv[4] == 'forward':          # which process it lets come to the front, as it hands over
+    granted = []
+    grabbit.let_forward = granted.append
+    handed = grabbit.send_to_running_instance(links)
+    print(granted[0] if handed and granted else 'none', flush=True)
+    sys.exit(0)
 with open('\\\\.\\pipe\\' + sys.argv[2], 'wb', buffering=0) as pipe:      # one that takes its time
     time.sleep(float(sys.argv[4]))
     pipe.write('\n'.join(links).encode('utf-8'))
@@ -65,7 +71,8 @@ class HandoverTests(unittest.TestCase):
     def _send(self, links, how='own'):
         listed = Path(os.environ.get('TEMP', '.')) / f'grabbit-handover-{os.getpid()}.txt'
         listed.write_text('\n'.join(links), encoding='utf-8')
-        return subprocess.Popen([sys.executable, '-c', SENDER, str(APP), NAME, str(listed), how])
+        return subprocess.Popen([sys.executable, '-c', SENDER, str(APP), NAME, str(listed), how],
+                                stdout=subprocess.PIPE, text=True)
 
     def _spin(self, until, seconds: float = 10) -> None:
         deadline = time.monotonic() + seconds
@@ -94,6 +101,15 @@ class HandoverTests(unittest.TestCase):
         gaps = [b - a for a, b in zip(ticks, ticks[1:])]
         self.assertEqual(self.window.handed, [['https://example.com/a']])
         self.assertLess(max(gaps), 0.15, f'never held up: {gaps}')
+
+    def test_the_running_grabbit_may_come_to_the_front(self):
+        # A browser lets only the Grabbit it starts come to the front; that one passes it on to
+        # the Grabbit it hands the link to - this process, here - found through their pipe.
+        sender = self._send(['magnet:?xt=urn:btih:abc'], 'forward')
+        self._spin(lambda: self.window.handed)
+        out, _ = sender.communicate(timeout=10)
+        self.assertEqual(out.strip(), str(os.getpid()))
+        self.assertEqual(self.window.handed, [['magnet:?xt=urn:btih:abc']])
 
     def test_handed_over_again_and_again(self):
         for n in range(5):
