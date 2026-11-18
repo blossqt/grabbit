@@ -86,7 +86,8 @@ class SuiteLink:
     # ------------------------------------------------------------------ the app's side
 
     def start(self) -> None:
-        if self._thread is None:
+        if self._thread is None or not self._thread.is_alive():
+            self._stop.clear()
             self._thread = threading.Thread(target=self._run, name=f'suitelink-{self.app}', daemon=True)
             self._thread.start()
 
@@ -119,20 +120,27 @@ class SuiteLink:
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            handle = _kernel32.CreateFileW(PIPE_PATH, _GENERIC_READ | _GENERIC_WRITE, 0, None,
-                                           _OPEN_EXISTING, 0, None)
-            if not handle or handle == _INVALID_HANDLE:
-                self._stop.wait(self._retry)            # Hanami isn't running (yet)
-                continue
             try:
-                self._session(handle)
-            finally:
-                _kernel32.CloseHandle(handle)
-                if self.connected:
-                    with self._lock:
-                        self.connected = False
-                    self._call(self._on_state, False)
-            self._stop.wait(self._retry)
+                handle = _kernel32.CreateFileW(PIPE_PATH, _GENERIC_READ | _GENERIC_WRITE, 0, None,
+                                               _OPEN_EXISTING, 0, None)
+                if not handle or handle == _INVALID_HANDLE:
+                    self._stop.wait(self._retry)            # Hanami isn't running (yet)
+                    continue
+                try:
+                    self._session(handle)
+                finally:
+                    _kernel32.CloseHandle(handle)
+                    if self.connected:
+                        with self._lock:
+                            self.connected = False
+                        self._call(self._on_state, False)
+            except Exception:  # noqa: BLE001 - a Windows hiccup must not end the link
+                import traceback
+                traceback.print_exc()
+            try:
+                self._stop.wait(self._retry)
+            except OSError:
+                pass
 
     def _session(self, handle) -> None:
         hello = {'t': 'hello', 'app': self.app, 'pid': os.getpid(), 'icon': self._icon, 'v': VERSION}
@@ -160,7 +168,7 @@ class SuiteLink:
                     line, buffer = buffer.split(b'\n', 1)
                     self._received(line)
             else:
-                time.sleep(self._poll)
+                self._stop.wait(self._poll)
 
     def _received(self, line: bytes) -> None:
         try:
