@@ -68,7 +68,7 @@ from PySide6.QtCore import (QAbstractAnimation, QEasingCurve, QEvent, QObject, Q
                             QRect, QRectF, QSize, Qt, QSequentialAnimationGroup, QTimer, QVariantAnimation, Signal)
 from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QFont, QFontDatabase, QGuiApplication, QImage, QLinearGradient,
                            QFontMetricsF, QPainter, QPainterPath, QPalette, QPen, QPixmap, QRadialGradient, QRegion,
-                           QTextLayout)
+                           QTextLayout, QTransform)
 from PySide6.QtWidgets import (QAbstractItemView, QAbstractScrollArea, QAbstractSpinBox, QApplication, QCheckBox,
                                QComboBox, QDialog, QFrame, QGraphicsEffect, QLabel,
                                QGraphicsOpacityEffect, QLineEdit, QMainWindow, QMenuBar, QProgressBar, QProxyStyle,
@@ -1861,20 +1861,26 @@ def _frosting() -> _Frosting:
 
 _MARGIN = 56              # how far beyond a window's edges its shot of the screen reaches
 _MARGIN_FRAMELESS = 160   # a pop-up's, further: one dragged fast stays within its last shot until the next comes
-# band: how far in from the rim the glass bends light; reach: how far beyond the edge the light
-# shown at the rim comes from, falling off towards the flat middle - by power over the band, or
-# (rate) as exp(-rate x distance in), a thin rim bending hard, as liquid-glass-js's "rim" does;
-# blur: how much the glass softens what is behind; steps: the rings it is drawn in; corner,
-# shrink: the rings' corners.
+# The glass's edge is a rounded bevel (_lens). band: how far in from the edge it reaches - at most
+# BEVEL_SHARE of the window's shorter side, so a slim toast keeps a flat middle; reach: how far
+# beyond the edge the light shown at the very rim comes from, less further in (steep at the rim,
+# flat where the bevel meets the middle, as light bends through a rounded edge); spread: how much
+# further red bends, and blue less, so colours part along the rim; step: the bevel is drawn in
+# lines this many pixels thick; blur: how much the glass softens what is behind.
+# Until 2026-11-20 the liquid bend reached only ~4 px in and was all but invisible (the user: "it
+# just looks transparent"); .dev\liquid\proto.py in Keytap renders the bevel over a photo.
 _LENSES = {
     # canvasui.dev's frosted cards (the user's wish, 2026-11-01): what is behind, flat and well
     # blurred (its backdrop-filter: blur(12px)) - no bending at the rim
-    'frosted': dict(band=1, reach=0, power=1.0, blur=12, steps=2, corner=GLASS_RADIUS, shrink=1.0),
-    'liquid': dict(band=9, reach=48, rate=0.55, blur=2, steps=10, corner=LIQUID_RADIUS, shrink=1.0),
-    # a framed window's rim, in either look: only the rings that bend in light from beyond its
-    # edges (the window itself fills the rest of its shot)
-    'rim': dict(band=5, reach=56, rate=0.55, blur=2, steps=6, corner=GLASS_RADIUS, shrink=1.0),
+    'frosted': dict(band=0, reach=0, spread=0.0, step=3, blur=12),
+    'liquid': dict(band=36, reach=48, spread=0.1, step=3, blur=2),
+    # a framed window's rim, in either look: only the bevel, bending in light from beyond its
+    # edges (the window itself fills the rest of its shot); no wider than _RIM_SPAN. Its colours
+    # don't part: a big window's rim is made again as it is dragged, and parting them took it from
+    # 1 ms to 2.4 (900 x 600) and 6.5 (1400 x 900).
+    'rim': dict(band=12, reach=16, spread=0.0, step=3, blur=2),
 }
+BEVEL_SHARE = 0.3
 _LIVE_MS = 33             # how often a moving window takes the screen behind it again
 _SETTLE = 0.35            # and for how long after it stops
 _SHADOW = 24              # px around a pop-up that Windows' shadow for it can darken in a shot
@@ -2404,63 +2410,161 @@ def _lens_for(window: QWidget) -> QPixmap | None:
 
 def _lens(shot: QPixmap, x: float, y: float, width: int, height: int, spec: dict,
           rim_only: bool = False) -> QPixmap:
-    """Glass width x height, for a window at (x, y) in the shot: each ring in from the rim drawn
-    from a little more of what lies beyond the window's edges, the middle as it is (or, rim_only,
-    left out)."""
+    """Glass width x height, for a window at (x, y) in the shot: the middle as it is (or, rim_only,
+    left out), and round its edges a bevel that bends in what lies beyond them - red a little
+    further and blue a little less (spread), so colours part along the rim. The caller clips it to
+    the window's rounded shape."""
+    band, lines = _bevel(width, height, spec)
+    spread = spec['spread']
+    sides = {right: _turned_side(shot, x, y, width, height, lines, 1 + spread, right)
+             for right in (False, True)} if lines else {}
+    green = _bevel_pass(shot, x, y, width, height, lines, 1.0, sides, middle=not rim_only)
+    # Red and blue part only where they would land at least half a pixel apart: the outer part of
+    # the bevel, where it bends most (the lines run from the rim in, bending less and less).
+    parting = [line for line in lines if line[2] * spread >= 0.5]
+    if parting:
+        # Red and blue, each bent its own way, take the place of the green pass's own there; the
+        # rest, where they would part by less, keeps all three as they are.
+        lines, band = parting, parting[-1][0] + parting[-1][1]
+        whole = QRectF(0, 0, width, height)
+        inset = math.floor(band)                        # never past the parting lines
+        bevel = QRegion(0, 0, width, height).subtracted(
+            QRegion(inset, inset, width - 2 * inset, height - 2 * inset))
+        painter = QPainter(green)
+        painter.setClipRegion(bevel)
+        painter.setCompositionMode(QPainter.CompositionMode_Multiply)
+        painter.fillRect(whole, QColor(0, 255, 0))
+        painter.setCompositionMode(QPainter.CompositionMode_Plus)
+        for scale, keep in ((1 + spread, QColor(255, 0, 0)), (1 - spread, QColor(0, 0, 255))):
+            # only its bevel is used, so what is beyond it can stay as the new image had it
+            part = _bevel_pass(shot, x, y, width, height, lines, scale, sides, middle=False, clear=False)
+            tint = QPainter(part)
+            tint.setClipRegion(bevel)
+            tint.setCompositionMode(QPainter.CompositionMode_Multiply)
+            tint.fillRect(whole, keep)
+            tint.end()
+            painter.drawImage(whole, part)
+        painter.end()
+    return QPixmap.fromImage(green)
+
+
+def _bevel(width: int, height: int, spec: dict) -> tuple:
+    """A window's bevel: how wide it is, and its lines from the rim in - each (how far in, how
+    thick, how far out what its outer and its inner edge show comes from). Each line's inner edge
+    takes up where the next one's outer edge does, so the bend is one smooth curve."""
+    band = min(spec['band'], BEVEL_SHARE * min(width, height))
+    if band < 1 or not spec['reach']:
+        return 0.0, []
+    reach = spec['reach'] * band / spec['band']
+    count = max(2, round(band / spec['step']))
+
+    def shift(i: int) -> float:
+        u = 1 - i / count                               # 1 at the rim, 0 where the glass is flat
+        return reach * (1 - math.sqrt(max(0.0, 1 - u * u)))
+
+    return band, [(band * i / count, band / count, shift(i), shift(i + 1)) for i in range(count)]
+
+
+def _bevel_pass(shot: QPixmap, x: float, y: float, width: int, height: int, lines: list,
+                scale: float, sides: dict, middle: bool, clear: bool = True) -> QImage:
+    """The bevel, bent by scale times its own amount, drawn as a mitred frame of lines, each from a
+    little further out than where it lies; the middle drawn too if asked. Without clear, what is
+    neither is left as the new image had it (for a pass of which only the bevel is used)."""
     dpr = shot.devicePixelRatio()
-    out = QPixmap(max(1, round(width * dpr)), max(1, round(height * dpr)))
+    room_x, room_y = shot.width() / dpr, shot.height() / dpr
+    out = QImage(max(1, round(width * dpr)), max(1, round(height * dpr)), QImage.Format_ARGB32_Premultiplied)
     out.setDevicePixelRatio(dpr)
-    out.fill(Qt.transparent)
+    if clear and not middle:                            # the middle covers it all
+        out.fill(Qt.transparent)
     painter = QPainter(out)
     painter.setRenderHint(QPainter.SmoothPixmapTransform)
-    full = QRectF(0, 0, width, height)
-    room_x, room_y = shot.width() / dpr, shot.height() / dpr
-    rings = _rings(width, height, spec)
-    for ring, reach in rings[:-1] if rim_only else rings:
-        painter.setClipPath(ring)
-        w, h = width + 2 * reach, height + 2 * reach
-        left = min(max(x - reach, 0.0), max(0.0, room_x - w))     # kept inside the shot
-        top = min(max(y - reach, 0.0), max(0.0, room_y - h))
-        painter.drawPixmap(full, shot, QRectF(left * dpr, top * dpr, w * dpr, h * dpr))
+
+    def take(to: QRectF, sx: float, sy: float, sw: float, sh: float) -> None:
+        sx = min(max(sx, 0.0), max(0.0, room_x - sw))   # kept inside the shot
+        sy = min(max(sy, 0.0), max(0.0, room_y - sh))
+        painter.drawPixmap(to, shot, QRectF(sx * dpr, sy * dpr, sw * dpr, sh * dpr))
+
+    if middle:
+        painter.setCompositionMode(QPainter.CompositionMode_Source)
+        take(QRectF(0, 0, width, height), x, y, width, height)
+        painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+    for d, thick, outer, inner in lines:
+        outer, inner = outer * scale, inner * scale
+        deep = thick + outer - inner                    # how much of what is beyond the line takes
+        along = (outer + inner) / 2                     # and how far it is squeezed in along it
+        span = width - 2 * d                            # top and bottom
+        if span > 0:
+            wide = span + 2 * along * span / width
+            take(QRectF(d, d, span, thick), x + d - (wide - span) / 2, y + d - outer, wide, deep)
+            take(QRectF(d, height - d - thick, span, thick), x + d - (wide - span) / 2,
+                 y + height - d - thick + inner, wide, deep)
+    for right, turned in sides.items():
+        if turned is not None:
+            _bevel_side(painter, turned, x, y, width, height, lines, scale, right, dpr)
     painter.end()
     return out
 
 
-_ring_cache: dict = {}
+_TRANSPOSE = QTransform(0, 1, 1, 0, 0, 0)       # x for y: a column becomes a row, and back
 
 
-def _rings(width: int, height: int, spec: dict) -> list:
-    """The lens's rings for a window's size, each with how far beyond the edges it reaches - from
-    the rim in to the flat middle, each ring only its own band (the middle whole)."""
-    key = (width, height, tuple(sorted(spec.items())))
-    rings = _ring_cache.get(key)
-    if rings is None:
-        if len(_ring_cache) > 24:
-            _ring_cache.clear()
-        full = QRectF(0, 0, width, height)
-        shapes = []
-        for i in range(spec['steps']):
-            t = i / (spec['steps'] - 1)                     # 0 at the rim, 1 where the glass is flat
-            inset = spec['band'] * t
-            corner = max(2.0, spec['corner'] - inset * spec['shrink'])
-            shape = QPainterPath()
-            shape.addRoundedRect(full.adjusted(inset, inset, -inset, -inset), corner, corner)
-            if t >= 1:
-                reach = 0.0
-            elif 'rate' in spec:
-                reach = spec['reach'] * math.exp(-spec['rate'] * inset)
-            else:
-                reach = spec['reach'] * (1 - t) ** spec['power']
-            shapes.append((shape, reach))
-        rings = []
-        for i, (shape, reach) in enumerate(shapes):
-            ring = QPainterPath(shape)
-            if i + 1 < len(shapes):
-                ring.addPath(shapes[i + 1][0])
-                ring.setFillRule(Qt.OddEvenFill)
-            rings.append((ring, reach))
-        _ring_cache[key] = rings
-    return rings
+def _turned_side(shot: QPixmap, x: float, y: float, width: int, height: int, lines: list,
+                 widest: float, right: bool) -> tuple | None:
+    """The part of the screen one side of the bevel takes from (bent at most widest times its own
+    amount), turned on its side - with where it starts in the shot.
+
+    The sides are drawn on their side: Qt scales a tall, thin strip about twenty times slower than
+    a wide, flat one (~50 us against ~3 for each line of a big window), so each side's part of the
+    screen is turned once so its lines run across, drawn as the top and bottom are, and turned
+    back (_bevel_side)."""
+    dpr = shot.devicePixelRatio()
+    room_x, room_y = shot.width() / dpr, shot.height() / dpr
+    band = lines[-1][0] + lines[-1][1]
+    most = lines[0][2] * widest + 2                     # the furthest out any line takes from
+    lo, hi = (x + width - band - 2, x + width + most) if right else (x - most, x + band + 2)
+    lo, hi = max(0.0, lo), min(room_x, hi)
+    top, bottom = max(0.0, y - most), min(room_y, y + height + most)
+    if hi - lo < 1 or bottom - top < 1:
+        return None
+    part = QRect(math.floor(lo * dpr), math.floor(top * dpr), math.ceil((hi - lo) * dpr),
+                 math.ceil((bottom - top) * dpr))
+    turned = shot.copy(part).toImage().transformed(_TRANSPOSE)
+    turned.setDevicePixelRatio(dpr)
+    return turned, part.x() / dpr, part.y() / dpr
+
+
+def _bevel_side(painter: QPainter, side: tuple, x: float, y: float, width: int, height: int,
+                lines: list, scale: float, right: bool, dpr: float) -> None:
+    """One side of the bevel (_bevel_pass), drawn from its part of the screen turned on its side
+    (_turned_side), then turned back into place."""
+    turned, ox, oy = side
+    band = lines[-1][0] + lines[-1][1]
+    near = math.floor(width - band - 1) if right else 0
+    drawn = QImage(max(1, round(height * dpr)), max(1, round((math.ceil(band) + 2) * dpr)),
+                   QImage.Format_ARGB32_Premultiplied)
+    drawn.setDevicePixelRatio(dpr)
+    drawn.fill(Qt.transparent)                          # its ends lie over the top and bottom's mitres
+    paint = QPainter(drawn)
+    paint.setRenderHint(QPainter.SmoothPixmapTransform)
+    tw, th = turned.width() / dpr, turned.height() / dpr
+    for d, thick, outer, inner in lines:
+        outer, inner = outer * scale, inner * scale
+        span = height - 2 * d - 2 * thick
+        if span <= 0:
+            continue
+        deep = thick + outer - inner
+        tall = span + (outer + inner) * span / height
+        along = y + d + thick - (tall - span) / 2 - oy  # along the side, in the turned strip
+        across = (x + width - d - thick + inner if right else x + d - outer) - ox
+        along = min(max(along, 0.0), max(0.0, tw - tall))
+        across = min(max(across, 0.0), max(0.0, th - deep))
+        at = (width - d - thick if right else d) - near
+        paint.drawImage(QRectF(d + thick, at, span, thick), turned,
+                        QRectF(along * dpr, across * dpr, tall * dpr, deep * dpr))
+    paint.end()
+    back = drawn.transformed(_TRANSPOSE)
+    back.setDevicePixelRatio(dpr)
+    painter.drawImage(QPointF(near, 0), back)
 
 
 def _live(window: QWidget) -> bool:
