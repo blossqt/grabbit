@@ -77,6 +77,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QAbstractScrollArea, QAbstract
 __all__ = ['ACCENT', 'ACCENT_HOVER', 'ON_ACCENT', 'ROSE', 'SuiteStyle', 'install', 'Colors', 'is_dark', 'veil',
            'colors', 'ink', 'font', 'serif', 'paint_shadow', 'card_style', 'liquid_controls_css', 'panel_css', 'panel_fill', 'GLASS_RADIUS',
            'LIQUID_RADIUS', 'glass_on', 'frost', 'paint_glass', 'css', 'fade_in', 'LOOKS', 'look', 'set_look',
+           'liquid_clear', 'set_liquid_clear', 'CLEAR_DEFAULT',
            'motion_on', 'motion_chosen', 'set_motion', 'MODES', 'mode', 'set_mode', 'app_mode', 'restyle',
            'on_restyle', 'light_up', 'BACKDROP_OPACITY', 'fade_out', 'stagger_in', 'GAME_DOWNLOADS',
            'game_quiet_chosen', 'set_game_quiet', 'game_downloads', 'set_game_downloads', 'game_in_front',
@@ -1153,6 +1154,49 @@ def set_look(name: str) -> None:
     _look_changed()
 
 
+CLEAR_DEFAULT = 50                              # the liquid glass's transparency, as it was before it could be set
+_clear_value: int | None = None
+
+
+def liquid_clear() -> int:
+    """How see-through the liquid glass is, 0 to 100, as chosen in Hanami: at 50 its tint is as it
+    has always been; higher thins it, to none at 100; lower thickens it, to twice at 0."""
+    global _clear_value
+    if _clear_value is None:
+        _clear_value = _read_clear()
+    return _clear_value
+
+
+def _read_clear() -> int:
+    value = os.environ.get('SUITE_LIQUID_CLEAR')            # tests and screenshots
+    if value is None:
+        value = _suite_value('LiquidClear')
+    try:
+        return max(0, min(100, int(value)))
+    except (TypeError, ValueError):
+        return CLEAR_DEFAULT
+
+
+def set_liquid_clear(value: int) -> None:
+    """Set the liquid glass's transparency (Hanami's settings do, as its slider moves): this app's
+    glass windows are drawn again at once, and every other app takes it within seconds. Only the
+    glass is drawn again - not every style sheet, as a change of look does - so dragging the slider
+    stays smooth."""
+    global _clear_value
+    import winreg
+    _clear_value = max(0, min(100, int(value)))
+    _set_suite_value('LiquidClear', winreg.REG_DWORD, _clear_value)
+    app = QApplication.instance()
+    for window in app.topLevelWidgets() if app is not None else ():
+        if window.isVisible() and window.property(_FROSTED):
+            window.update()
+
+
+def _clear_scaled(alpha: float) -> int:
+    """A liquid glass tint (0 to 255) as thick as the transparency chosen makes it."""
+    return int(max(0.0, min(255.0, alpha * (100 - liquid_clear()) / (100 - CLEAR_DEFAULT))))
+
+
 def motion_on() -> bool:
     """Whether the suite animates: unless turned off in Hanami (motion_chosen()), or in Windows
     (Settings > Accessibility > Visual effects > Animation effects)."""
@@ -1235,11 +1279,11 @@ def _apply_mode(starting: bool = False) -> None:
 def _look_changed() -> None:
     """The look, the animations or light or dark may have changed (in Hanami, or Windows): if so,
     take them."""
-    global _look, _motion, _mode
-    now = (_read_look(), _read_motion(), _read_mode())
-    if now != (_look, _motion, _mode):
+    global _look, _motion, _mode, _clear_value
+    now = (_read_look(), _read_motion(), _read_mode(), _read_clear())
+    if now != (_look, _motion, _mode, _clear_value):
         mode_changed = now[2] != _mode
-        _look, _motion, _mode = now
+        _look, _motion, _mode, _clear_value = now
         if mode_changed:
             _apply_mode()
         _suite_changed()
@@ -1873,12 +1917,14 @@ _LENSES = {
     # canvasui.dev's frosted cards (the user's wish, 2026-11-01): what is behind, flat and well
     # blurred (its backdrop-filter: blur(12px)) - no bending at the rim
     'frosted': dict(band=0, reach=0, spread=0.0, step=3, blur=12),
-    'liquid': dict(band=36, reach=48, spread=0.1, step=3, blur=2),
+    # dome: how much the face draws what is behind in towards its middle (glasslens.c)
+    'liquid': dict(band=36, reach=48, spread=0.1, step=3, blur=2, dome=0.15),
     # a framed window's rim, in either look: only the bevel, bending in light from beyond its
-    # edges (the window itself fills the rest of its shot); no wider than _RIM_SPAN. Its colours
-    # don't part: a big window's rim is made again as it is dragged, and parting them took it from
-    # 1 ms to 2.4 (900 x 600) and 6.5 (1400 x 900).
-    'rim': dict(band=12, reach=16, spread=0.0, step=3, blur=2),
+    # edges (the window itself fills the rest of its shot); no wider than _RIM_SPAN. A big window's
+    # rim is made again as it is dragged: glasslens.dll makes a 1400 x 900 one, colours parted, in
+    # about 1.3 ms; drawn with Qt (no library) its colours stay together, as parting them there
+    # took it from 2.5 ms to 6.5.
+    'rim': dict(band=12, reach=16, spread=0.1, step=3, blur=2),
 }
 BEVEL_SHARE = 0.3
 _LIVE_MS = 33             # how often a moving window takes the screen behind it again
@@ -2408,14 +2454,73 @@ def _lens_for(window: QWidget) -> QPixmap | None:
     return window._suite_lens
 
 
+GLASS_LENS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'glasslens.dll')
+_glass_lens = None                              # the library's glass_lens, False if it won't load
+
+
+class _PyBuffer(ctypes.Structure):
+    _fields_ = [('buf', ctypes.c_void_p), ('obj', ctypes.py_object), ('len', ctypes.c_ssize_t),
+                ('itemsize', ctypes.c_ssize_t), ('readonly', ctypes.c_int), ('ndim', ctypes.c_int),
+                ('format', ctypes.c_char_p), ('shape', ctypes.c_void_p), ('strides', ctypes.c_void_p),
+                ('suboffsets', ctypes.c_void_p), ('internal', ctypes.c_void_p)]
+
+
+def _lens_library():
+    """glasslens.dll's glass_lens (glasslens.c beside this file), or None if it is not there."""
+    global _glass_lens
+    if _glass_lens is None:
+        try:
+            lens = ctypes.CDLL(GLASS_LENS_FILE).glass_lens
+            lens.argtypes = ([ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int] * 2
+                             + [ctypes.c_float] * 7 + [ctypes.c_int])
+            lens.restype = ctypes.c_int
+            _glass_lens = lens
+        except (OSError, AttributeError):
+            _glass_lens = False
+    return _glass_lens or None
+
+
+def _pixels_of(image: QImage):
+    """Where an image's pixels are, without copying them: its constBits(), which Python only lends
+    read-only (bits() would copy a shot shared with its pixmap, 0.2 ms for a pop-up's)."""
+    view = image.constBits()
+    held = _PyBuffer()
+    ctypes.pythonapi.PyObject_GetBuffer(ctypes.py_object(view), ctypes.byref(held), 0)
+    try:
+        return held.buf
+    finally:
+        ctypes.pythonapi.PyBuffer_Release(ctypes.byref(held))
+
+
 def _lens(shot: QPixmap, x: float, y: float, width: int, height: int, spec: dict,
           rim_only: bool = False) -> QPixmap:
-    """Glass width x height, for a window at (x, y) in the shot: the middle as it is (or, rim_only,
-    left out), and round its edges a bevel that bends in what lies beyond them - red a little
-    further and blue a little less (spread), so colours part along the rim. The caller clips it to
-    the window's rounded shape."""
+    """Glass width x height, for a window at (x, y) in the shot: what is behind bent through a
+    gently domed face (the middle shows it a little larger) and a rounded bevel round its edges,
+    which bends in what lies beyond them - red a little further and blue a little less (spread),
+    so colours part where the bending is strong. With rim_only, only the bevel (the middle left
+    out). The caller clips it to the window's rounded shape.
+
+    Pixel by pixel, in glasslens.dll (built from glasslens.c): a pop-up's glass in about a
+    millisecond. Without the library, the bevel is drawn with Qt, in lines, and the face is flat."""
+    lens = _lens_library()
+    band = min(spec['band'], BEVEL_SHARE * min(width, height))
+    if lens is not None and (band >= 1 or spec.get('dome')):
+        image = shot.toImage()
+        if image.format() not in (QImage.Format_RGB32, QImage.Format_ARGB32_Premultiplied):
+            image = image.convertToFormat(QImage.Format_ARGB32_Premultiplied)
+        dpr = shot.devicePixelRatio()
+        out = QImage(max(1, round(width * dpr)), max(1, round(height * dpr)), QImage.Format_ARGB32_Premultiplied)
+        out.setDevicePixelRatio(dpr)
+        reach = spec['reach'] * band / spec['band'] if spec['band'] else 0.0
+        corner = GLASS_RADIUS if rim_only else LIQUID_RADIUS
+        done = lens(_pixels_of(image), image.width(), image.height(), image.bytesPerLine(),
+                    _pixels_of(out), out.width(), out.height(), out.bytesPerLine(),
+                    x * dpr, y * dpr, corner * dpr, band * dpr, reach * dpr,
+                    0.0 if rim_only else spec.get('dome', 0.0), spec['spread'], 1 if rim_only else 0)
+        if done == 0:
+            return QPixmap.fromImage(out)
     band, lines = _bevel(width, height, spec)
-    spread = spec['spread']
+    spread = 0.0 if rim_only else spec['spread']
     sides = {right: _turned_side(shot, x, y, width, height, lines, 1 + spread, right)
              for right in (False, True)} if lines else {}
     green = _bevel_pass(shot, x, y, width, height, lines, 1.0, sides, middle=not rim_only)
@@ -2938,10 +3043,10 @@ def _clear_tint(window: QWidget) -> int:
     holds more text than a pop-up."""
     mean, busy = getattr(window, '_suite_tone', None) or (0.5, 0.05)
     if is_dark():
-        return int(min(235, 110 + 160 * max(0.0, mean - 0.25) + 900 * busy))
+        return _clear_scaled(min(235, 110 + 160 * max(0.0, mean - 0.25) + 900 * busy))
     # Up to 235, as dark, and sooner: at 215 (and 900 a unit of busy) a page of text behind still
     # competed with a menu bar's words.
-    return int(min(235, 40 + 130 * max(0.0, 0.7 - mean) + 1200 * busy))
+    return _clear_scaled(min(235, 40 + 130 * max(0.0, 0.7 - mean) + 1200 * busy))
 
 
 def _paint_clear(window: QWidget, event) -> None:
@@ -3014,8 +3119,8 @@ def _liquid_tint(window: QWidget) -> int:
     (under light text) or dark (under dark text), or busy, as a page of text is."""
     mean, busy = getattr(window, '_suite_tone', None) or (0.5, 0.05)
     if is_dark():
-        return int(min(200, 64 + 160 * max(0.0, mean - 0.25) + 600 * busy))
-    return int(min(160, 40 + 130 * max(0.0, 0.7 - mean) + 500 * busy))
+        return _clear_scaled(min(200, 64 + 160 * max(0.0, mean - 0.25) + 600 * busy))
+    return _clear_scaled(min(160, 40 + 130 * max(0.0, 0.7 - mean) + 500 * busy))
 
 
 def _paint_liquid(painter, rect, window: QWidget, lens: QPixmap) -> None:
