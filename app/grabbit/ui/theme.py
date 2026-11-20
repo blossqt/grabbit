@@ -15,7 +15,7 @@ from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
 from .suitetheme import *  # noqa: F401,F403 - the suite's look, used as theme.<name>
-from .suitetheme import ACCENT, ON_ACCENT, app_mode, glass_on, ink, is_dark, liquid_controls_css, panel_css
+from .suitetheme import ACCENT, ON_ACCENT, app_mode, glass_on, ink, is_dark, panel_css
 
 BACKDROP = str(Path(__file__).with_name('backdrop.jpg'))     # TOMOKO UJI's blossom, on Unsplash, faint behind the windows
 
@@ -123,7 +123,7 @@ def stylesheet() -> str:
     QTabBar::tab {{ padding: 6px 12px; border: 0; margin-right: 2px; border-radius: 6px; }}
     QTabBar::tab:selected {{ background: {c['hover']}; }}
     QScrollArea {{ border: 0; }}
-    """ + _panels() + liquid_controls_css()
+    """ + _panels()
 
 
 def _panels() -> str:

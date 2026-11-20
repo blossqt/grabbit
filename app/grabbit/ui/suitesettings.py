@@ -15,7 +15,6 @@ keeps them the same); it uses only suitetheme.py, which is shared the same way.
 
 from __future__ import annotations
 
-import math
 
 from PySide6.QtCore import (QEasingCurve, QEvent, QModelIndex, QObject, QPersistentModelIndex, QPoint,
                             QPropertyAnimation, QRectF, QSize, Qt, QVariantAnimation, Signal)
@@ -269,8 +268,7 @@ def scrolled(widget: QWidget) -> QScrollArea:
 
 
 class Nav(QWidget):
-    """The pages down the left: a pill slides to the one chosen - springing into place, and
-    stretching as it goes, in the liquid look."""
+    """The pages down the left: a pill slides to the one chosen."""
 
     chosen = Signal(int)
     ROW = 40
@@ -317,11 +315,7 @@ class Nav(QWidget):
             self.update()
             return
         slide = self._slide = QVariantAnimation(self)
-        liquid = theme.look() == 'liquid' and theme.glass_on()
-        curve = QEasingCurve(QEasingCurve.OutBack if liquid else QEasingCurve.OutCubic)
-        if liquid:
-            curve.setOvershoot(1.1)
-        slide.setEasingCurve(curve)
+        slide.setEasingCurve(QEasingCurve.OutCubic)
         slide.setDuration(theme.STEADY)
         slide.setStartValue(start)
         slide.setEndValue(float(index))
@@ -390,32 +384,14 @@ class Nav(QWidget):
 
 
 def paint_pill(p: QPainter, pill: QRectF, moving: float = 0.0) -> QRectF:
-    """The chosen row's pill: a soft chip with the pink bar at its left - in the liquid look, a
-    capsule of glass, stretching as it moves (moving: how far through a move it is). Gives the
-    rectangle it filled."""
-    dark = theme.is_dark()
-    if theme.look() == 'liquid' and theme.glass_on():
-        stretch = 6 * math.sin(math.pi * moving)
-        pill = pill.adjusted(0, -stretch / 2, 0, stretch / 2)
-        round_ = pill.height() / 2
-        body = QLinearGradient(pill.topLeft(), pill.bottomLeft())
-        body.setColorAt(0, QColor(255, 255, 255, 52 if dark else 235))
-        body.setColorAt(1, QColor(255, 255, 255, 18 if dark else 140))
-        p.setPen(Qt.NoPen)
-        p.setBrush(body)
-        p.drawRoundedRect(pill, round_, round_)
-        theme._edge_light(p, pill.adjusted(0.5, 0.5, -0.5, -0.5), round_, 120, 150 if dark else 255, 1.1)
-        if not dark:
-            p.setPen(QPen(QColor(0, 0, 0, 22), 1))
-            p.setBrush(Qt.NoBrush)
-            p.drawRoundedRect(pill, round_, round_)
-    else:
-        p.setPen(Qt.NoPen)
-        p.setBrush(theme.colors().chip)
-        p.drawRoundedRect(pill, 8, 8)
-        bar = QRectF(pill.left() + 1, pill.center().y() - 8, 3, 16)
-        p.setBrush(QColor(theme.ink()))
-        p.drawRoundedRect(bar, 1.5, 1.5)
+    """The chosen row's pill: a soft chip with the pink bar at its left. Gives the rectangle it
+    filled. (moving is kept for callers; the pill no longer stretches.)"""
+    p.setPen(Qt.NoPen)
+    p.setBrush(theme.colors().chip)
+    p.drawRoundedRect(pill, 8, 8)
+    bar = QRectF(pill.left() + 1, pill.center().y() - 8, 3, 16)
+    p.setBrush(QColor(theme.ink()))
+    p.drawRoundedRect(bar, 1.5, 1.5)
     return pill
 
 
@@ -525,8 +501,8 @@ def _tinted(pixmap: QPixmap, color: QColor) -> QPixmap:
 
 
 class _SidePill(QObject):
-    """The chosen row's pill, under the rows, sliding from the row chosen before to the new one
-    (springing, in the liquid look) - drawn on the list's viewport before its rows are."""
+    """The chosen row's pill, under the rows, sliding from the row chosen before to the new one -
+    drawn on the list's viewport before its rows are."""
 
     def __init__(self, view: QAbstractItemView):
         super().__init__(view)
@@ -547,11 +523,7 @@ class _SidePill(QObject):
             return
         self._from, self._t = QPersistentModelIndex(previous), 0.0
         slide = self._slide = QVariantAnimation(self)
-        liquid = theme.look() == 'liquid' and theme.glass_on()
-        curve = QEasingCurve(QEasingCurve.OutBack if liquid else QEasingCurve.OutCubic)
-        if liquid:
-            curve.setOvershoot(1.1)
-        slide.setEasingCurve(curve)
+        slide.setEasingCurve(QEasingCurve.OutCubic)
         slide.setDuration(theme.STEADY)
         slide.setStartValue(0.0)
         slide.setEndValue(1.0)
@@ -783,8 +755,7 @@ class Segmented(QWidget):
         start = QRectF(self._pill)
         slide = self._slide = QVariantAnimation(self)
         slide.setDuration(theme.STEADY)
-        slide.setEasingCurve(QEasingCurve(QEasingCurve.OutBack) if theme.look() == 'liquid' and theme.glass_on()
-                             else QEasingCurve(QEasingCurve.OutQuint))
+        slide.setEasingCurve(QEasingCurve.OutQuint)
         slide.setStartValue(0.0)
         slide.setEndValue(1.0)
 
@@ -806,26 +777,23 @@ class Segmented(QWidget):
 
     def paintEvent(self, event):
         dark = theme.is_dark()
-        liquid = theme.look() == 'liquid' and theme.glass_on()
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         track = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        bend = track.height() / 2 if liquid else 11.0
-        p.setPen(QPen(theme.colors().border, 1) if liquid else Qt.NoPen)
+        bend = 11.0
+        p.setPen(Qt.NoPen)
         p.setBrush(QColor(255, 255, 255, 16) if dark else QColor(0, 0, 0, 14))
         p.drawRoundedRect(track, bend, bend)
         if self._pill is None:
             self._pill = self._target()
         if self._pill is not None:
             pill = QRectF(self._pill)
-            round_ = pill.height() / 2 if liquid else 8.0
+            round_ = 8.0
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(0, 0, 0, 0 if dark else 14))
             p.drawRoundedRect(pill.translated(0, 1), round_, round_)
             p.setBrush(QColor(255, 255, 255, 46 if dark else 245))
             p.drawRoundedRect(pill, round_, round_)
-            if liquid:
-                theme._edge_light(p, pill.adjusted(0.5, 0.5, -0.5, -0.5), round_, 120, 150 if dark else 255, 1.1)
         p.end()
 
 
