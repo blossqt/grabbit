@@ -1192,9 +1192,19 @@ def set_liquid_clear(value: int) -> None:
             window.update()
 
 
-def _clear_scaled(alpha: float) -> int:
-    """A liquid glass tint (0 to 255) as thick as the transparency chosen makes it."""
-    return int(max(0.0, min(255.0, alpha * (100 - liquid_clear()) / (100 - CLEAR_DEFAULT))))
+READABLE_SHARE = 0.8      # how much of the tint text behind brings stays, however clear the glass is chosen
+
+
+def _clear_scaled(base: float, lift: float = 0.0, most: float = 255.0) -> int:
+    """A liquid glass tint (0 to 255) as thick as the transparency chosen makes it: base, the tint
+    over a calm backdrop, thinned or thickened in step with it; lift, what text or detail behind
+    adds so the window's own words stay readable, thinned only to READABLE_SHARE of itself. The
+    user set 85% and saw the text of the window behind Hanami's read as clearly as Hanami's own.
+    Up to most, unless chosen thicker than it has always been."""
+    share = (100 - liquid_clear()) / (100 - CLEAR_DEFAULT)      # 1 as it has always been, 0 fully clear
+    if share >= 1:
+        return int(min(255.0, min(most, base + lift) * share))
+    return int(max(0.0, min(most, base * share + lift * max(share, READABLE_SHARE))))
 
 
 def motion_on() -> bool:
@@ -1576,6 +1586,8 @@ def _apply_glass(window: QWidget) -> None:
         _accent(hwnd, _ACCENT_DISABLED)
         _dwm(hwnd, _DWMWA_SYSTEMBACKDROP_TYPE, _DWMSBT_TRANSIENTWINDOW)
         ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(wintypes.HWND(hwnd), ctypes.byref(_Margins(-1, -1, -1, -1)))
+    if not _frameless(window):
+        _live_glass(window)                         # what is behind, bent live, while it is clear glass
 
 
 def _glass_palette(palette: QPalette) -> QPalette:
@@ -1674,7 +1686,11 @@ class _Frosting(QObject):
             _remember_place(obj)
             _stop_live(obj)
             _watch_around(obj, stop=True)
+            if getattr(obj, '_suite_live_glass', None) is not None:
+                obj._suite_live_glass.stop()
         elif kind in (QEvent.Move, QEvent.Resize) and obj.isVisible() and _screen_glass(obj):
+            if _live_on(obj):
+                obj._suite_live_glass.follow()      # the bent view behind goes with it at once
             if not getattr(obj, '_suite_gliding', False) and not _waiting_for_paint(obj):
                 _follow(obj)
             if kind == QEvent.Move and not _frameless(obj):
@@ -2480,6 +2496,133 @@ def _lens_library():
     return _glass_lens or None
 
 
+# --------------------------------------------------------------------------- live glass
+#
+# A framed liquid window is see-through, drawn so by Windows: no program can read what lies behind
+# its own window as it changes (only by leaving the window out of screen capture, which stops
+# NVIDIA's desktop recording - see "Never leave a window out of screen captures"). So, while one
+# is shown, a helper window of its size is kept just behind it, and glasslens.dll (glasslive.c)
+# fills the helper with DWM thumbnails - the live pictures Alt+Tab shows - of the windows behind,
+# cut and scaled so the face shows what is behind a little larger and the bevel bends in what lies
+# beyond the edges: what is behind, bent, live (2026-11-20, the user: "I want it to live bend
+# whatever's behind the window"). A thread keeps the thumbnails in step every LIVE_EVERY seconds;
+# what has not changed costs ~0.02 ms, and when the windows behind change (registering their
+# thumbnails, ~30-50 ms) the window's own thread is not held up.
+
+LIVE_EVERY = 0.008
+LIVE_BEVEL = 36, 48, 1.06       # band and reach of the bevel (px), and how much larger the face shows what is behind
+_live_lock = threading.Lock()
+_live_glasses: set = set()
+_live_thread = None
+
+
+class _LiveGlass:
+    def __init__(self, window: QWidget, lens) -> None:
+        self.window = window
+        self.lens = lens
+        self.helper = QWidget(None, Qt.FramelessWindowHint | Qt.Tool | Qt.WindowDoesNotAcceptFocus
+                              | Qt.NoDropShadowWindowHint)
+        self.helper.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.helper.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.helper.setStyleSheet('background: black')
+        self.state = None
+        self.scale = 1.0
+
+    def start(self) -> None:
+        self.scale = self.window.devicePixelRatioF()
+        self.helper.setGeometry(self.window.frameGeometry())
+        self.helper.show()
+        _dwm(int(self.helper.winId()), _DWMWA_WINDOW_CORNER_PREFERENCE, _DWMWCP_ROUND)
+        self.follow()
+        with _live_lock:
+            if self.state is None:
+                self.state = self.lens['open'](int(self.helper.winId()), int(self.window.winId()))
+            _live_glasses.add(self)
+        _live_thread_running()
+
+    def follow(self) -> None:
+        """The window moved or changed size: the helper goes with it at once, just below it (the
+        thread then fits the thumbnails)."""
+        box = wintypes.RECT()
+        hwnd = int(self.window.winId())
+        if ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(box)):
+            ctypes.windll.user32.SetWindowPos(int(self.helper.winId()), hwnd, box.left, box.top,
+                                              box.right - box.left, box.bottom - box.top, 0x0010 | 0x0200)
+        self.scale = self.window.devicePixelRatioF()
+
+    def stop(self) -> None:
+        with _live_lock:
+            _live_glasses.discard(self)
+            if self.state is not None:
+                self.lens['close'](self.state)
+                self.state = None
+        self.helper.hide()
+
+    def update(self) -> None:
+        """On the thread, under _live_lock."""
+        if self.state is not None:
+            band, reach, zoom = LIVE_BEVEL
+            self.lens['update'](self.state, band * self.scale, reach * self.scale, zoom)
+
+
+def _live_thread_running() -> None:
+    global _live_thread
+    if _live_thread is not None and _live_thread.is_alive():
+        return
+
+    def run() -> None:
+        while True:
+            time.sleep(LIVE_EVERY)
+            with _live_lock:
+                for glass in list(_live_glasses):
+                    try:
+                        glass.update()
+                    except Exception:  # noqa: BLE001 - one window's glass must not stop the others'
+                        _live_glasses.discard(glass)
+
+    _live_thread = threading.Thread(target=run, name='suite-live-glass', daemon=True)
+    _live_thread.start()
+
+
+def _live_library():
+    """glasslens.dll's live glass, as {'open', 'update', 'close'}, or None."""
+    if _lens_library() is None:
+        return None
+    lib = ctypes.CDLL(GLASS_LENS_FILE)
+    try:
+        lib.glass_live_open.restype = ctypes.c_void_p
+        lib.glass_live_open.argtypes = [wintypes.HWND, wintypes.HWND]
+        lib.glass_live_update.restype = ctypes.c_int
+        lib.glass_live_update.argtypes = [ctypes.c_void_p, ctypes.c_float, ctypes.c_float, ctypes.c_float]
+        lib.glass_live_close.argtypes = [ctypes.c_void_p]
+    except AttributeError:
+        return None
+    return {'open': lib.glass_live_open, 'update': lib.glass_live_update, 'close': lib.glass_live_close}
+
+
+def _live_glass(window: QWidget) -> None:
+    """A framed window's live glass: running while it is clear (liquid) glass and shown, else not."""
+    glass = getattr(window, '_suite_live_glass', None)
+    wanted = _clear(window) and window.isVisible() and QGuiApplication.platformName() == 'windows'
+    if wanted and glass is None:
+        lens = _live_library()
+        if lens is None:
+            return
+        glass = window._suite_live_glass = _LiveGlass(window, lens)
+        window.destroyed.connect(lambda _=None, g=glass: (g.stop(), g.helper.deleteLater()))
+    if glass is None:
+        return
+    if wanted:
+        glass.start()
+    else:
+        glass.stop()
+
+
+def _live_on(window: QWidget) -> bool:
+    glass = getattr(window, '_suite_live_glass', None)
+    return glass is not None and glass.state is not None
+
+
 def _pixels_of(image: QImage):
     """Where an image's pixels are, without copying them: its constBits(), which Python only lends
     read-only (bits() would copy a shot shared with its pixmap, 0.2 ms for a pop-up's)."""
@@ -3043,10 +3186,10 @@ def _clear_tint(window: QWidget) -> int:
     holds more text than a pop-up."""
     mean, busy = getattr(window, '_suite_tone', None) or (0.5, 0.05)
     if is_dark():
-        return _clear_scaled(min(235, 110 + 160 * max(0.0, mean - 0.25) + 900 * busy))
+        return _clear_scaled(110, 160 * max(0.0, mean - 0.25) + 900 * busy, 235)
     # Up to 235, as dark, and sooner: at 215 (and 900 a unit of busy) a page of text behind still
     # competed with a menu bar's words.
-    return _clear_scaled(min(235, 40 + 130 * max(0.0, 0.7 - mean) + 1200 * busy))
+    return _clear_scaled(40, 130 * max(0.0, 0.7 - mean) + 1200 * busy, 235)
 
 
 def _paint_clear(window: QWidget, event) -> None:
@@ -3059,7 +3202,8 @@ def _paint_clear(window: QWidget, event) -> None:
     painter.setRenderHint(QPainter.SmoothPixmapTransform)
     painter.setClipRegion(event.region())
     r = QRectF(window.rect())
-    _paint_rim_lens(painter, window)            # the rim first, then the tint over all of it
+    if not _live_on(window):                        # live glass bends its rim itself
+        _paint_rim_lens(painter, window)            # the rim first, then the tint over all of it
     alpha = _clear_tint(window)
     tint = QLinearGradient(r.topLeft(), r.bottomLeft())
     tint.setColorAt(0.0, walled(QColor(46, 43, 54, alpha) if dark else QColor(255, 255, 255, alpha)))
@@ -3119,8 +3263,8 @@ def _liquid_tint(window: QWidget) -> int:
     (under light text) or dark (under dark text), or busy, as a page of text is."""
     mean, busy = getattr(window, '_suite_tone', None) or (0.5, 0.05)
     if is_dark():
-        return _clear_scaled(min(200, 64 + 160 * max(0.0, mean - 0.25) + 600 * busy))
-    return _clear_scaled(min(160, 40 + 130 * max(0.0, 0.7 - mean) + 500 * busy))
+        return _clear_scaled(64, 160 * max(0.0, mean - 0.25) + 600 * busy, 200)
+    return _clear_scaled(40, 130 * max(0.0, 0.7 - mean) + 500 * busy, 160)
 
 
 def _paint_liquid(painter, rect, window: QWidget, lens: QPixmap) -> None:

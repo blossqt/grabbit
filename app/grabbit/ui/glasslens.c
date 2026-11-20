@@ -19,7 +19,7 @@
    The rows are shared among a few threads.
 
    Build: Hanami's build\build_glasslens.ps1 (MSYS2's GCC):
-     gcc -O3 -march=x86-64-v2 -ffast-math -shared -static-libgcc -s -o glasslens.dll glasslens.c
+     gcc -O3 -march=x86-64-v2 -ffast-math -shared -static-libgcc -s -o glasslens.dll glasslens.c glasslive.c -ldwmapi -lgdi32 -luser32
 */
 #include <math.h>
 #include <stdint.h>
