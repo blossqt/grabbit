@@ -34,8 +34,8 @@ INFO_FRESH_SECONDS = 3600  # media URLs go stale; re-extract after an hour
 
 # What to suggest when a site refuses an anonymous download. The phone, which
 # has no cookies to offer, clears it (grabbit_mobile/engine.py).
-REFUSED_HINT = ('Options › Videos & Photos › "Use cookies from" '
-                '(Firefox works best) usually fixes this.')
+REFUSED_HINT = ('Sign in through Settings › Videos and photos › "Use cookies from". '
+                'Firefox works best.')
 
 
 class JobCancelled(DownloadCancelled):
@@ -900,8 +900,7 @@ class MediaJob(threading.Thread):
             if saved:
                 break
         if not saved:
-            self._log('No stream would give up the frame; downloading the video to read it '
-                      'from that instead.')
+            self._log('Downloading the video to read the frame.')
             self._emit(self.task_id, 'state', {'state': 'downloading', 'note': ''})
             before = _names(self.save_dir)
             result = ydl.process_ie_result(info, download=True)

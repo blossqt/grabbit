@@ -14,7 +14,7 @@ from .suitesettings import form, label, note, section, switch
 
 # Where a refused download is told to look, as this window names it. Set here rather than in
 # media.py, which the phone app shares (and clears this in).
-media.REFUSED_HINT = 'Settings › Videos and photos › "Use cookies from" (Firefox works best) usually fixes this.'
+media.REFUSED_HINT = 'Sign in through Settings › Videos and photos › "Use cookies from". Firefox works best.'
 
 
 class SettingsDialog(QDialog):
@@ -228,8 +228,8 @@ class SettingsDialog(QDialog):
         row.addWidget(pick)
         rows.addRow(label('Cookies file'), row)
         box.addLayout(rows)
-        box.addWidget(note('Lets Grabbit reach posts that need you to be logged in. '
-                           'Chrome and Edge keep their cookies locked, so Firefox works best.'))
+        box.addWidget(note('Required for posts that need a signed-in account. Firefox works best: '
+                           'Chrome and Edge lock their cookies.'))
         layout.addWidget(box_frame)
         layout.addStretch(1)
 
@@ -238,7 +238,7 @@ class SettingsDialog(QDialog):
         box_frame, box = section('Links')
         holder, self.watch_clipboard = switch('Offer to download links I copy', '', settings.watch_clipboard)
         box.addWidget(holder)
-        picked = ('Windows opens magnet links with another app now. Change it under Settings › Apps › '
+        picked = ('Magnet links open with another app. Change it in Windows Settings › Apps › '
                   'Default apps.' if associations.windows_picked_another_app() else '')
         holder, self.magnet_handler = switch('Open magnet links with Grabbit', picked,
                                              associations.is_magnet_handler())

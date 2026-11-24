@@ -155,7 +155,7 @@ class ErrorCard(LinkCard):
     def _enable_direct(self):
         self._direct = True
         self._button.setEnabled(False)
-        self._button.setText('Will be downloaded as a file')
+        self._button.setText('Downloads as a file')
         self.changed.emit()
 
     def requests(self):
@@ -283,9 +283,8 @@ class MagnetCard(LinkCard):
         self.title.setText(info.get('name') or 'Magnet link')
         self.subtitle.setText(f'BitTorrent · {info.get("info_hash", "")[:16]}…')
         self.thumb.setPixmap(icons.icon('magnet', icons.theme_color('accent'), 40).pixmap(40, 40))
-        note = theme.Label('Grabbit fetches the file list from the swarm first'
-                      + (', then asks which files you want.' if settings.show_torrent_dialog
-                         else ', then starts every file.'))
+        note = theme.Label('Files can be chosen once the file list arrives.' if settings.show_torrent_dialog
+                           else 'Every file downloads once the file list arrives.')
         note.setObjectName('Muted')
         note.setWordWrap(True)
         self.body.addWidget(note)
@@ -404,8 +403,7 @@ class MediaCard(LinkCard):
 
         self.preview_button = QPushButton('Watch')
         self.preview_button.setIcon(icons.icon('play', icons.theme_color('accent'), 16))
-        self.preview_button.setToolTip('Open the full video in your player, paused, '
-                                       'before deciding to download it')
+        self.preview_button.setToolTip('Preview the video in a player')
         self.preview_button.clicked.connect(self._watch)
         row.addWidget(self.preview_button)
         self.body.addLayout(row)

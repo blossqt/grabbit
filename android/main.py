@@ -652,9 +652,9 @@ class GrabbitApp(App):
     def ask_for_storage(self):
         from grabbit_mobile.bootstrap import open_all_files_settings
         Dialog('Where downloads go',
-               'Android is keeping Grabbit out of your Downloads folder.\n\n'
-               'Without file access, downloads are saved inside the app\'s own folder '
-               'instead - still readable over USB, but not in the Downloads app.',
+               'Grabbit does not have access to the Downloads folder.\n\n'
+               'Without file access, downloads are saved in the app\'s own folder, which is '
+               'readable over USB but not shown in the Downloads app.',
                [('Not now', 'plain', None),
                 ('Open settings', 'primary', open_all_files_settings)]).open()
 
@@ -889,8 +889,8 @@ class GrabbitApp(App):
             # Not on a phone, or the installer turned the session down: the
             # browser fetches the same APK, and Android installs it the same way.
             if open_url(answer.asset.url):
-                self._schedule_message('info', f'Downloading {answer.asset.name} in the browser - '
-                                       'open it when it finishes to install')
+                self._schedule_message('info', f'Downloading {answer.asset.name} in the browser. '
+                                       'Open it when it finishes to install.')
         self._updating = False
 
     def _update_failed(self, message):
@@ -1057,7 +1057,7 @@ class GrabbitApp(App):
             'no-app': (f'Nothing on this phone opens {kind} files' if kind
                        else 'Nothing on this phone opens this kind of file'),
             'no-phone': 'Sharing needs the phone',
-        }.get(answer, 'Android would not take it'))
+        }.get(answer, 'Android did not accept it'))
 
     # ------------------------------------------------ picking out downloads
     def start_choosing(self, task_id: str):

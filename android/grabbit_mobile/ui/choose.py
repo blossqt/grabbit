@@ -84,7 +84,7 @@ def summary(analysis) -> tuple:
     if kind == analyze_mod.KIND_MAGNET:
         info = analysis.magnet or {}
         return (info.get('name') or 'Magnet link',
-                'BitTorrent · the file list comes from the swarm first')
+                'BitTorrent · fetching the file list')
     if kind == analyze_mod.KIND_TORRENT and analysis.torrent_info is not None:
         meta = analysis.torrent_info
         count = len(meta.files)

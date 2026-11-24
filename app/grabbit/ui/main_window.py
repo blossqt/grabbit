@@ -588,8 +588,7 @@ class MainWindow(QMainWindow):
         if dialog.restart_needed:
             QMessageBox.information(
                 self, APP_NAME,
-                'Some of those settings (BitTorrent, proxy or advanced options) apply the next '
-                'time Grabbit starts.')
+                'BitTorrent, proxy and advanced settings apply after Grabbit restarts.')
         if dialog.check_now_requested:
             self.check_for_updates(True)
 
@@ -650,7 +649,7 @@ class MainWindow(QMainWindow):
             self.statusBar().clearMessage()
         if answer.available:
             self._update_answer = answer
-            self.update_label.setText(f'{APP_NAME} {answer.latest} is out - you have {answer.current}.')
+            self.update_label.setText(f'{APP_NAME} {answer.latest} is available. Version {answer.current} is installed.')
             self.update_banner.show()
             if self._install_without_asking:
                 self._install_without_asking = False
@@ -685,14 +684,14 @@ class MainWindow(QMainWindow):
         box = QMessageBox(self)
         box.setWindowTitle('Update Grabbit')
         box.setIcon(QMessageBox.Information)
-        box.setText(f'{APP_NAME} {answer.latest} is out - you have {answer.current}.')
+        box.setText(f'{APP_NAME} {answer.latest} is available. Version {answer.current} is installed.')
         if blocked:
-            box.setInformativeText(f'{blocked}\n\nYou can download the new version instead.')
+            box.setInformativeText(f'{blocked}\n\nDownload the new version instead.')
             accept = box.addButton('Download', QMessageBox.AcceptRole)
         else:
-            carry_on = (f' The {active} download(s) under way will carry on where they left off.'
+            carry_on = (' Downloads in progress resume after the restart.'
                         if active else '')
-            box.setInformativeText(f'Grabbit will restart to finish updating.{carry_on}')
+            box.setInformativeText(f'Grabbit restarts to finish updating.{carry_on}')
             accept = box.addButton('Update now', QMessageBox.AcceptRole)
         box.addButton('Later', QMessageBox.RejectRole)
         box.setDefaultButton(accept)
@@ -761,7 +760,7 @@ class MainWindow(QMainWindow):
             # Past the point of cancelling: what is left is quick, and all of
             # it happens beside the install rather than in it.
             dialog.setCancelButton(None)
-            dialog.setLabelText('Unpacking and checking the new version…')
+            dialog.setLabelText('Verifying the new version…')
         dialog.setValue(int(done * 100 / max(1, total)))
 
     def _on_update_staged(self, staged):
@@ -1012,7 +1011,7 @@ class MainWindow(QMainWindow):
         self.banner_label.setText(f'Link copied: {first[:90]}{extra}')
         self.banner.show()
         if not self.isVisible() or self.isMinimized():
-            self.tray.notify(APP_NAME, 'Copied link ready to download—click to open', 4000)
+            self.tray.notify(APP_NAME, 'Copied link. Click to download it.', 4000)
 
     def _banner_accept(self):
         self.banner.hide()
@@ -1118,7 +1117,7 @@ class MainWindow(QMainWindow):
         if self.settings.close_to_tray and not getattr(self, '_closing', False):
             event.ignore()
             self.hide()
-            self.tray.notify(APP_NAME, 'Still running in the notification area', 3000)
+            self.tray.notify(APP_NAME, 'Grabbit is still running in the notification area.', 3000)
             return
         # Get off the screen first: everything below is bookkeeping, and a
         # window that lingers while it happens just looks stuck.

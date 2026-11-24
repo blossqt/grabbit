@@ -186,7 +186,7 @@ def analyze(url: str, settings) -> Analysis:
 
     if not re.match(r'^(https?|ftp|sftp)://', url, re.IGNORECASE):
         analysis.kind = KIND_ERROR
-        analysis.error = 'Not a link Grabbit understands.'
+        analysis.error = 'This link is not supported.'
         return analysis
 
     seller = suiteweb.paid(url)
@@ -225,7 +225,7 @@ def analyze(url: str, settings) -> Analysis:
         if head.get('content_type', '').startswith('image/'):
             analysis.url = full
             analysis = _as_file(full, head, analysis)
-            analysis.hint = 'The full-size picture, rather than the smaller copy the page shows.'
+            analysis.hint = 'Full-size picture.'
             return analysis
 
     extractor = matching_extractor(url)
@@ -285,8 +285,7 @@ def analyze(url: str, settings) -> Analysis:
                               'expired, or work only in the browser that opened it.')
             return analysis
         analysis = _as_file(url, head, analysis)
-        analysis.hint = ('No video, photos or files were found on this page - Grabbit would '
-                         'just save the page itself.')
+        analysis.hint = 'No video, photos or files were found on this page.'
         return analysis
 
     return _as_file(url, head, analysis)

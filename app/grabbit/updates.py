@@ -259,11 +259,11 @@ def latest_release(timeout: float = 15) -> Release:
         if error.code == 404:
             raise UpdateError('No update information has been published yet.') from None
         if error.code in (403, 429):
-            raise UpdateError('GitHub is limiting how often this can be asked. '
+            raise UpdateError('GitHub’s rate limit was reached. '
                               'Try again in an hour.') from None
         raise UpdateError(f'GitHub answered {error.code}.') from None
     except (urllib.error.URLError, OSError):
-        raise UpdateError("Couldn't reach GitHub. Check the internet connection.") from None
+        raise UpdateError('GitHub could not be reached. Check the internet connection.') from None
     return verify_and_parse(manifest, signature)
 
 
@@ -291,7 +291,7 @@ def download(asset: Asset, folder: Path, progress=None, cancel=None) -> Path:
                 if progress:
                     progress(done, asset.size)
         if done != asset.size or digest.hexdigest() != asset.sha256:
-            raise UpdateError('The download didn’t match the release, so it wasn’t installed.')
+            raise UpdateError('The download did not match the release and was not installed.')
     except UpdateError:
         part.unlink(missing_ok=True)
         raise

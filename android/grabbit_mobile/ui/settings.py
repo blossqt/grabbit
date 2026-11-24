@@ -113,13 +113,13 @@ class SettingsPage(Entrance, ModalView):
         body.add_widget(self.get_slot)
         self.get_button = FlatButton(text='', style='filled')
         self.get_button.bind(on_release=lambda *_: self.get_update())
-        self._switch('Check by itself',
-                     'Whenever Grabbit opens, and twice a day while it is open.',
+        self._switch('Check automatically',
+                     'When Grabbit opens, and twice a day while it is open.',
                      bool(settings.check_for_updates), 'check_for_updates')
 
         body.add_widget(self._section('Downloads'))
         self.at_once = self._setting(
-            'Downloads at once', 'The rest wait their turn.', AT_ONCE,
+            'Downloads at once', '', AT_ONCE,
             int(getattr(settings, 'android_downloads_at_once', 3) or 3),
             'android_downloads_at_once')
         body.add_widget(self._title('Download folder'))
@@ -135,16 +135,16 @@ class SettingsPage(Entrance, ModalView):
         buttons.add_widget(BoxLayout())
         body.add_widget(buttons)
         self._switch('Wi-Fi only',
-                     'On mobile data, downloads and seeding wait, and carry on by '
-                     'themselves once the phone is back on Wi-Fi.',
+                     'On mobile data, downloads and seeding pause until the phone '
+                     'is on Wi-Fi.',
                      bool(getattr(settings, 'wifi_only', False)), 'wifi_only')
 
         body.add_widget(self._section('Torrents'))
         self._switch('Seed after downloading',
-                     'Give back to the other people sharing a torrent once it is yours.',
+                     'Upload to other peers after the download finishes.',
                      bool(settings.seed_after_download), 'seed_after_download')
-        self._setting('Stop seeding after giving back',
-                      'How much of the torrent, measured against its size.',
+        self._setting('Stop seeding at ratio',
+                      '',
                       RATIOS, float(settings.seed_ratio), 'seed_ratio')
 
         body.add_widget(self._section('Running in the background'))
@@ -241,7 +241,7 @@ class SettingsPage(Entrance, ModalView):
         actual = str(paths.chosen_downloads_dir(chosen))
         text = friendly_folder(actual)
         if chosen and actual != chosen:
-            text += f'\nGrabbit cannot save to {friendly_folder(chosen)}, so it saves here.'
+            text += f'\n{friendly_folder(chosen)} is not writable. Downloads are saved here.'
         self.folder_note.text = text
         self.default_button.disabled = not chosen
 
@@ -268,17 +268,15 @@ class SettingsPage(Entrance, ModalView):
         unrestricted = self.app.battery_unrestricted()
         self.battery_slot.clear_widgets()
         if unrestricted is None:
-            self.battery_note.text = 'Only a phone has a say in this.'
+            self.battery_note.text = 'Available only on a phone.'
             self.battery_slot.height = 0
         elif unrestricted:
-            self.battery_note.text = ('Grabbit may run without battery limits, so Android '
-                                      'lets it carry on and pick up again by itself.')
+            self.battery_note.text = 'Battery use is unrestricted.'
             self.battery_slot.height = 0
         else:
             self.battery_note.text = (
-                'Downloads carry on with Grabbit closed and the screen off. With battery '
-                'use unrestricted, Android also lets Grabbit pick them up again by itself '
-                'if it ever has to stop it.')
+                'Downloads continue with Grabbit closed and the screen off. Unrestricted '
+                'battery use lets them resume if Android stops Grabbit.')
             self.battery_slot.add_widget(self.battery_button)
             self.battery_slot.height = dp(48)
 

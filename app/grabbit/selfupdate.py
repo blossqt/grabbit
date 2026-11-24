@@ -94,16 +94,15 @@ def blocker(install: Path | None = None) -> str | None:
     others = strangers(install)
     if others:
         shown = ', '.join(others[:3]) + (f' and {len(others) - 3} more' if len(others) > 3 else '')
-        return (f'Grabbit shares its folder, {install}, with other things ({shown}), and '
-                'updating replaces the whole folder. Put Grabbit.exe, _internal and tools in '
-                'a folder of their own and it can update itself from there.')
+        return (f'{install} holds other files ({shown}), and an update replaces the whole folder. '
+                'Move Grabbit.exe, _internal and tools to a folder of their own.')
     # os.access() reads only the read-only flag on Windows, so try for real.
     try:
         with tempfile.TemporaryFile(dir=install.parent):
             pass
     except OSError:
         return (f'Grabbit cannot change files in {install.parent}. Move the Grabbit folder to a '
-                'folder of your own, such as Documents, to let it update itself.')
+                'folder of your own, such as Documents.')
     return None
 
 
@@ -196,11 +195,11 @@ def smoke_test(exe: Path, version: str) -> None:
                        env=clean_environment(), creationflags=CREATE_NO_WINDOW, timeout=120)
         said = answer.read_text(encoding='utf-8').strip() if answer.exists() else ''
     except (OSError, subprocess.TimeoutExpired) as error:
-        raise UpdateError(f'The new version would not start: {error}') from None
+        raise UpdateError(f'The new version did not start: {error}') from None
     finally:
         answer.unlink(missing_ok=True)
     if said != version:
-        raise UpdateError('The new version would not start, so it was not installed.')
+        raise UpdateError('The new version did not start and was not installed.')
 
 
 class _FixedFileInfo(ctypes.Structure):

@@ -44,7 +44,7 @@ VIDEO_QUALITIES = [
 ]
 
 COOKIE_BROWSERS = [
-    ('', 'Don’t use browser cookies'),
+    ('', 'None'),
     ('firefox', 'Firefox'),
     ('chrome', 'Chrome'),
     ('edge', 'Microsoft Edge'),

@@ -252,14 +252,14 @@ class MobileEngine:
                                             paths.logs_dir() / 'aria2.log')
                 self.client = self.process.start()
             except Aria2Error as exc:
-                self.on_message('error', f'The download engine stopped and would not start again: {exc}')
+                self.on_message('error', f'The download engine stopped and did not restart: {exc}')
                 return False
             self._media_gids.clear()
             for task in self.store:
                 if task.kind != KIND_MEDIA:
                     task.gid = ''
             self._restore()
-        self.on_message('info', 'The download engine stopped by itself, and has been started again')
+        self.on_message('info', 'The download engine stopped and was restarted')
         return True
 
     def apply_settings(self, settings) -> None:
@@ -704,7 +704,7 @@ class MobileEngine:
                 task.state = State.QUEUED
                 task.error = ''
                 task.progress_note = f'Trying again in {int(wait)} s'
-                task.add_log(f'{message} - trying again in {int(wait)} s')
+                task.add_log(f'{message}. Trying again in {int(wait)} s')
                 self._retry_at[task_id] = time.monotonic() + wait
             self._finish_media(task_id)
         elif event in ('paused', 'cancelled'):
@@ -944,7 +944,7 @@ class MobileEngine:
                 task.error = ''
                 task.down_speed = 0
                 task.progress_note = f'Trying again in {int(wait)} s'
-                task.add_log(f'{message} - trying again in {int(wait)} s')
+                task.add_log(f'{message}. Trying again in {int(wait)} s')
                 self._retry_at[task.id] = time.monotonic() + wait
         elif state == 'complete':
             if task.kind == KIND_MAGNET:
@@ -971,7 +971,7 @@ class MobileEngine:
         # waits for a choice of files here; without a picker, waiting for a tap
         # is the same promise.
         self.start_torrent_from_metadata(task, paused=True)
-        self.on_message('info', f'{task.name} ({human_size(task.total)}) - tap it to start')
+        self.on_message('info', f'{task.name} ({human_size(task.total)}). Tap to start.')
 
     def _forget(self, gid: str):
         if gid:

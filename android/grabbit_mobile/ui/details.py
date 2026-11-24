@@ -241,8 +241,7 @@ class DetailsSheet(Entrance, ModalView):
 
     def _list_finished(self, found):
         if not found:
-            self.rows.line('The files are not where they were saved any more - '
-                           'moved or deleted since.', theme.ON_SURFACE_VARIANT)
+            self.rows.line('The files were moved or deleted.', theme.ON_SURFACE_VARIANT)
             return
         self.rows.line('Tap a file to open it.', theme.ON_SURFACE_VARIANT, size=11)
         # Inside a torrent's folder, each by its place in it.
@@ -294,7 +293,7 @@ class DetailsSheet(Entrance, ModalView):
     def _show_peers(self, task):
         if not task.is_torrent:
             if self._new('none'):
-                self.rows.line('Peers are a torrent thing.', theme.ON_SURFACE_VARIANT)
+                self.rows.line('Only torrents have peers.', theme.ON_SURFACE_VARIANT)
             return
         widths = [0, 86, 40, 70, 70]
 
@@ -325,7 +324,7 @@ class DetailsSheet(Entrance, ModalView):
     def _show_trackers(self, task):
         if not task.is_torrent:
             if self._new('none'):
-                self.rows.line('Trackers are a torrent thing.', theme.ON_SURFACE_VARIANT)
+                self.rows.line('Only torrents have trackers.', theme.ON_SURFACE_VARIANT)
             return
 
         def show(status):
