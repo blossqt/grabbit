@@ -1972,6 +1972,8 @@ def _took(window: QWidget, shot, at: QPoint, tone: tuple | None, clean: QImage |
         shot = QPixmap.fromImage(shot)
     window._suite_shot = shot
     window._suite_shot_at = at
+    if not getattr(window, '_suite_gliding', False):
+        window._suite_shot_corner = window.mapToGlobal(QPoint(0, 0))     # where it was: _lens_for
     if clean is not None:
         window._suite_clean, window._suite_clean_at = clean, at
     framed = not _frameless(window)
@@ -2281,7 +2283,12 @@ def _lens_for(window: QWidget) -> QPixmap | None:
     if shot is None:
         return None
     at = window._suite_shot_at
-    corner = window.mapToGlobal(QPoint(0, 0))
+    # A gliding window (the edge panel sliding out) is not repainted as it moves, so its glass is cut
+    # for where its shot was taken - where it comes to rest - and every part of it repainted on the
+    # way (an icon, the dots) matches the rest. Cut for each place as it went, those parts showed as
+    # bands of other glass across it (Hanami 0.1.90-0.1.91).
+    held = getattr(window, '_suite_shot_corner', None) if getattr(window, '_suite_gliding', False) else None
+    corner = held if held is not None else window.mapToGlobal(QPoint(0, 0))
     key = (window.width(), window.height(), corner.x() - at.x(), corner.y() - at.y(), shot.cacheKey())
     if getattr(window, '_suite_lens_key', None) != key:
         window._suite_lens = _lens(shot, key[2], key[3], window.width(), window.height())
