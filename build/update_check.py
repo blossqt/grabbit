@@ -166,7 +166,7 @@ def main():
     server.shutdown()
     server.server_close()
     answer = updates.check('windows', current='1.2.0', timeout=3)
-    report('no answer at all is one too', 'reach GitHub' in answer.error, answer.error)
+    report('no answer at all is one too', 'GitHub could not be reached' in answer.error, answer.error)
 
     print('\nthe real repository (needs the internet)')
     del os.environ[updates.ENV_SITE], os.environ[updates.ENV_KEY]
@@ -177,7 +177,7 @@ def main():
     elif 'No update information' in live.error:
         print('  [INFO] nothing signed has been published yet - the first release made with '
               'release.ps1 will be')
-    elif 'reach GitHub' in live.error:
+    elif 'GitHub could not be reached' in live.error:
         print(f'  [SKIP] could not ask GitHub - {live.error}')
     else:
         report('GitHub serves a release this build believes', False, live.error)
