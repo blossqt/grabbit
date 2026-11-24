@@ -58,7 +58,7 @@ from dataclasses import dataclass, replace
 
 from PySide6.QtCore import (QAbstractAnimation, QEasingCurve, QEvent, QObject, QPoint, QPointF, QPropertyAnimation,
                             QRect, QRectF, QSize, Qt, QSequentialAnimationGroup, QTimer, QVariantAnimation, Signal)
-from PySide6.QtGui import (QBrush, QColor, QFont, QFontDatabase, QGuiApplication, QImage, QLinearGradient,
+from PySide6.QtGui import (QBrush, QColor, QCursor, QFont, QFontDatabase, QGuiApplication, QImage, QLinearGradient,
                            QFontMetricsF, QPainter, QPainterPath, QPalette, QPen, QPixmap, QRegion,
                            QTextLayout)
 from PySide6.QtWidgets import (QAbstractItemView, QAbstractScrollArea, QApplication, QCheckBox,
@@ -1527,14 +1527,32 @@ class _Frosting(QObject):
             _remember_place(obj)
             _stop_live(obj)
             _watch_around(obj, stop=True)
+            _let_go(obj)
         elif kind in (QEvent.Move, QEvent.Resize) and obj.isVisible() and _screen_glass(obj):
-            if not getattr(obj, '_suite_gliding', False) and not _waiting_for_paint(obj):
+            gliding = getattr(obj, '_suite_gliding', False)
+            if not gliding and not _waiting_for_paint(obj):
                 _follow(obj)
-            if _frameless(obj):
+            # A gliding window keeps the glass it had, drawn from its own corner, so a move alone
+            # changes nothing in it: repainting it whole each frame of the glide only made frames late.
+            if _frameless(obj) and not (gliding and kind == QEvent.Move):
                 obj.update()
         elif kind == QEvent.ChildAdded and obj.isVisible():
             QTimer.singleShot(0, obj, lambda: _animate_parts(obj))
         return False
+
+
+_HELD_PICTURES = ('_suite_shot', '_suite_clean', '_suite_lens', '_suite_bridge', '_suite_backdrop_pixmap')
+
+
+def _let_go(window: QWidget) -> None:
+    """A window put away keeps none of its glass's pictures: the screen behind it (with its margins,
+    and a clean copy), its cut glass, its opening bridge and its scaled backdrop - a few MB a window,
+    held by every hidden settings window, card and panel. Each is taken or made again as it shows."""
+    for name in _HELD_PICTURES:
+        if getattr(window, name, None) is not None:
+            setattr(window, name, None)
+    window._suite_lens_key = None
+    window._suite_backdrop_key = None
 
 
 _BRIDGE_HOLD, _BRIDGE_FADE = 1200, 350    # ms: how long a frosted window's own glass stays, then fades
@@ -2213,10 +2231,11 @@ def _soften(shot, factor: int):
     return soft
 
 
-def _tone(shot, inner: QRectF) -> tuple[float, float]:
-    """How bright what is behind the window is (0 to 1), and how busy (how much it changes from
-    one spot to the next) - so the glass's tint can keep text on it easy to read. (Of a
-    QPixmap, or on any thread a QImage.)"""
+def _tone(shot, inner: QRectF) -> tuple[float, float, float, float]:
+    """How bright what is behind the window is (0 to 1), how busy (how much it changes from one
+    spot to the next), and how bright its darker and its brighter parts are (TONE_SPREAD in from
+    either end) - so the glass's tint can keep text on it easy to read even where only part of
+    it lies over a dark window, say. (Of a QPixmap, or on any thread a QImage.)"""
     dpr = shot.devicePixelRatio()
     part = shot.copy(QRect(round(inner.x() * dpr), round(inner.y() * dpr), max(1, round(inner.width() * dpr)),
                            max(1, round(inner.height() * dpr))))
@@ -2229,16 +2248,21 @@ def _tone(shot, inner: QRectF) -> tuple[float, float]:
         return [[(0.0722 * raw[i] + 0.7152 * raw[i + 1] + 0.2126 * raw[i + 2]) / 255
                  for i in range(y * line, y * line + 4 * n, 4)] for y in range(n)]
 
-    mean = sum(map(sum, lum(Qt.SmoothTransformation))) / (n * n)
+    smooth = sorted(value for row in lum(Qt.SmoothTransformation) for value in row)
+    mean = sum(smooth) / (n * n)
     # Busy from single pixels, not averages: averaging blurred lines of small text - the hardest
     # thing to read over - into a calm grey, and the tint stayed near 100 over a page of text.
     spots = lum(Qt.FastTransformation)
     busy = sum(abs(spots[y][x] - spots[y][x + 1]) + abs(spots[y][x] - spots[y + 1][x])
                for y in range(n - 1) for x in range(n - 1)) / ((n - 1) ** 2)
-    return mean, busy
+    edge = int(len(smooth) * TONE_SPREAD)
+    return mean, busy, smooth[edge], smooth[-1 - edge]
 
 
-def _tone_around(shot: QPixmap, inside: QRectF) -> tuple[float, float]:
+TONE_SPREAD = 0.08      # the darker and brighter parts behind a window: this share in from either end
+
+
+def _tone_around(shot: QPixmap, inside: QRectF) -> tuple[float, float, float, float]:
     """_tone of the strips of a shot around the window in it, as a guess at what is behind it."""
     width, height = shot.width() / shot.devicePixelRatio(), shot.height() / shot.devicePixelRatio()
     strips = [QRectF(0, 0, width, inside.top()), QRectF(0, inside.bottom(), width, height - inside.bottom()),
@@ -2247,8 +2271,7 @@ def _tone_around(shot: QPixmap, inside: QRectF) -> tuple[float, float]:
     parts = [(strip.width() * strip.height(), _tone(shot, strip)) for strip in strips
              if strip.width() >= 2 and strip.height() >= 2]
     total = sum(area for area, _ in parts) or 1
-    return (sum(area * tone[0] for area, tone in parts) / total,
-            sum(area * tone[1] for area, tone in parts) / total)
+    return tuple(sum(area * tone[k] for area, tone in parts) / total for k in range(4))
 
 
 def _lens_for(window: QWidget) -> QPixmap | None:
@@ -2472,14 +2495,25 @@ def _around(shot, outer: QRect, g: QRect, gap: int | None = None) -> list:
     return values
 
 
+READ_LIGHT, READ_DARK = 150 / 255, 95 / 255    # what is behind a pop-up's words: at least / at most, as Dockline's
+
+
 def _frost_tint(window: QWidget) -> int:
     """How much frosted glass tints what is behind it (0 to 255): canvasui.dev's quarter (black at
     25%, on dark), and more only where text on it would be hard to read - over what is bright
     under light text, or dark under dark text, or busy."""
-    mean, busy = getattr(window, '_suite_tone', None) or (0.5, 0.05)
+    tone = getattr(window, '_suite_tone', None) or (0.5, 0.05)
+    mean, busy = tone[0], tone[1]
+    low, high = (tone[2], tone[3]) if len(tone) > 3 else (mean, mean)
+    # Enough tint to bring the darker part behind up to READ_LIGHT under dark text (the brighter part
+    # down to READ_DARK under light text), whatever transparency is chosen. The old lift went by the
+    # average alone, with the base tint assumed: over half a dark window and half a white page, at
+    # full transparency, dark words sat on a 24% veil over the dark half (Keytap's picker, 2026-11-23).
     if is_dark():
-        return _clear_scaled(64, 150 * max(0.0, mean - 0.4) + 400 * busy, 170)
-    return _clear_scaled(56, 130 * max(0.0, 0.6 - mean) + 400 * busy, 160)
+        need = 255 * (1 - READ_DARK / high) if high > READ_DARK else 0.0
+        return _clear_scaled(64, max(150 * max(0.0, mean - 0.4), need) + 400 * busy, 170)
+    need = 255 * (READ_LIGHT - low) / (1 - low) if low < READ_LIGHT else 0.0
+    return _clear_scaled(56, max(130 * max(0.0, 0.6 - mean), need) + 400 * busy, 160)
 
 
 def _paint_frosted(painter, rect, radius: float, window: QWidget, lens: QPixmap) -> None:
@@ -2535,7 +2569,9 @@ class _Light(QObject):
         kind = event.type()
         if kind == QEvent.Paint:
             return self._paint(obj, event)
-        elif not motion_on() or isinstance(obj, QLineEdit) or not _fades(obj):
+        if kind == QEvent.MouseButtonPress and _fades(obj):
+            self._after_menu(obj)
+        if not motion_on() or isinstance(obj, QLineEdit) or not _fades(obj):
             return False
         elif kind in (QEvent.HoverEnter, QEvent.HoverMove):
             self._state(obj)['at'] = event.position()
@@ -2551,6 +2587,34 @@ class _Light(QObject):
         elif kind == QEvent.MouseButtonRelease:
             self._to(obj, 'press', 0.0, 480)
         return False
+
+    def _after_menu(self, button) -> None:
+        """A button whose press opens its menu (a ⋯ button) never hears its release, which the menu
+        takes, nor the pointer leaving while the menu is open: it stayed pressed and lit after the
+        menu closed. Now, once its menu closes, it eases back as if let go, and lets go of the
+        hover unless the pointer is on it still."""
+        menu = button.menu() if hasattr(button, 'menu') else None
+        if menu is None or getattr(button, '_suite_menu_watched', None) is menu:
+            return
+        button._suite_menu_watched = menu
+        ref = weakref.ref(button)
+
+        def closed():
+            b = ref()
+            if b is None:
+                return
+            try:
+                over = b.rect().contains(b.mapFromGlobal(QCursor.pos()))
+                if not over:
+                    b.setAttribute(Qt.WA_UnderMouse, False)     # Qt's own :hover, for its style sheet
+                if motion_on() and getattr(b, _LIGHT, None):
+                    self._to(b, 'press', 0.0, 480)
+                    if not over:
+                        self._to(b, 'hover', 0.0, 380)
+                b.update()
+            except RuntimeError:            # the button went with its window
+                pass
+        menu.aboutToHide.connect(closed)
 
     @staticmethod
     def _state(obj) -> dict:

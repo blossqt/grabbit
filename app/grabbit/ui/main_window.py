@@ -30,7 +30,7 @@ from .transfer_model import (COL_NAME, COL_PROGRESS, ProgressDelegate, TASK_ID_R
 
 log = logging.getLogger(__name__)
 
-COLUMN_LEAST = {COL_NAME: 96, 1: 62, 2: 60, 3: 84, 4: 56, 5: 68, 6: 68, 7: 52, 8: 44, 9: 104}     # px each column's contents read in
+COLUMN_LEAST = {COL_NAME: 96, 1: 62, 2: 84, 3: 84, 4: 56, 5: 68, 6: 68, 7: 52, 8: 44, 9: 104}     # px each column's contents read in
 
 STATUS_FILTERS = [
     ('all', 'All', 'queue'),
@@ -666,7 +666,7 @@ class MainWindow(QMainWindow):
             return      # up to date, or offline: nothing worth interrupting for
         if answer.error:
             QMessageBox.warning(self, 'Check for updates',
-                                f'Couldn’t check for updates.\n\n{answer.error}')
+                                f'Updates could not be checked.\n\n{answer.error}')
         else:
             QMessageBox.information(self, 'Check for updates',
                                     f'This is the newest version: {APP_NAME} {APP_VERSION}.')
@@ -787,13 +787,13 @@ class MainWindow(QMainWindow):
         if self._update_cancel.is_set():
             self.statusBar().showMessage('Update cancelled.', 6000)
             return
-        QMessageBox.warning(self, 'Update Grabbit', f'Grabbit couldn’t update.\n\n{message}')
+        QMessageBox.warning(self, 'Update Grabbit', f'Grabbit could not update.\n\n{message}')
 
     def _show_update_failed(self, version: str):
         QMessageBox.warning(
             self, 'Update Grabbit',
-            f'{APP_NAME} {version} couldn’t be installed, so this is still {APP_NAME} '
-            f'{APP_VERSION}.\n\nWhat happened is recorded in {selfupdate.log_path()}.')
+            f'{APP_NAME} {version} could not be installed; {APP_NAME} '
+            f'{APP_VERSION} is still in use.\n\nDetails are in {selfupdate.log_path()}.')
 
     def _clean_up_after_updates(self):
         if not self._installing:

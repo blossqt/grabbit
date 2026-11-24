@@ -6,6 +6,7 @@ on their own threads and report through the same mechanism.
 """
 
 import base64
+import functools
 import logging
 import os
 import time
@@ -36,6 +37,10 @@ DEFAULT_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
               '(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36')
 
 
+POLL_MS = 1000           # ms between looks at aria2 while something downloads or seeds
+POLL_IDLE_MS = 5000      # and while nothing does
+
+
 class Engine(QObject):
     tasks_updated = Signal(list)      # [task_id, ...] changed this tick
     task_added = Signal(str)
@@ -61,7 +66,7 @@ class Engine(QObject):
 
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='grabbit')
         self._poll_timer = QTimer(self)
-        self._poll_timer.setInterval(1000)
+        self._poll_timer.setInterval(POLL_MS)
         self._poll_timer.timeout.connect(self._poll)
         self._save_timer = QTimer(self)
         self._save_timer.setInterval(3000)
@@ -775,6 +780,20 @@ class Engine(QObject):
             self.tasks_updated.emit(changed)
         for task_id in finished:
             self.task_finished.emit(task_id)
+        # Nothing moving (all done, paused or failed, no video job): aria2 is asked every few seconds,
+        # not each second - each answer lists every finished download too. Starting anything asks
+        # every second again at once (_quickly).
+        moving = bool(self._media_jobs) or any(status.get('status') in ('active', 'waiting')
+                                               for status in snapshot.get('statuses') or [])
+        wanted = POLL_MS if moving else POLL_IDLE_MS
+        if self._poll_timer.interval() != wanted:
+            self._poll_timer.setInterval(wanted)
+
+    def _quickly(self) -> None:
+        if self._poll_timer.interval() != POLL_MS:
+            self._poll_timer.setInterval(POLL_MS)
+            if self._poll_timer.isActive():
+                self._poll_timer.start()        # from now, not from the last slow tick
 
     def _update_task(self, task: Task, status: dict, finished: list) -> bool:
         state = status.get('status')
@@ -1066,3 +1085,17 @@ def _name_from_url(url: str) -> str:
     from urllib.parse import unquote, urlparse
     name = os.path.basename(unquote(urlparse(url).path or '')).strip()
     return safe_filename(name) if name else (site_name(url) or 'download')
+
+
+def _quickening(method):
+    """A way of starting or resuming downloads: aria2 is asked every second again from then on."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        self._quickly()
+        return method(self, *args, **kwargs)
+    return wrapper
+
+
+for _name in ('add_direct', 'add_magnet', 'add_torrent', 'start_torrent_from_metadata', 'add_media', 'add_image',
+              'add_gif_frames', 'resume'):
+    setattr(Engine, _name, _quickening(getattr(Engine, _name)))

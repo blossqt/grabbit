@@ -1,7 +1,7 @@
 """Table model, filtering and painting for the transfer list."""
 
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, QRectF, QSortFilterProxyModel, Qt
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QStyledItemDelegate
 
 from ..tasks import (KIND_IMAGE, KIND_MAGNET, KIND_MEDIA, KIND_TORRENT, RUNNING_STATES,
@@ -283,9 +283,15 @@ class ProgressDelegate(QStyledItemDelegate):
             painter.setPen(QPen(QColor(STATE_COLORS.get(state, '#e64980')), self.STROKE, Qt.SolidLine, Qt.RoundCap))
             painter.drawArc(ring, 90 * 16, -round(360 * 16 * fraction))     # from the top, clockwise
 
-        text = f'{fraction * 100:.1f}%'
-        painter.setPen(QPen(option.palette.windowText().color()))
-        painter.setFont(option.font)
-        painter.drawText(QRectF(ring.right() + self.STROKE / 2 + 8, cell.y(), cell.width(), cell.height()),
-                         Qt.AlignVCenter | Qt.AlignLeft, text)
+        # The percentage within its own cell: drawn to the cell's width past its start, it ran into
+        # the Status column's words once a narrow window squeezed the column.
+        left = ring.right() + self.STROKE / 2 + 8
+        room = cell.right() - left - 4
+        metrics = QFontMetricsF(option.font)
+        text = next((t for t in (f'{fraction * 100:.1f}%', f'{fraction * 100:.0f}%')
+                     if metrics.horizontalAdvance(t) <= room), '')
+        if text:
+            painter.setPen(QPen(option.palette.windowText().color()))
+            painter.setFont(option.font)
+            painter.drawText(QRectF(left, cell.y(), room, cell.height()), Qt.AlignVCenter | Qt.AlignLeft, text)
         painter.restore()

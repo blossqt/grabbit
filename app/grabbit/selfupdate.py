@@ -102,9 +102,8 @@ def blocker(install: Path | None = None) -> str | None:
         with tempfile.TemporaryFile(dir=install.parent):
             pass
     except OSError:
-        return (f'Windows won’t let Grabbit change files in {install.parent}. '
-                'Move the Grabbit folder somewhere of your own, like Documents, '
-                'and it can update itself from there.')
+        return (f'Grabbit cannot change files in {install.parent}. Move the Grabbit folder to a '
+                'folder of your own, such as Documents, to let it update itself.')
     return None
 
 
@@ -147,7 +146,7 @@ def stage(archive: Path, version: str, install: Path,
             needed = sum(m.file_size for m in members)
             free = shutil.disk_usage(install.parent).free
             if free < needed + (200 << 20):
-                raise UpdateError(f'There isn’t enough free space next to Grabbit: the update '
+                raise UpdateError(f'There is not enough free space next to Grabbit: the update '
                                   f'needs {needed / 1e6:.0f} MB and {free / 1e6:.0f} MB is free.')
             root = staged.resolve()
             for index, member in enumerate(members):
@@ -156,7 +155,7 @@ def stage(archive: Path, version: str, install: Path,
                 parts = Path(member.filename).parts[1:]
                 target = staged.joinpath(*parts).resolve() if parts else None
                 if target is None or root not in target.parents:
-                    raise UpdateError('The update contains a file it shouldn’t.')
+                    raise UpdateError('The update contains an unexpected file.')
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(member) as source, target.open('wb') as out:
                     shutil.copyfileobj(source, out, 1 << 20)

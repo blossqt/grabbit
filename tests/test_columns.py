@@ -191,5 +191,31 @@ class Timing(unittest.TestCase):
         self.assertLessEqual(theme.QUICK + suitetheme._STAGGER_GAP * suitetheme._STAGGER_MOST, 200)
 
 
+class ProgressColumn(unittest.TestCase):
+    def test_the_percentage_stays_in_its_own_column(self):
+        """In a narrow window the Progress column's "100.0%" ran on into the Status column's words."""
+        from PySide6.QtGui import QColor, QStandardItem
+        from grabbit.ui.transfer_model import ProgressDelegate
+        model = QStandardItemModel(0, 2)
+        row = [QStandardItem(), QStandardItem()]
+        row[0].setData(1.0, Qt.DisplayRole)
+        model.appendRow(row)
+        view = QTreeView()
+        view.setModel(model)
+        view.setItemDelegateForColumn(0, ProgressDelegate(view))
+        view.setStyleSheet('QTreeView { background: white; }')
+        view.resize(300, 120)
+        view.show()
+        for width in (44, 60, 120):
+            view.setColumnWidth(0, width)
+            app.processEvents()
+            picture = view.viewport().grab().toImage()
+            rect = view.visualRect(model.index(0, 1))           # the next column, empty
+            inked = [(x, y) for x in range(rect.left(), rect.left() + 30) for y in range(rect.top(), rect.bottom())
+                     if QColor(picture.pixel(x, y)).lightness() < 200]
+            self.assertEqual(inked, [], f'nothing drawn past the column at {width} px')
+        view.close()
+
+
 if __name__ == '__main__':
     unittest.main()

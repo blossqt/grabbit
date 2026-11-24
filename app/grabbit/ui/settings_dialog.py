@@ -274,7 +274,7 @@ class SettingsDialog(QDialog):
         check_now = QPushButton('Check now')
         check_now.clicked.connect(self._check_now)
         version_row = QHBoxLayout()
-        version_row.addWidget(label(f'You have {APP_NAME} {APP_VERSION}.'))
+        version_row.addWidget(label(f'{APP_NAME} {APP_VERSION}'))
         version_row.addStretch(1)
         version_row.addWidget(check_now)
         box.addLayout(version_row)
