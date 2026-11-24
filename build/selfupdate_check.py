@@ -173,7 +173,7 @@ def check_swap(scratch: Path, stub: Path) -> None:
     report('and says why', 'holds more than Grabbit' in log and 'my-work.txt' in log,
            log.strip().splitlines()[-1] if log else 'no log')
     report('the copy that was running is started again', '--update-failed 9.9.9' in wait_for_launch(install))
-    report('the app itself refuses first', 'shares its folder' in (selfupdate.blocker(install) or ''),
+    report('the app itself refuses first', 'holds other files' in (selfupdate.blocker(install) or ''),
            (selfupdate.blocker(install) or 'no objection')[:70])
 
     print('\nwhat earlier updates left behind')
