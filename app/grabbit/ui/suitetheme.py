@@ -73,7 +73,7 @@ __all__ = ['ACCENT', 'ACCENT_HOVER', 'ON_ACCENT', 'ROSE', 'SuiteStyle', 'install
            'motion_on', 'motion_chosen', 'set_motion', 'MODES', 'mode', 'set_mode', 'app_mode', 'restyle',
            'on_restyle', 'light_up', 'BACKDROP_OPACITY', 'fade_out', 'stagger_in', 'GAME_DOWNLOADS',
            'game_quiet_chosen', 'set_game_quiet', 'game_downloads', 'set_game_downloads', 'game_in_front',
-           'quiet_now', 'on_game', 'frame_interval', 'animate', 'stop_animation', 'leave', 'walled', 'closes_on_escape', 'ESCAPE_CLOSES', 'TYPE', 'SPACE', 'QUICK', 'STEADY', 'GENTLE', 'text', 'Label', 'Pages', 'Rolling']
+           'quiet_now', 'on_game', 'prepare_glass', 'frame_interval', 'animate', 'stop_animation', 'leave', 'walled', 'closes_on_escape', 'ESCAPE_CLOSES', 'TYPE', 'SPACE', 'QUICK', 'STEADY', 'GENTLE', 'text', 'Label', 'Pages', 'Rolling']
 
 ACCENT = '#ffd1dc'         # the suite's blossom pink: buttons, ticks, highlights
 ACCENT_HOVER = '#ffe0e8'
@@ -1789,11 +1789,11 @@ def _screen_glass(window: QWidget) -> bool:
     return glass_on() and bool(window.property(_FROSTED))
 
 
-def _where(window: QWidget):
+def _where(window: QWidget, frame: QRect | None = None):
     """Where a window's shot of the screen is taken from: its screen, the part of the screen wanted
-    (the window and a margin around it), the part of that on the screen - None if none is - and
-    the margin."""
-    g = window.frameGeometry()
+    (the window - or there, frame - and a margin around it), the part of that on the screen - None
+    if none is - and the margin."""
+    g = window.frameGeometry() if frame is None else frame
     screen = QGuiApplication.screenAt(g.center()) or window.screen() or QGuiApplication.primaryScreen()
     margin = _MARGIN_FRAMELESS if _frameless(window) else _MARGIN
     want = g.adjusted(-margin, -margin, margin, margin)
@@ -1801,14 +1801,60 @@ def _where(window: QWidget):
     return None if got.isEmpty() else (screen, got, want, margin)
 
 
+_PREPARED_FOR = 0.4       # s: how long glass made ahead (prepare_glass) is good for
+
+
+def prepare_glass(window: QWidget, frame: QRect, hidden: QRect | None = None) -> None:
+    """Make a frameless pop-up's glass ahead, on the glass's own thread, for where it is about to
+    open (frame, its frame on screen): it then opens with its glass made, not first taking the
+    screen and softening it on the windows' thread as it shows. hidden: a part of the screen
+    behind it that will be gone by then (the edge panel's tab), healed from around it. Glass made
+    more than _PREPARED_FOR before it opens, or for somewhere else, is let go."""
+    if not _screen_glass(window) or not _frameless(window) or quiet_now():
+        return
+    where = _where(window, frame)
+    if where is None:
+        return
+    screen, got, want, margin = where
+    native = _native(screen, got)
+    asked = time.monotonic()
+    ref = weakref.ref(window)
+
+    def make(image):
+        clean = _clean(image, got, want, _drag_images(native), hidden)
+        return _made(clean, want, want, _BLUR, False, True, margin), clean
+
+    def then(made):
+        w = ref()
+        if w is not None and made is not None:
+            w._suite_prepared = (asked, want, made)
+    _grabber().take(('prepare', id(window)), native, screen.devicePixelRatio(), make, then)
+
+
+def _prepared(window: QWidget, want: QRect):
+    """The glass made ahead for a window opening there (prepare_glass), if it is still good - let go either way."""
+    prepared = getattr(window, '_suite_prepared', None)
+    window._suite_prepared = None
+    if prepared is None:
+        return None
+    asked, made_for, made = prepared
+    return made if made_for == want and time.monotonic() - asked <= _PREPARED_FOR else None
+
+
 def _capture(window: QWidget) -> None:
-    """Take what is behind a window, a little beyond its edges, for its glass - now, as it opens.
-    (Later shots are taken on the glass's own thread: _capture_later.) None while a game is in
-    front: the glass is then plain."""
+    """Take what is behind a window, a little beyond its edges, for its glass - now, as it opens
+    (or made ahead: prepare_glass). Later shots are taken on the glass's own thread: _capture_later.
+    None while a game is in front: the glass is then plain."""
     where = None if quiet_now() else _where(window)
     if where is None:
         return
     screen, got, want, margin = where
+    made = _prepared(window, want) if _frameless(window) else None
+    if made is not None:
+        window._suite_box = window.frameGeometry()
+        glass, clean = made
+        _took(window, *glass, clean=clean, fresh=True)
+        return
     area = screen.geometry()
     shot = screen.grabWindow(0, got.x() - area.x(), got.y() - area.y(), got.width(), got.height())
     if not shot.isNull():
