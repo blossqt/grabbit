@@ -88,7 +88,7 @@ ROSE = '#c2255c'           # the mark on the icons: the pink as text or a line o
 TYPE = {'tiny': 8, 'caption': 9, 'small': 9.75, 'body': 10.5, 'strong': 10.5,
         'heading': 11.25, 'title': 17, 'page': 21}
 SPACE = (4, 8, 12, 16, 24, 32)     # px: gaps and margins are these (a 1-2 px nudge aside)
-QUICK, STEADY, GENTLE = 120, 180, 240   # ms: a press or fade, a slide, a panel or toast coming in
+QUICK, STEADY, GENTLE = 90, 140, 180     # ms: a press or fade, a slide, a panel or toast coming in
 
 GLASS_RADIUS = 8           # the corners Windows 11 rounds a frameless glass window to
 
@@ -2786,7 +2786,7 @@ def stop_animation(animation) -> None:
 
 # --------------------------------------------------------------------------- smooth scrolling
 
-SCROLL_MS = 220              # a wheel notch's scroll glides this long (the next one picks it up from where it is)
+SCROLL_MS = 150              # a wheel notch's scroll glides this long (the next one picks it up from where it is)
 
 
 class _Wheels(QObject):
