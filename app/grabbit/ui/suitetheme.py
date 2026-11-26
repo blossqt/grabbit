@@ -447,7 +447,7 @@ def veil() -> QColor:
     return walled(QColor(10, 10, 12, _clear_scaled(112)) if is_dark() else QColor(250, 250, 252, _clear_scaled(64)))
 
 
-ACRYLIC_CLEAREST = 0.25   # how much of Acrylic's frosting a framed window keeps at 100% transparency
+ACRYLIC_CLEAREST = 0.1    # how much of Acrylic's frosting a framed window keeps at 100% transparency
 
 
 def _acrylic_like() -> QColor:
@@ -950,7 +950,7 @@ def panel_fill() -> QColor:
     return QColor(16, 15, 20, _panel_alpha(175)) if is_dark() else QColor(255, 255, 255, _panel_alpha(190))
 
 
-PANEL_CLEAREST = 0.6      # a panel's tint at 100% transparency, as a share of its own
+PANEL_CLEAREST = 0.5      # a panel's tint at 100% transparency, as a share of its own
 
 
 def _panel_alpha(alpha: int) -> int:
