@@ -18,7 +18,8 @@ text or a line on the window is ink().
 Glass: every window of the suite is a pane of glass, as Windows 11's own are.
 An app calls frost(window) once, before the window is first shown. A framed
 window then takes Windows' Acrylic under a veil of the suite's own (chosen
-clearer than Acrylic goes, Windows' plain blur, under a thinner veil); a
+clearer than Acrylic goes, it draws its glass from the screen itself, as a
+frameless one does, under a thinner veil); a
 frameless one (a card, a menu, a toast, a shelf) draws its glass itself, from
 the screen behind it (see "glass from the screen"), with Windows' rounded
 corners and shadow - so it paints no shadow of its own (glass_on() says
@@ -435,9 +436,10 @@ def _colors(dark: bool, glass: bool) -> Colors:
 
 def veil() -> QColor:
     """A framed glass window's own tint over Windows' Acrylic: enough that text stays easy to read
-    whatever is behind the window. Clearer than CLEAR_FORMER_MOST, the window has Windows' plain
-    blur instead (Acrylic's own frosting can't be thinned), and the veil stands in for Acrylic's
-    frosting, thinning to ACRYLIC_CLEAREST of it at 100%."""
+    whatever is behind the window. Clearer than CLEAR_FORMER_MOST, the window draws its glass from
+    the screen itself (_painted: Acrylic's own frosting can't be thinned, and Windows' plain blur
+    shows only the wallpaper, 2026-11-26), and the veil stands in for Acrylic's frosting, thinning
+    to ACRYLIC_CLEAREST of it at 100%."""
     beyond = _beyond()
     if beyond > 0:
         tint = _acrylic_like()
@@ -447,12 +449,32 @@ def veil() -> QColor:
     return walled(QColor(10, 10, 12, _clear_scaled(112)) if is_dark() else QColor(250, 250, 252, _clear_scaled(64)))
 
 
+def _veil_for(window: QWidget) -> QColor:
+    """A framed window's veil (veil()) - and, drawing its glass from the screen (_painted), at least
+    READ_SHARE of what its words need to stay readable over what is behind it: over a dark page at
+    100%, the user's light-mode words were barely readable on the veil alone (2026-11-26)."""
+    color = veil()
+    tone = getattr(window, '_suite_tone', None) if _painted(window) else None
+    if tone is None:
+        return color
+    low, high = (tone[2], tone[3]) if len(tone) > 3 else (tone[0], tone[0])
+    if is_dark():
+        need = 255 * (1 - READ_DARK / high) if high > READ_DARK else 0.0
+    else:
+        need = 255 * (READ_LIGHT - low) / (1 - low) if low < READ_LIGHT else 0.0
+    color.setAlpha(max(color.alpha(), min(255, round(need * READ_SHARE))))
+    return color
+
+
+READ_SHARE = 0.75         # how much of that a framed window's veil gives, at the clearest
+
+
 ACRYLIC_CLEAREST = 0.1    # how much of Acrylic's frosting a framed window keeps at 100% transparency
 
 
 def _acrylic_like() -> QColor:
-    """Windows' Acrylic over a plain blur, near enough: mostly its tint, a little of what is behind
-    showing through."""
+    """Windows' Acrylic over the screen softened, near enough: mostly its tint, a little of what is
+    behind showing through."""
     return QColor(44, 44, 44, 205) if is_dark() else QColor(250, 250, 250, 190)
 
 
@@ -950,7 +972,7 @@ def panel_fill() -> QColor:
     return QColor(16, 15, 20, _panel_alpha(175)) if is_dark() else QColor(255, 255, 255, _panel_alpha(190))
 
 
-PANEL_CLEAREST = 0.5      # a panel's tint at 100% transparency, as a share of its own
+PANEL_CLEAREST = 0.6      # a panel's tint at 100% transparency, as a share of its own
 
 
 def _panel_alpha(alpha: int) -> int:
@@ -1081,7 +1103,7 @@ def set_glass_clear(value: int) -> None:
     for window in app.topLevelWidgets() if app is not None else ():
         if window.isVisible() and window.property(_FROSTED):
             if was_beyond != (_beyond() > 0) and glass_on() and not _frameless(window):
-                _apply_glass(window)         # Acrylic, or the plain blur beyond CLEAR_FORMER_MOST
+                _follow(window)              # beyond CLEAR_FORMER_MOST it draws its glass from the screen
             window.update()
 
 
@@ -1446,7 +1468,7 @@ _DWMWA_WINDOW_CORNER_PREFERENCE = 33
 _DWMWA_SYSTEMBACKDROP_TYPE = 38
 _DWMWCP_ROUND, _DWMSBT_NONE, _DWMSBT_TRANSIENTWINDOW = 2, 1, 3     # rounded corners; no backdrop; Acrylic
 _WCA_ACCENT_POLICY = 19
-_ACCENT_DISABLED, _ACCENT_ENABLE_TRANSPARENTGRADIENT, _ACCENT_ENABLE_BLURBEHIND, _ACCENT_ENABLE_ACRYLICBLURBEHIND = 0, 2, 3, 4
+_ACCENT_DISABLED, _ACCENT_ENABLE_TRANSPARENTGRADIENT, _ACCENT_ENABLE_ACRYLICBLURBEHIND = 0, 2, 4
 
 
 def _dwm(hwnd: int, attribute: int, value: int) -> None:
@@ -1481,11 +1503,6 @@ def _apply_glass(window: QWidget) -> None:
         _dwm(hwnd, _DWMWA_WINDOW_CORNER_PREFERENCE, _DWMWCP_ROUND)
         drawn = getattr(window, '_suite_shot', None) is not None
         _accent(hwnd, _ACCENT_DISABLED if drawn else _ACCENT_ENABLE_ACRYLICBLURBEHIND, _tint())
-    elif _beyond() > 0:
-        # Clearer than Acrylic goes (its frosting is Windows' own, and can't be thinned): Windows'
-        # plain blur, with the veil standing in for Acrylic's frosting.
-        _dwm(hwnd, _DWMWA_SYSTEMBACKDROP_TYPE, _DWMSBT_NONE)
-        _accent(hwnd, _ACCENT_ENABLE_BLURBEHIND)
     else:
         _accent(hwnd, _ACCENT_DISABLED)
         _dwm(hwnd, _DWMWA_SYSTEMBACKDROP_TYPE, _DWMSBT_TRANSIENTWINDOW)
@@ -1558,7 +1575,11 @@ class _Frosting(QObject):
                 painter = QPainter(obj)
                 painter.setClipRegion(event.region())    # the parts asked for: a rim repaint is its band, not the whole window
                 _paint_bridge(painter, obj)
-                painter.fillRect(event.rect(), veil())      # frosted: Windows' blur under a plain tint, no rim
+                lens = _lens_for(obj) if _painted(obj) else None
+                if lens is not None:                        # clearer than Acrylic goes: its own glass
+                    painter.drawPixmap(QRectF(0, 0, lens.width() / lens.devicePixelRatio(),
+                                              lens.height() / lens.devicePixelRatio()), lens, QRectF(lens.rect()))
+                painter.fillRect(event.rect(), _veil_for(obj))   # frosted: Windows' blur under a plain tint, no rim
                 painter.end()
             if getattr(obj, '_suite_backdrop', None):
                 return _paint_backdrop(obj, event)
@@ -1593,7 +1614,7 @@ class _Frosting(QObject):
                 _follow(obj)
             # A gliding window keeps the glass it had, drawn from its own corner, so a move alone
             # changes nothing in it: repainting it whole each frame of the glide only made frames late.
-            if _frameless(obj) and not (gliding and kind == QEvent.Move):
+            if _painted(obj) and not (gliding and kind == QEvent.Move):
                 obj.update()
         elif kind == QEvent.ChildAdded and obj.isVisible():
             QTimer.singleShot(0, obj, lambda: _animate_parts(obj))
@@ -1623,7 +1644,7 @@ def _bridge(window: QWidget) -> None:
     glass of its own, made from the shot of the screen behind it its rim took as it opened (before
     it was on screen), which fades away as the Acrylic comes."""
     shot = getattr(window, '_suite_shot', None)
-    if shot is None:
+    if shot is None or _painted(window):        # it draws its own glass from the screen already
         return
     g, at, dpr = window.geometry(), window._suite_shot_at, shot.devicePixelRatio()
     part = shot.copy(QRect(round((g.x() - at.x()) * dpr), round((g.y() - at.y()) * dpr),
@@ -1637,10 +1658,9 @@ def _bridge_from(window: QWidget, shot: QPixmap) -> None:
     its tint, a little of what is behind showing through), kept while Windows brings its own up,
     then faded out."""
     glass = _soften(shot, 16)
-    if not _beyond():                   # beyond it, the veil over this is Acrylic's stand-in already
-        painter = QPainter(glass)
-        painter.fillRect(QRectF(0, 0, glass.width(), glass.height()), _acrylic_like())
-        painter.end()
+    painter = QPainter(glass)
+    painter.fillRect(QRectF(0, 0, glass.width(), glass.height()), _acrylic_like())
+    painter.end()
     window._suite_bridge = glass
     window._suite_bridge_opacity = 1.0
     ref = weakref.ref(window)
@@ -1842,6 +1862,13 @@ _SHADOW = 24              # px around a pop-up that Windows' shadow for it can d
 _WATCH_MS = 600           # how often a still window looks at what is around it
 
 
+def _painted(window: QWidget) -> bool:
+    """Whether a window draws its glass from the screen itself: a frameless one always, a framed one
+    when chosen clearer than Acrylic goes (CLEAR_FORMER_MOST). Its shots then leave the window
+    itself out, as a pop-up's do (_clean), and it repaints whole as it moves."""
+    return _frameless(window) or (_beyond() > 0 and _screen_glass(window))
+
+
 def _screen_glass(window: QWidget) -> bool:
     """Whether a window's glass is made from the screen: a frameless one's, and a framed one's rim,
     which bends in what lies beyond its edges."""
@@ -1854,7 +1881,7 @@ def _where(window: QWidget, frame: QRect | None = None):
     if none is - and the margin."""
     g = window.frameGeometry() if frame is None else frame
     screen = QGuiApplication.screenAt(g.center()) or window.screen() or QGuiApplication.primaryScreen()
-    margin = _MARGIN_FRAMELESS if _frameless(window) else _MARGIN
+    margin = _MARGIN_FRAMELESS if _painted(window) else _MARGIN
     want = g.adjusted(-margin, -margin, margin, margin)
     got = want.intersected(screen.geometry())
     return None if got.isEmpty() else (screen, got, want, margin)
@@ -1917,11 +1944,12 @@ def _capture(window: QWidget) -> None:
     area = screen.geometry()
     shot = screen.grabWindow(0, got.x() - area.x(), got.y() - area.y(), got.width(), got.height())
     if not shot.isNull():
-        framed = not _frameless(window)
+        framed = not _painted(window)
         window._suite_box = window.frameGeometry()
         clean = _clean(shot.toImage(), got, want, _drag_images(_native(screen, got)))
-        _took(window, *_made(clean, want, want, _BLUR, framed, True, margin),
-              clean=None if framed else clean)
+        # A framed window keeps its clean shot too, should it be made clearer than Acrylic goes
+        # while open (_painted): its later shots then fill it in from this one, taken before it showed.
+        _took(window, *_made(clean, want, want, _BLUR, framed, True, margin), clean=clean)
 
 
 def _heal_in(shot: QImage, origin: QPoint, rects) -> QImage:
@@ -2081,7 +2109,7 @@ def _took(window: QWidget, shot, at: QPoint, tone: tuple | None, clean: QImage |
         window._suite_shot_corner = window.mapToGlobal(QPoint(0, 0))     # where it was: _lens_for
     if clean is not None:
         window._suite_clean, window._suite_clean_at = clean, at
-    framed = not _frameless(window)
+    framed = not _painted(window)
     if tone is not None:
         old = getattr(window, '_suite_tone', None)
         if old is not None and (_live(window) or framed) and not fresh:
@@ -2118,7 +2146,7 @@ def _capture_later(window: QWidget, final: bool) -> bool:
             _stop_live(window)
         return True
     screen, got, want, margin = where
-    blur, framed = _BLUR, not _frameless(window)
+    blur, framed = _BLUR, not _painted(window)
     tone = final or not framed
     dpr, origin = screen.devicePixelRatio(), screen.geometry().topLeft()
     native = _native(screen, got)
