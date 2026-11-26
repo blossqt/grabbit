@@ -818,7 +818,7 @@ class MediaJob(threading.Thread):
         have_cookies = bool(getattr(self.settings, 'cookies_file', '')
                             or getattr(self.settings, 'cookies_browser', ''))
         if refused and not have_cookies:
-            return f'{message} — the site refused an anonymous download.' + (
+            return f'{message.rstrip(".")}. The site refused an anonymous download.' + (
                 f' {REFUSED_HINT}' if REFUSED_HINT else '')
         return message
 

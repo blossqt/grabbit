@@ -228,8 +228,8 @@ class SettingsDialog(QDialog):
         row.addWidget(pick)
         rows.addRow(label('Cookies file'), row)
         box.addLayout(rows)
-        box.addWidget(note('Required for posts that need a signed-in account. Firefox works best: '
-                           'Chrome and Edge lock their cookies.'))
+        box.addWidget(note('Required for posts that need a signed-in account. Firefox works best, '
+                           'because Chrome and Edge lock their cookies.'))
         layout.addWidget(box_frame)
         layout.addStretch(1)
 
