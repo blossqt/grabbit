@@ -17,7 +17,8 @@ text or a line on the window is ink().
 
 Glass: every window of the suite is a pane of glass, as Windows 11's own are.
 An app calls frost(window) once, before the window is first shown. A framed
-window then takes Windows' Acrylic under a veil of the suite's own; a
+window then takes Windows' Acrylic under a veil of the suite's own (chosen
+clearer than Acrylic goes, Windows' plain blur, under a thinner veil); a
 frameless one (a card, a menu, a toast, a shelf) draws its glass itself, from
 the screen behind it (see "glass from the screen"), with Windows' rounded
 corners and shadow - so it paints no shadow of its own (glass_on() says
@@ -69,7 +70,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QAbstractScrollArea, QApplicat
 __all__ = ['ACCENT', 'ACCENT_HOVER', 'ON_ACCENT', 'ROSE', 'SuiteStyle', 'install', 'Colors', 'is_dark', 'veil',
            'colors', 'ink', 'font', 'serif', 'paint_shadow', 'card_style', 'panel_css', 'panel_fill', 'GLASS_RADIUS',
            'glass_on', 'frost', 'paint_glass', 'css', 'fade_in', 'LOOKS', 'look',
-           'glass_clear', 'set_glass_clear', 'CLEAR_DEFAULT',
+           'glass_clear', 'set_glass_clear', 'glass_settled', 'CLEAR_DEFAULT', 'CLEAR_FORMER_MOST',
            'motion_on', 'motion_chosen', 'set_motion', 'MODES', 'mode', 'set_mode', 'app_mode', 'restyle',
            'on_restyle', 'light_up', 'BACKDROP_OPACITY', 'fade_out', 'stagger_in', 'GAME_DOWNLOADS',
            'game_quiet_chosen', 'set_game_quiet', 'game_downloads', 'set_game_downloads', 'game_in_front',
@@ -434,9 +435,25 @@ def _colors(dark: bool, glass: bool) -> Colors:
 
 def veil() -> QColor:
     """A framed glass window's own tint over Windows' Acrylic: enough that text stays easy to read
-    whatever is behind the window."""
+    whatever is behind the window. Clearer than CLEAR_FORMER_MOST, the window has Windows' plain
+    blur instead (Acrylic's own frosting can't be thinned), and the veil stands in for Acrylic's
+    frosting, thinning to ACRYLIC_CLEAREST of it at 100%."""
+    beyond = _beyond()
+    if beyond > 0:
+        tint = _acrylic_like()
+        tint.setAlpha(round(tint.alpha() * (1 - beyond * (1 - ACRYLIC_CLEAREST))))
+        return walled(tint)
     # after canvasui.dev's cards: a plainer, lighter tint, so more of the blur shows
     return walled(QColor(10, 10, 12, _clear_scaled(112)) if is_dark() else QColor(250, 250, 252, _clear_scaled(64)))
+
+
+ACRYLIC_CLEAREST = 0.1    # how much of Acrylic's frosting a framed window keeps at 100% transparency
+
+
+def _acrylic_like() -> QColor:
+    """Windows' Acrylic over a plain blur, near enough: mostly its tint, a little of what is behind
+    showing through."""
+    return QColor(44, 44, 44, 205) if is_dark() else QColor(250, 250, 250, 190)
 
 
 WALL_SHARE = 0.5          # how far the glass's tint leans to the wallpaper's hue, at its own lightness
@@ -930,7 +947,16 @@ def panel_fill() -> QColor:
     to edge (a vault's sidebar and list) rather than floating as a rounded panel."""
     if not glass_on():
         return QColor(colors().tile)
-    return QColor(16, 15, 20, 175) if is_dark() else QColor(255, 255, 255, 190)
+    return QColor(16, 15, 20, _panel_alpha(175)) if is_dark() else QColor(255, 255, 255, _panel_alpha(190))
+
+
+PANEL_CLEAREST = 0.5      # a panel's tint at 100% transparency, as a share of its own
+
+
+def _panel_alpha(alpha: int) -> int:
+    """A panel's tint: as it has always been up to CLEAR_FORMER_MOST, then thinner, to
+    PANEL_CLEAREST of it at 100% - mostly solid still, so what is read on it stays readable."""
+    return round(alpha * (1 - _beyond() * (1 - PANEL_CLEAREST)))
 
 
 def panel_css(selector: str, radius: int = 12) -> str:
@@ -939,8 +965,8 @@ def panel_css(selector: str, radius: int = 12) -> str:
     read sits on solid ground (2026-11-02, the user: "a huge problem is readability")."""
     c = colors()
     if glass_on():
-        fill, line = (QColor(16, 15, 20, 175), QColor(255, 255, 255, 26)) if is_dark() else \
-            (QColor(255, 255, 255, 190), QColor(0, 0, 0, 20))
+        fill, line = (QColor(16, 15, 20, _panel_alpha(175)), QColor(255, 255, 255, 26)) if is_dark() else \
+            (QColor(255, 255, 255, _panel_alpha(190)), QColor(0, 0, 0, 20))
         return (f'{selector} {{ background: {css(fill)}; border: 1px solid {css(line)}; '
                 f'border-radius: {radius + 6}px; }}')
     return (f'{selector} {{ background: {css(c.tile)}; border: 1px solid {css(c.border)}; '
@@ -1009,13 +1035,18 @@ def _set_suite_value(name: str, kind: int, value) -> None:
         winreg.SetValueEx(key, name, 0, kind, value)
 
 
-CLEAR_DEFAULT = 50          # the glass's transparency as it was before it could be set
+CLEAR_DEFAULT = 25          # the glass's transparency as it was before it could be set
+CLEAR_FORMER_MOST = 50      # the clearest it could be chosen until 2026-11-26 (then shown as 100%)
+_CLEAR_NAME = 'GlassTransparency'     # 0 to 100, on this scale
+_CLEAR_FORMER_NAME = 'GlassClear'     # twice it, up to 100: the scale before, still kept for older copies
 _clear_value: int | None = None
 
 
 def glass_clear() -> int:
-    """How see-through the frosted glass is, 0 to 100, as chosen in Hanami: at 50 its tint is as it
-    has always been; higher thins it, to none at 100; lower thickens it, to twice at 0."""
+    """How see-through the frosted glass is, 0 to 100, as chosen in Hanami: at 25 its tint is as it
+    has always been; higher thins it, to none at 50 (once the clearest it went, shown as 100%: the
+    user found that "about 60%" see-through, 2026-11-26), then thinner still - the readable tint,
+    the panels and a framed window's frosting too - to 100; lower thickens it, to twice at 0."""
     global _clear_value
     if _clear_value is None:
         _clear_value = _read_clear()
@@ -1025,7 +1056,10 @@ def glass_clear() -> int:
 def _read_clear() -> int:
     value = os.environ.get('SUITE_GLASS_CLEAR')            # tests and screenshots
     if value is None:
-        value = _suite_value('GlassClear')
+        value = _suite_value(_CLEAR_NAME)
+    if value is None:                                       # chosen on the scale before: the same glass
+        former = _suite_value(_CLEAR_FORMER_NAME)
+        value = None if former is None else (int(former) + 1) // 2
     try:
         return max(0, min(100, int(value)))
     except (TypeError, ValueError):
@@ -1038,27 +1072,47 @@ def set_glass_clear(value: int) -> None:
     is drawn again - not every style sheet - so dragging the slider stays smooth."""
     global _clear_value
     import winreg
+    was_beyond = _beyond() > 0
     _clear_value = max(0, min(100, int(value)))
-    _set_suite_value('GlassClear', winreg.REG_DWORD, _clear_value)
+    _set_suite_value(_CLEAR_NAME, winreg.REG_DWORD, _clear_value)
+    # A copy of an app from before 2026-11-26 reads the scale before: the same glass, as near as it goes.
+    _set_suite_value(_CLEAR_FORMER_NAME, winreg.REG_DWORD, min(100, 2 * _clear_value))
     app = QApplication.instance()
     for window in app.topLevelWidgets() if app is not None else ():
         if window.isVisible() and window.property(_FROSTED):
+            if was_beyond != (_beyond() > 0) and glass_on() and not _frameless(window):
+                _apply_glass(window)         # Acrylic, or the plain blur beyond CLEAR_FORMER_MOST
             window.update()
 
 
-READABLE_SHARE = 0.8      # how much of the tint text behind brings stays, however clear the glass is chosen
+def glass_settled() -> None:
+    """The transparency slider let go: the panels' style sheets take the new tint too (only the
+    glass follows it as it is dragged)."""
+    _suite_changed()
+
+
+def _beyond() -> float:
+    """How far the glass is chosen clearer than it could be before 2026-11-26: 0 up to
+    CLEAR_FORMER_MOST, 1 at 100."""
+    return max(0.0, (glass_clear() - CLEAR_FORMER_MOST) / (100 - CLEAR_FORMER_MOST))
+
+
+READABLE_SHARE = 0.8      # how much of the tint text behind brings stays, up to CLEAR_FORMER_MOST
+READABLE_CLEAREST = 0.5   # and at 100%
 
 
 def _clear_scaled(base: float, lift: float = 0.0, most: float = 255.0) -> int:
     """A glass tint (0 to 255) as thick as the transparency chosen makes it: base, the tint over a
     calm backdrop, thinned or thickened in step with it; lift, what text or detail behind adds so
-    the window's own words stay readable, thinned only to READABLE_SHARE of itself (at 85% the user
-    once saw the text behind a window read as clearly as its own). Up to most, unless chosen
-    thicker than it has always been."""
-    share = (100 - glass_clear()) / (100 - CLEAR_DEFAULT)      # 1 as it has always been, 0 fully clear
+    the window's own words stay readable, thinned only to READABLE_SHARE of itself (at the former
+    85% the user once saw the text behind a window read as clearly as its own) up to
+    CLEAR_FORMER_MOST, then on to READABLE_CLEAREST at 100%. Up to most, unless chosen thicker than
+    it has always been."""
+    share = max(0.0, (CLEAR_FORMER_MOST - glass_clear()) / (CLEAR_FORMER_MOST - CLEAR_DEFAULT))  # 1 as always, 0 clear
     if share >= 1:
         return int(min(255.0, min(most, base + lift) * share))
-    return int(max(0.0, min(most, base * share + lift * max(share, READABLE_SHARE))))
+    readable = READABLE_SHARE - _beyond() * (READABLE_SHARE - READABLE_CLEAREST)
+    return int(max(0.0, min(most, base * share + lift * max(share, readable))))
 
 
 def motion_on() -> bool:
@@ -1392,7 +1446,7 @@ _DWMWA_WINDOW_CORNER_PREFERENCE = 33
 _DWMWA_SYSTEMBACKDROP_TYPE = 38
 _DWMWCP_ROUND, _DWMSBT_NONE, _DWMSBT_TRANSIENTWINDOW = 2, 1, 3     # rounded corners; no backdrop; Acrylic
 _WCA_ACCENT_POLICY = 19
-_ACCENT_DISABLED, _ACCENT_ENABLE_TRANSPARENTGRADIENT, _ACCENT_ENABLE_ACRYLICBLURBEHIND = 0, 2, 4
+_ACCENT_DISABLED, _ACCENT_ENABLE_TRANSPARENTGRADIENT, _ACCENT_ENABLE_BLURBEHIND, _ACCENT_ENABLE_ACRYLICBLURBEHIND = 0, 2, 3, 4
 
 
 def _dwm(hwnd: int, attribute: int, value: int) -> None:
@@ -1427,6 +1481,11 @@ def _apply_glass(window: QWidget) -> None:
         _dwm(hwnd, _DWMWA_WINDOW_CORNER_PREFERENCE, _DWMWCP_ROUND)
         drawn = getattr(window, '_suite_shot', None) is not None
         _accent(hwnd, _ACCENT_DISABLED if drawn else _ACCENT_ENABLE_ACRYLICBLURBEHIND, _tint())
+    elif _beyond() > 0:
+        # Clearer than Acrylic goes (its frosting is Windows' own, and can't be thinned): Windows'
+        # plain blur, with the veil standing in for Acrylic's frosting.
+        _dwm(hwnd, _DWMWA_SYSTEMBACKDROP_TYPE, _DWMSBT_NONE)
+        _accent(hwnd, _ACCENT_ENABLE_BLURBEHIND)
     else:
         _accent(hwnd, _ACCENT_DISABLED)
         _dwm(hwnd, _DWMWA_SYSTEMBACKDROP_TYPE, _DWMSBT_TRANSIENTWINDOW)
@@ -1578,10 +1637,10 @@ def _bridge_from(window: QWidget, shot: QPixmap) -> None:
     its tint, a little of what is behind showing through), kept while Windows brings its own up,
     then faded out."""
     glass = _soften(shot, 16)
-    painter = QPainter(glass)
-    painter.fillRect(QRectF(0, 0, glass.width(), glass.height()),
-                     QColor(44, 44, 44, 205) if is_dark() else QColor(250, 250, 250, 190))
-    painter.end()
+    if not _beyond():                   # beyond it, the veil over this is Acrylic's stand-in already
+        painter = QPainter(glass)
+        painter.fillRect(QRectF(0, 0, glass.width(), glass.height()), _acrylic_like())
+        painter.end()
     window._suite_bridge = glass
     window._suite_bridge_opacity = 1.0
     ref = weakref.ref(window)
