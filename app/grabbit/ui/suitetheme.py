@@ -454,8 +454,13 @@ def _veil_for(window: QWidget) -> QColor:
     READ_SHARE of what its words need to stay readable over what is behind it: over a dark page at
     100%, the user's light-mode words were barely readable on the veil alone (2026-11-26)."""
     color = veil()
-    tone = getattr(window, '_suite_tone', None) if _painted(window) else None
-    if tone is None:
+    if not _painted(window):
+        return color
+    shown = getattr(window, '_suite_lens_shown', 1.0)       # on Acrylic while it moves: as at 50%
+    if shown < 1.0:
+        color.setAlpha(round(color.alpha() * shown))
+    tone = getattr(window, '_suite_tone', None)
+    if tone is None or shown < 1.0:
         return color
     low, high = (tone[2], tone[3]) if len(tone) > 3 else (tone[0], tone[0])
     if is_dark():
@@ -1575,15 +1580,19 @@ class _Frosting(QObject):
                 painter = QPainter(obj)
                 painter.setClipRegion(event.region())    # the parts asked for: a rim repaint is its band, not the whole window
                 _paint_bridge(painter, obj)
-                lens = _lens_for(obj) if _painted(obj) else None
+                shown = getattr(obj, '_suite_lens_shown', 1.0)
+                lens = _lens_for(obj) if _painted(obj) and shown > 0 else None
                 if lens is not None:                        # clearer than Acrylic goes: its own glass
+                    painter.setOpacity(shown)
                     painter.drawPixmap(QRectF(0, 0, lens.width() / lens.devicePixelRatio(),
                                               lens.height() / lens.devicePixelRatio()), lens, QRectF(lens.rect()))
+                    painter.setOpacity(1.0)
                 painter.fillRect(event.rect(), _veil_for(obj))   # frosted: Windows' blur under a plain tint, no rim
                 painter.end()
             if getattr(obj, '_suite_backdrop', None):
                 return _paint_backdrop(obj, event)
         elif kind == QEvent.Show:
+            obj._suite_shown_at = time.monotonic()
             _place(obj)
             _stop_unpainted(obj)
             if _screen_glass(obj):
@@ -1614,7 +1623,10 @@ class _Frosting(QObject):
                 _follow(obj)
             # A gliding window keeps the glass it had, drawn from its own corner, so a move alone
             # changes nothing in it: repainting it whole each frame of the glide only made frames late.
-            if _painted(obj) and not (gliding and kind == QEvent.Move):
+            if not _frameless(obj) and _painted(obj):
+                if time.monotonic() - getattr(obj, '_suite_shown_at', 0.0) > _OPENING:
+                    _hide_lens(obj)                 # Acrylic while it moves: see _hide_lens
+            elif _painted(obj) and not (gliding and kind == QEvent.Move):
                 obj.update()
         elif kind == QEvent.ChildAdded and obj.isVisible():
             QTimer.singleShot(0, obj, lambda: _animate_parts(obj))
@@ -1632,6 +1644,7 @@ def _let_go(window: QWidget) -> None:
         if getattr(window, name, None) is not None:
             setattr(window, name, None)
     window._suite_lens_key = None
+    window._suite_lens_shown = 1.0         # opens on its own glass, as it closed or not
     window._suite_backdrop_key = None
 
 
@@ -2115,8 +2128,64 @@ def _took(window: QWidget, shot, at: QPoint, tone: tuple | None, clean: QImage |
         if old is not None and (_live(window) or framed) and not fresh:
             tone = tuple(0.6 * a + 0.4 * b for a, b in zip(old, tone))
         window._suite_tone = tone
-    if not framed:
-        window.update()                     # a framed one's veil doesn't show its shot
+    if framed:
+        return                              # a framed one's veil doesn't show its shot
+    if _frameless(window):
+        window.update()
+    elif fresh:
+        _show_lens(window)                  # it has settled: its own glass again
+    # (a framed window's shots as it moves are kept, not shown: it is on Acrylic meanwhile)
+
+
+_OPENING = 0.5            # s: a framed window placed as it opens isn't being moved
+_LENS_FADE = 180          # ms: a framed window's own glass fading back in once it settles
+
+
+def _hide_lens(window: QWidget) -> None:
+    """A framed window drawing its own glass (_painted) is being moved or resized: repainting the
+    whole window for each step made dragging it stutter (the user, 2026-11-26), so meanwhile it
+    shows Windows' Acrylic - drawn by Windows, live, as at 50% - and its shots go on behind, so its
+    own glass is ready the moment it settles (_show_lens)."""
+    fading = getattr(window, '_suite_lens_fade', None)
+    if fading is not None:
+        fading.stop()
+        window._suite_lens_fade = None
+    if getattr(window, '_suite_lens_shown', 1.0) > 0:
+        window._suite_lens_shown = 0.0
+        window.update()
+
+
+def _show_lens(window: QWidget) -> None:
+    """A framed window's own glass back, faded in, once it has settled and has a fresh shot."""
+    shown = getattr(window, '_suite_lens_shown', 1.0)
+    if shown >= 1.0 or getattr(window, '_suite_lens_fade', None) is not None:
+        window.update()
+        return
+    if not motion_on():
+        window._suite_lens_shown = 1.0
+        window.update()
+        return
+    animation = window._suite_lens_fade = QVariantAnimation(window)
+    animation.setDuration(_LENS_FADE)
+    animation.setStartValue(shown)
+    animation.setEndValue(1.0)
+    animation.setEasingCurve(QEasingCurve.OutCubic)
+    ref = weakref.ref(window)
+
+    def step(value) -> None:
+        w = ref()
+        if w is not None:
+            w._suite_lens_shown = float(value)
+            w.update()
+
+    def done() -> None:
+        w = ref()
+        if w is not None and getattr(w, '_suite_lens_fade', None) is animation:
+            w._suite_lens_fade = None
+    animation.valueChanged.connect(step)
+    animation.finished.connect(done)
+    _keep(animation)
+    animation.start()
 
 
 def _logical_window(hwnd: int, origin: QPoint, dpr: float) -> QRect | None:
