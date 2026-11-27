@@ -293,5 +293,5 @@ class ProgressDelegate(QStyledItemDelegate):
         if text:
             painter.setPen(QPen(option.palette.windowText().color()))
             painter.setFont(option.font)
-            painter.drawText(QRectF(left, cell.y(), room, cell.height()), Qt.AlignVCenter | Qt.AlignLeft, text)
+            theme.draw_line(painter, QRectF(left, cell.y(), room, cell.height()), Qt.AlignVCenter | Qt.AlignLeft, text)
         painter.restore()
