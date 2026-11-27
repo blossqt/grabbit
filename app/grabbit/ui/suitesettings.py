@@ -175,7 +175,13 @@ class _SwitchRow(QWidget):
             box.setParent(parent)
             self.destroyed.connect(box.deleteLater)
         width, height = theme.SuiteStyle.SWITCH[0] + 2, max(theme.SuiteStyle.SWITCH[1], box.sizeHint().height())
-        box.setGeometry(self.x() + self.width() - width, self.y() + (self.height() - height) // 2, width, height)
+        middle = self.height() / 2
+        name = box._name if isinstance(box, _Switch) else None
+        if isinstance(name, theme.Label) and name.parentWidget() is self and self.findChild(QLabel, 'about') is None \
+                and name._one_line():
+            top, base = name.letters()                    # one line: on its letters, to the pixel
+            middle = name.y() + (top + base) / 2
+        box.setGeometry(self.x() + self.width() - width, self.y() + round(middle - height / 2), width, height)
         box.raise_()
         box.setVisible(not self.isHidden())
 
