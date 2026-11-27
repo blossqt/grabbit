@@ -75,7 +75,7 @@ __all__ = ['ACCENT', 'ACCENT_HOVER', 'ON_ACCENT', 'ROSE', 'SuiteStyle', 'install
            'motion_on', 'motion_chosen', 'set_motion', 'MODES', 'mode', 'set_mode', 'app_mode', 'restyle',
            'on_restyle', 'light_up', 'BACKDROP_OPACITY', 'fade_out', 'stagger_in', 'GAME_DOWNLOADS',
            'game_quiet_chosen', 'set_game_quiet', 'game_downloads', 'set_game_downloads', 'game_in_front',
-           'quiet_now', 'on_game', 'prepare_glass', 'frame_interval', 'animate', 'stop_animation', 'leave', 'walled', 'closes_on_escape', 'ESCAPE_CLOSES', 'TYPE', 'SPACE', 'QUICK', 'STEADY', 'GENTLE', 'text', 'Label', 'Pages', 'Rolling']
+           'quiet_now', 'on_game', 'prepare_glass', 'frame_interval', 'animate', 'stop_animation', 'leave', 'walled', 'closes_on_escape', 'ESCAPE_CLOSES', 'TYPE', 'SPACE', 'QUICK', 'STEADY', 'GENTLE', 'text', 'Label', 'Pages', 'Rolling', 'rise', 'baseline', 'line_rect', 'draw_line']
 
 ACCENT = '#ffd1dc'         # the suite's blossom pink: buttons, ticks, highlights
 ACCENT_HOVER = '#ffe0e8'
@@ -96,6 +96,57 @@ GLASS_RADIUS = 8           # the corners Windows 11 rounds a frameless glass win
 
 
 _INDICATOR_WIDTH, _INDICATOR_HEIGHT = QStyle.PM_IndicatorWidth, QStyle.PM_IndicatorHeight
+
+
+_rises: dict = {}         # how far a line's letters stand over its baseline, by font and text
+
+
+def rise(metrics: QFontMetricsF, text: str) -> float:
+    """How far a line's letters stand over its baseline: its capitals' height (or its tallest
+    letter's), or the x-height of a line with none. Descenders aren't counted: they hang below."""
+    key = (metrics.height(), metrics.ascent(), metrics.capHeight(), text)
+    found = _rises.get(key)
+    if found is None:
+        if len(_rises) > 2000:
+            _rises.clear()
+        letters = text.replace('&', '')
+        if any(c.isupper() or c.isdigit() or c in 'bdfhklt' for c in letters):
+            found = metrics.capHeight()             # a font's own measure: a glyph's ink box is rounded out
+        elif any(c.isalpha() for c in letters):
+            found = metrics.xHeight()
+        else:
+            found = max(0.0, -metrics.tightBoundingRect(letters.strip() or 'x').top())
+        _rises[key] = found
+    return found
+
+
+def baseline(metrics: QFontMetricsF, text: str, top: float, height: float) -> float:
+    """The baseline that centres a line in a height as the eye sees it: the middle of its letters
+    from their top to the baseline is the middle of the height, the descenders hanging below
+    (CSS's text-box-trim: cap alphabetic). Centring the line's box, as Qt does, leaves the letters
+    a pixel or two high or low by font (Segoe UI's box has more room above its capitals than
+    under its baseline), and centring its ink lifts a line with a g or a y (the user, 2026-11-27,
+    of "Settings" by its icon: "text not centered")."""
+    return top + (height + rise(metrics, text)) / 2
+
+
+def line_rect(metrics: QFontMetricsF, rect, flags, text: str):
+    """For one line drawn centred in rect's height (flags with AlignVCenter or AlignCenter): the
+    rectangle and flags to draw it with so that its letters are centred (baseline()), not its
+    line's box. Anything else - top or bottom aligned, wrapped, more than a line - as it was."""
+    flags = int(flags)
+    if not flags & int(Qt.AlignVCenter) or flags & int(Qt.TextWordWrap) or '\n' in text or not text:
+        return rect, flags
+    base = baseline(metrics, text, rect.top(), rect.height())
+    flags = (flags & ~int(Qt.AlignVertical_Mask)) | int(Qt.AlignTop)
+    return QRectF(rect.left(), base - metrics.ascent(), rect.width(), metrics.ascent() + metrics.descent() + 1), flags
+
+
+def draw_line(painter: QPainter, rect, flags, text: str) -> None:
+    """One line of text in rect, aligned across as flags say, its letters centred in rect's height
+    (baseline()) whatever flags say of the height."""
+    flags = (int(flags) & ~int(Qt.AlignVertical_Mask)) | int(Qt.AlignVCenter)
+    painter.drawText(*line_rect(QFontMetricsF(painter.font()), QRectF(rect), flags, text), text)
 
 
 class SuiteStyle(QProxyStyle):
@@ -119,6 +170,21 @@ class SuiteStyle(QProxyStyle):
         if metric is _INDICATOR_HEIGHT:
             return self.SWITCH[1] if _switches(widget) else self.SIZE
         return super().pixelMetric(metric, option, widget)
+
+    def drawItemText(self, painter, rect, flags, palette, enabled, text, role=QPalette.NoRole):
+        """A button's, a box's or a check box's words: one line centred in its height has its
+        letters centred (baseline()), not its line's box."""
+        if text and int(flags) & int(Qt.AlignVCenter) and not int(flags) & int(Qt.TextWordWrap) and '\n' not in text:
+            # drawn here, at a fractional top: QCommonStyle's whole-pixel rectangle rounds the
+            # baseline as much as a pixel off
+            room, flags = line_rect(QFontMetricsF(painter.font()), QRectF(rect), flags, text.replace('&&', '&'))
+            painter.save()
+            if role != QPalette.NoRole:
+                painter.setPen(QPen(palette.brush(role), painter.pen().widthF()))
+            painter.drawText(room, flags, text)
+            painter.restore()
+            return
+        super().drawItemText(painter, rect, flags, palette, enabled, text, role)
 
     def drawPrimitive(self, element, option, painter, widget=None):
         if element == QStyle.PE_FrameFocusRect:     # no focus outlines, dotted or otherwise (the user's wish)
@@ -726,6 +792,15 @@ class Label(QLabel):
             found = kept[key] = self._ink(text, width)
         return found
 
+    def _one_line(self) -> bool:
+        text = self.text()
+        if '\n' in text or '\u2028' in text or '\u2029' in text:
+            return False
+        if not self.wordWrap():
+            return True
+        m = QFontMetricsF(self.font(), self)
+        return m.horizontalAdvance(text) <= max(1, self.contentsRect().width())
+
     def _width(self) -> int | None:
         return self.contentsRect().width() if self.wordWrap() and self.width() > 1 else None
 
@@ -747,17 +822,51 @@ class Label(QLabel):
         top, bottom = self._trims(width - m.left() - m.right())
         return height - top - bottom
 
+    def _down(self) -> int:
+        """How far under the top of its room the line's ink starts, as painted."""
+        top, bottom = self._trims(self._width())
+        room = self.contentsRect()
+        ink = self.heightForWidth(self.width()) if self.wordWrap() else self.sizeHint().height()
+        m = self.contentsMargins()
+        spare = room.height() - (ink - m.top() - m.bottom())     # a cell taller than its words
+        if spare > 0 and self.alignment() & Qt.AlignVCenter and self._one_line():
+            # one line in a taller cell (by an icon, a switch, a box): its letters centred, top to
+            # baseline, not its ink - a g or a y lifted the line (baseline())
+            metrics = QFontMetricsF(self.font(), self)
+            line = self.text()
+            base = baseline(metrics, line, room.top(), room.height())
+            ink_h = metrics.ascent() + metrics.descent() - top - bottom      # its ink as drawn
+            return min(max(0, math.floor(room.height() - ink_h)), max(0, round(base - metrics.ascent()) + top - room.top()))
+        return spare // 2 if self.alignment() & Qt.AlignVCenter else spare if self.alignment() & Qt.AlignBottom else 0
+
+    def centring_height(self) -> int:
+        """The least height in which a one-line label's letters can be centred (baseline()) with
+        its descenders still inside: as far below the letters as they hang under the baseline."""
+        metrics = QFontMetricsF(self.font(), self)
+        line = self.text()
+        depth = max(0.0, metrics.descent() - self._trims(self._width())[1])
+        m = self.contentsMargins()
+        return math.ceil(rise(metrics, line) + 2 * depth) + m.top() + m.bottom()
+
+    def letters(self) -> tuple[float, float]:
+        """Where a one-line label's letters are drawn, top and baseline (in its own coordinates)."""
+        metrics = QFontMetricsF(self.font(), self)
+        line = self.text()
+        if self._rich() or not (self._trims(self._width())[0] or self._trims(self._width())[1]):
+            room = self.contentsRect()
+            base = baseline(metrics, line, room.top(), room.height()) if self.alignment() & Qt.AlignVCenter \
+                else room.top() + metrics.ascent()
+            return base - rise(metrics, line), base
+        top = self._trims(self._width())[0]
+        base = self.contentsRect().top() + self._down() - top + metrics.ascent()
+        return base - rise(metrics, line), base
+
     def paintEvent(self, event):
         top, bottom = self._trims(self._width())
         if not (top or bottom):
             return super().paintEvent(event)
         painter = QPainter(self)
-        room = self.contentsRect()
-        ink = self.heightForWidth(self.width()) if self.wordWrap() else self.sizeHint().height()
-        m = self.contentsMargins()
-        spare = room.height() - (ink - m.top() - m.bottom())     # a cell taller than its words
-        down = spare // 2 if self.alignment() & Qt.AlignVCenter else spare if self.alignment() & Qt.AlignBottom else 0
-        room = room.adjusted(0, down - top, 0, bottom)
+        room = self.contentsRect().adjusted(0, self._down() - top, 0, bottom)
         flags = int(self.alignment() & ~Qt.AlignVertical_Mask) | int(Qt.AlignTop)
         if self.wordWrap():
             flags |= int(Qt.TextWordWrap)

@@ -114,7 +114,9 @@ def form() -> QFormLayout:
     """Settings with a name before each, in a section: the names in a column on the left."""
     rows = QFormLayout()
     rows.setContentsMargins(0, 0, 0, 0)
-    rows.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+    # a name the row's height, its letters centred in it (theme.Label) and so level with the
+    # box's words beside it: centred by the layout, a name with a g sat high
+    rows.setLabelAlignment(Qt.AlignLeft)
     rows.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
     rows.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
     rows.setHorizontalSpacing(16)
@@ -202,7 +204,9 @@ def switch(text: str, about: str, on: bool) -> tuple[QWidget, QCheckBox]:
         line.setObjectName('about')
         words.addWidget(line)
     row.addLayout(words, 1)
-    row.setAlignment(words, Qt.AlignVCenter)
+    if about:
+        row.setAlignment(words, Qt.AlignVCenter)
+    # one line fills the row, its letters centred in it (theme.Label), level with the switch
     # A one-line row is at least the switch's height less 6, so in a run of them the switches
     # are at least 10 apart (16 + 14 - 20); its words sit in its middle
     holder.setMinimumHeight(theme.SuiteStyle.SWITCH[1] - 6)
@@ -378,8 +382,8 @@ class Nav(QWidget):
                       QColor(theme.ink()) if selected else c.dim, 18)
             p.setPen(c.text)
             p.setFont(theme.font(BODY))       # one weight: the pill shows the page chosen, and words don't shift
-            p.drawText(QRectF(row.left() + 46, row.top(), row.width() - 50, row.height()),
-                       Qt.AlignVCenter | Qt.AlignLeft, title)
+            theme.draw_line(p, QRectF(row.left() + 46, row.top(), row.width() - 50, row.height()),
+                            Qt.AlignLeft, title)
         p.end()
 
 
@@ -474,13 +478,12 @@ class _SideRows(QStyledItemDelegate):
             p.setFont(theme.font(9))                # (Segoe UI's figures are all one width)
             shown = str(count)
             width = p.fontMetrics().horizontalAdvance(shown)
-            p.drawText(QRectF(right - width, r.top(), width, r.height()), Qt.AlignVCenter | Qt.AlignRight, shown)
+            theme.draw_line(p, QRectF(right - width, r.top(), width, r.height()), Qt.AlignRight, shown)
             right -= width + 10
         p.setPen(c.text)
         p.setFont(theme.font(9.5, QFont.DemiBold if chosen else QFont.Normal))
         room = QRectF(r.left() + 46, r.top(), max(0.0, right - r.left() - 46), r.height())
-        p.drawText(room, Qt.AlignVCenter | Qt.AlignLeft,
-                   p.fontMetrics().elidedText(text, Qt.ElideRight, int(room.width())))
+        theme.draw_line(p, room, Qt.AlignLeft, p.fontMetrics().elidedText(text, Qt.ElideRight, int(room.width())))
         p.restore()
 
 
@@ -921,15 +924,23 @@ class SettingsFrame:
         self.sidebar = QFrame()
         self.sidebar.setObjectName('sidebar')
         side = QVBoxLayout(self.sidebar)
-        side.setContentsMargins(0, 12, 0, 8)
-        side.setSpacing(12)
         top = QHBoxLayout()
         top.setContentsMargins(16, 0, 0, 0)
         top.setSpacing(12)
         mark = QLabel()
         mark.setPixmap(logo)
-        top.addWidget(mark)
-        top.addWidget(heading(title, 17), 1)
+        top.addWidget(mark, 0, Qt.AlignVCenter)
+        # "Settings" with its letters centred on the logo (the user, 2026-11-27: "text not
+        # centered"): its g hangs below them, so the line is as tall as that on both sides, and
+        # the logo keeps its place - the room it adds comes off the gaps above and below it
+        name = self.heading = heading(title, 17)
+        top.addWidget(name, 1)
+        logo_h = round(logo.height() / logo.devicePixelRatio())
+        tall = max(logo_h, name.centring_height())
+        name.setMinimumHeight(tall)
+        extra = (tall - logo_h) // 2
+        side.setContentsMargins(0, max(0, 12 - extra), 0, 8)
+        side.setSpacing(max(0, 12 - extra))
         side.addLayout(top)
         self.nav = Nav()
         side.addWidget(self.nav)
@@ -1002,3 +1013,49 @@ def style() -> str:
         QSlider::sub-page:horizontal:disabled, QSlider::handle:horizontal:disabled {{
             background: {theme.css(c.border)}; border-color: {theme.css(c.border)}; }}
     """
+
+
+def misaligned(window: QWidget, tolerance: float = 1.0) -> list[tuple[str, str, float]]:
+    """Lines of text whose letters aren't centred on the icon, switch, button or box beside them
+    (theme.baseline), as (text, what is beside it, how far off): for tests, so text off-centre by
+    an icon (the user, 2026-11-27: "text not centered man check all the text") is caught.
+
+    A one-line theme.Label is checked against the widgets of its own parent that sit beside it
+    (not above or below), up to 40 px tall, overlapping most of its height; a switch row's name
+    against its switch, unless a line about it makes the two a pair."""
+    from PySide6.QtCore import QRect
+    from PySide6.QtWidgets import QAbstractButton, QAbstractSpinBox, QComboBox, QLineEdit
+
+    def thing(w) -> bool:
+        if isinstance(w, QLabel) and not isinstance(w, theme.Label):
+            return not w.pixmap().isNull()
+        return isinstance(w, (QAbstractButton, QComboBox, QLineEdit, QAbstractSpinBox))
+
+    def rect(w) -> QRect:
+        return QRect(w.mapTo(window, QPoint(0, 0)), w.size())
+
+    off = []
+    for line in window.findChildren(theme.Label):
+        if not line.isVisibleTo(window) or not line.text() or line._rich() or not line._one_line():
+            continue
+        parent = line.parentWidget()
+        if line.objectName() == 'name' and parent.findChild(QLabel, 'about') is not None:
+            continue
+        at = rect(line)
+        top, base = line.letters()
+        middle = at.top() + (top + base) / 2
+        beside = [w for w in parent.findChildren(QWidget, options=Qt.FindDirectChildrenOnly)
+                  if w is not line and thing(w) and w.isVisibleTo(window)]
+        box = getattr(parent, 'box', None)
+        if line.objectName() == 'name' and box is not None and box.isVisibleTo(window):
+            beside.append(box)
+        for w in beside:
+            r = rect(w)
+            if not 8 <= r.height() <= 40 or (r.right() >= at.left() and r.left() <= at.right()):
+                continue
+            if min(r.bottom(), at.bottom()) - max(r.top(), at.top()) < 0.6 * min(r.height(), at.height()):
+                continue
+            gap = middle - (r.top() + r.height() / 2)
+            if abs(gap) > tolerance:
+                off.append((line.text(), type(w).__name__, round(gap, 1)))
+    return off
