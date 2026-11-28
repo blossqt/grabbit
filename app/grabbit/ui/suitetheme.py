@@ -175,6 +175,7 @@ class SuiteStyle(QProxyStyle):
         out = super().polish(target)
         if isinstance(target, QWidget) and target.inherits('QComboBoxPrivateContainer'):
             target.installEventFilter(_popups())    # a box's list of choices: solid, see _Popups
+            _make_solid(target)
         return out
 
     def drawItemText(self, painter, rect, flags, palette, enabled, text, role=QPalette.NoRole):
@@ -1613,17 +1614,25 @@ def _popup_palette(palette: QPalette) -> QPalette:
 
 
 class _Popups(QObject):
-    """Each box's list of choices, as it opens: solid colours (_popup_palette), the box's own
-    taken afresh each time, so it follows light or dark."""
+    """Each box's list of choices: solid colours (_popup_palette) from the moment it is made, and
+    again whenever the box hands it the box's own (light or dark changed) and as it opens. Not
+    only as it opens: Qt's slide-open takes a picture of the list before showing it, and a list
+    still in the box's see-through colours slid open black (2026-11-28)."""
 
     def eventFilter(self, obj, event):
-        if event.type() == QEvent.Show and isinstance(obj, QWidget):
-            palette = _popup_palette(obj.palette())
-            obj.setPalette(palette)
-            for view in obj.findChildren(QAbstractItemView):
-                view.setPalette(palette)
-                view.viewport().setAutoFillBackground(True)
+        if event.type() in (QEvent.Show, QEvent.PaletteChange) and isinstance(obj, QWidget):
+            _make_solid(obj)
         return False
+
+
+def _make_solid(popup: QWidget) -> None:
+    palette = _popup_palette(popup.palette())
+    if palette != popup.palette():          # unchanged: no PaletteChange again
+        popup.setPalette(palette)
+    for view in popup.findChildren(QAbstractItemView):
+        if view.palette() != palette:
+            view.setPalette(palette)
+        view.viewport().setAutoFillBackground(True)
 
 
 _popups_filter = None
