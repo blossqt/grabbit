@@ -171,6 +171,12 @@ class SuiteStyle(QProxyStyle):
             return self.SWITCH[1] if _switches(widget) else self.SIZE
         return super().pixelMetric(metric, option, widget)
 
+    def polish(self, target):
+        out = super().polish(target)
+        if isinstance(target, QWidget) and target.inherits('QComboBoxPrivateContainer'):
+            target.installEventFilter(_popups())    # a box's list of choices: solid, see _Popups
+        return out
+
     def drawItemText(self, painter, rect, flags, palette, enabled, text, role=QPalette.NoRole):
         """A button's, a box's or a check box's words: one line centred in its height has its
         letters centred (baseline()), not its line's box."""
@@ -1586,6 +1592,48 @@ def _apply_glass(window: QWidget) -> None:
         _accent(hwnd, _ACCENT_DISABLED)
         _dwm(hwnd, _DWMWA_SYSTEMBACKDROP_TYPE, _DWMSBT_TRANSIENTWINDOW)
         ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(wintypes.HWND(hwnd), ctypes.byref(_Margins(-1, -1, -1, -1)))
+
+
+def _popup_palette(palette: QPalette) -> QPalette:
+    """A box's list of choices: solid, in the window's mode. The list is a window of its own that
+    Windows draws no glass under, so the see-through colours a glass window's boxes take
+    (_glass_palette) came out black - the choices dark words on black, unreadable (2026-11-28)."""
+    c = _colors(is_dark(), False)
+    out = QPalette(palette)
+    for group in (QPalette.Active, QPalette.Inactive, QPalette.Disabled):
+        for role in (QPalette.Window, QPalette.Base, QPalette.Button):
+            out.setColor(group, role, c.card)
+        out.setColor(group, QPalette.AlternateBase, c.tile)
+        words = c.dim if group == QPalette.Disabled else c.text
+        for role in (QPalette.WindowText, QPalette.Text, QPalette.ButtonText):
+            out.setColor(group, role, words)
+        out.setColor(group, QPalette.Highlight, QColor(ACCENT))
+        out.setColor(group, QPalette.HighlightedText, QColor(ON_ACCENT))
+    return out
+
+
+class _Popups(QObject):
+    """Each box's list of choices, as it opens: solid colours (_popup_palette), the box's own
+    taken afresh each time, so it follows light or dark."""
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Show and isinstance(obj, QWidget):
+            palette = _popup_palette(obj.palette())
+            obj.setPalette(palette)
+            for view in obj.findChildren(QAbstractItemView):
+                view.setPalette(palette)
+                view.viewport().setAutoFillBackground(True)
+        return False
+
+
+_popups_filter = None
+
+
+def _popups() -> _Popups:
+    global _popups_filter
+    if _popups_filter is None:
+        _popups_filter = _Popups()
+    return _popups_filter
 
 
 def _glass_palette(palette: QPalette) -> QPalette:
